@@ -1,0 +1,1402 @@
+/**
+ * Phase 3 SP — empire-scale Sky City (~20× prior mega city footprint).
+ * Multi-district floating islands. No solid roads between islands —
+ * only glowing wind skyways for the surfboard (see reference wind-paths art).
+ */
+
+import * as THREE from 'three';
+import { makeMaterials, type Mats } from './materials';
+import type { Collider } from './level';
+import {
+  VENDORS,
+  CITY_DISTRICTS,
+  harvestBiomeForDistrict,
+  type VendorDef,
+  type CityDistrictDef,
+  type CommodityId,
+} from './economy';
+import { buildPrefab } from './cityEditor';
+import { CATALOG, type CatalogEntry } from './editorCatalog';
+import { buildMapSnapshot, type MapSnapshot } from './cityMap';
+
+export type CityInteractKind =
+  | 'neighbor'
+  | 'vendor'
+  | 'workshop_lease'
+  | 'workshop_chest'
+  | 'board_shop'
+  | 'rogue_robot'
+  | 'ferry_training'
+  | 'harvest'
+  | 'broker'
+  | 'city_stall'
+  | 'craft_bench'
+  | 'hire_board'
+  | 'bay_expand'
+  | 'invent_desk'
+  | 'repair_job';
+
+export interface CityInteract {
+  id: string;
+  kind: CityInteractKind;
+  position: THREE.Vector3;
+  radius: number;
+  mesh: THREE.Object3D;
+  vendor?: VendorDef;
+  label: string;
+  /** Neighbor dialogue lines */
+  lines?: string[];
+  /** For multi-plaza stalls */
+  districtId?: string;
+  /** Specialized harvest mat pool for this reef */
+  harvestPool?: CommodityId[];
+  harvestName?: string;
+}
+
+export interface DistrictBuilt {
+  def: CityDistrictDef;
+  center: THREE.Vector3;
+  stallMesh: THREE.Object3D | null;
+}
+
+export interface CityNpc {
+  mesh: THREE.Group;
+  home: THREE.Vector3;
+  work: THREE.Vector3;
+  market: THREE.Vector3;
+  /** 0 walk home, 1 work, 2 market — driven by day phase */
+  role: 'resident' | 'flyer' | 'robot_helper' | 'rogue';
+  phase: number;
+  speed: number;
+  rogue?: boolean;
+  repairCd?: number;
+}
+
+export interface SkyRoute {
+  path: THREE.Vector3[];
+  pathDist: number[];
+}
+
+export interface SkyCityBuilt {
+  group: THREE.Group;
+  colliders: Collider[];
+  mats: Mats;
+  /** Player apartment feet spawn */
+  apartmentSpawn: THREE.Vector3;
+  interactables: CityInteract[];
+  npcs: CityNpc[];
+  skyRoutes: SkyRoute[];
+  workshopGroup: THREE.Group;
+  /**
+   * Empire bay expand yards — separate island from workshop/home (Sky Foundry).
+   * Visible once city workshop (or parcel) is leased.
+   */
+  expandYardGroup: THREE.Group;
+  /** Legacy single stall group (grand market); multi-stall via cityStalls map */
+  stallGroup: THREE.Group;
+  /** Per-district stall visuals */
+  districtStallGroups: Record<string, THREE.Group>;
+  districts: DistrictBuilt[];
+  harvestSpot: THREE.Vector3;
+  residentialPlaza: THREE.Vector3;
+  grandMarket: THREE.Vector3;
+  industrial: THREE.Vector3;
+  /** Live world → map projection data (rebuilds with city) */
+  mapSnapshot: MapSnapshot;
+  animate: (cityTime: number, dt: number) => void;
+  lowestY: number;
+}
+
+function labelSprite(text: string): THREE.Sprite {
+  const c = document.createElement('canvas');
+  c.width = 320;
+  c.height = 64;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = 'rgba(12,16,24,0.8)';
+  ctx.fillRect(0, 0, 320, 64);
+  ctx.strokeStyle = '#c4a35a';
+  ctx.strokeRect(2, 2, 316, 60);
+  ctx.fillStyle = '#f0e0b0';
+  ctx.font = 'bold 20px system-ui,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 160, 32);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+  const s = new THREE.Sprite(mat);
+  s.scale.set(3.2, 0.65, 1);
+  return s;
+}
+
+/** Deck thickness + collider padding so snap/land never miss thin tops */
+const FLOOR_THICK = 0.55;
+/** Collider extends slightly past visual deck for reliable feet contact */
+const FLOOR_COL_PAD = 0.12;
+
+function floorPad(
+  _mats: Mats,
+  w: number,
+  d: number,
+  x: number,
+  y: number,
+  z: number,
+  color = 0x5a5348,
+): { mesh: THREE.Mesh; col: Collider } {
+  const mat = new THREE.MeshStandardMaterial({ color, metalness: 0.25, roughness: 0.65 });
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, FLOOR_THICK, d), mat);
+  mesh.position.set(x, y, z);
+  mesh.receiveShadow = true;
+  mesh.castShadow = true;
+  const halfH = FLOOR_THICK / 2;
+  const top = y + halfH + FLOOR_COL_PAD;
+  const bot = y - halfH - 0.08;
+  const col: Collider = {
+    min: new THREE.Vector3(x - w / 2 - 0.15, bot, z - d / 2 - 0.15),
+    max: new THREE.Vector3(x + w / 2 + 0.15, top, z + d / 2 + 0.15),
+    kind: 'floor',
+  };
+  return { mesh, col };
+}
+
+function catalogEntry(category: CatalogEntry['category'], variant: number): CatalogEntry {
+  return (
+    CATALOG.find((e) => e.category === category && e.variant === variant) ?? {
+      category,
+      variant,
+      label: `${category}_${variant}`,
+      defaultScale: 1,
+    }
+  );
+}
+
+/** Place Game Maker / raceway prefab as pure scenery (no colliders for soft props). */
+function placeScenery(
+  group: THREE.Group,
+  mats: Mats,
+  category: CatalogEntry['category'],
+  variant: number,
+  x: number,
+  z: number,
+  y = 0.35,
+  scale = 1,
+  yaw = 0,
+  colliders?: Collider[],
+  solidBuilding = false,
+): void {
+  const entry = catalogEntry(category, variant);
+  const root = buildPrefab(entry, mats);
+  root.position.set(x, y, z);
+  root.rotation.y = yaw;
+  root.scale.setScalar(scale);
+  group.add(root);
+  if (colliders && (solidBuilding || category === 'building')) {
+    const box = new THREE.Box3().setFromObject(root);
+    if (!box.isEmpty()) {
+      colliders.push({
+        min: box.min.clone(),
+        max: box.max.clone(),
+        kind: 'solid',
+      });
+    }
+  }
+  // Walkable ground platforms from catalog
+  if (colliders && category === 'ground') {
+    const box = new THREE.Box3().setFromObject(root);
+    if (!box.isEmpty()) {
+      colliders.push({
+        min: box.min.clone(),
+        max: new THREE.Vector3(box.max.x, box.min.y + 0.45, box.max.z),
+        kind: 'floor',
+      });
+    }
+  }
+}
+
+function solidBox(
+  _mats: Mats,
+  mat: THREE.Material,
+  w: number,
+  h: number,
+  d: number,
+  x: number,
+  y: number,
+  z: number,
+): { mesh: THREE.Mesh; col: Collider } {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  const col: Collider = {
+    min: new THREE.Vector3(x - w / 2, y - h / 2, z - d / 2),
+    max: new THREE.Vector3(x + w / 2, y + h / 2, z + d / 2),
+    kind: 'solid',
+  };
+  return { mesh, col };
+}
+
+function pathDist(path: THREE.Vector3[]): number[] {
+  const d = [0];
+  let acc = 0;
+  for (let i = 1; i < path.length; i++) {
+    acc += path[i]!.distanceTo(path[i - 1]!);
+    d.push(acc);
+  }
+  return d;
+}
+
+function makeNpcMesh(
+  role: CityNpc['role'],
+  mats: Mats,
+  rogue = false,
+): THREE.Group {
+  const g = new THREE.Group();
+  const bodyCol = rogue
+    ? 0xaa3333
+    : role === 'flyer'
+      ? 0x6a8aaa
+      : role === 'robot_helper'
+        ? 0x8899aa
+        : 0xc4a882;
+  const body = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.28, 0.55, 4, 8),
+    new THREE.MeshStandardMaterial({
+      color: bodyCol,
+      emissive: rogue ? 0x660000 : 0x000000,
+      emissiveIntensity: rogue ? 0.4 : 0,
+      roughness: 0.75,
+    }),
+  );
+  body.position.y = 0.9;
+  g.add(body);
+  if (role === 'flyer') {
+    const board = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4, 0.08, 1.0),
+      new THREE.MeshStandardMaterial({
+        color: 0x44aacc,
+        emissive: 0x226688,
+        emissiveIntensity: 0.4,
+      }),
+    );
+    board.position.y = 0.15;
+    g.add(board);
+  }
+  if (role === 'robot_helper' || rogue) {
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.28, 0.35), mats.brass);
+    head.position.y = 1.45;
+    g.add(head);
+  }
+  return g;
+}
+
+/**
+ * Build the empire-scale mega-city from CITY_DISTRICTS.
+ * Prior city was ~±250; this spans ~±520 with 14 plazas + connectors (~20× area).
+ */
+export function buildSkyCity(): SkyCityBuilt {
+  const mats = makeMaterials();
+  const group = new THREE.Group();
+  group.name = 'SkyCity';
+  const colliders: Collider[] = [];
+  const interactables: CityInteract[] = [];
+  const npcs: CityNpc[] = [];
+  const districts: DistrictBuilt[] = [];
+  const districtStallGroups: Record<string, THREE.Group> = {};
+  let lowestY = 0;
+
+  const addMesh = (m: THREE.Object3D) => group.add(m);
+  const addCol = (c: Collider) => {
+    colliders.push(c);
+    lowestY = Math.min(lowestY, c.min.y);
+  };
+
+  const DECK_Y = 0.2;
+  const byId = (id: string) => CITY_DISTRICTS.find((d) => d.id === id)!;
+  const residential = byId('residential');
+  const grand = byId('grand_market');
+  const industrialDef = byId('industrial');
+  const residentialPlaza = new THREE.Vector3(residential.x, 0, residential.z);
+  const grandMarket = new THREE.Vector3(grand.x, 0, grand.z);
+  const industrial = new THREE.Vector3(industrialDef.x, 0, industrialDef.z);
+  const apartmentPos = new THREE.Vector3(residential.x - 32, 0, residential.z + 20);
+
+  const workshopGroup = new THREE.Group();
+  workshopGroup.name = 'CityWorkshop';
+  workshopGroup.visible = false;
+  let stallGroup = new THREE.Group();
+  stallGroup.name = 'CityStallLegacy';
+  stallGroup.visible = false;
+
+  /** Soft-edge wind texture (shared) — fades to transparent so planks don't look solid. */
+  const windTex = (() => {
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 64;
+    const ctx = c.getContext('2d')!;
+    // Soft horizontal streak with feathered edges
+    const g = ctx.createRadialGradient(64, 32, 2, 64, 32, 58);
+    g.addColorStop(0, 'rgba(220,250,255,0.95)');
+    g.addColorStop(0.25, 'rgba(120,220,255,0.55)');
+    g.addColorStop(0.55, 'rgba(60,180,255,0.22)');
+    g.addColorStop(0.8, 'rgba(40,160,255,0.06)');
+    g.addColorStop(1, 'rgba(30,140,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 64);
+    // Lengthwise fade so ends dissolve into air
+    const lg = ctx.createLinearGradient(0, 0, 128, 0);
+    lg.addColorStop(0, 'rgba(0,0,0,0.85)');
+    lg.addColorStop(0.12, 'rgba(0,0,0,0)');
+    lg.addColorStop(0.88, 'rgba(0,0,0,0)');
+    lg.addColorStop(1, 'rgba(0,0,0,0.85)');
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = lg;
+    ctx.fillRect(0, 0, 128, 64);
+    // Soft top/bottom edge feather
+    const vg = ctx.createLinearGradient(0, 0, 0, 64);
+    vg.addColorStop(0, 'rgba(0,0,0,0.9)');
+    vg.addColorStop(0.2, 'rgba(0,0,0,0)');
+    vg.addColorStop(0.8, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, 'rgba(0,0,0,0.9)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, 128, 64);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  })();
+
+  const windMatSoft = new THREE.MeshBasicMaterial({
+    map: windTex,
+    color: 0x88e8ff,
+    transparent: true,
+    opacity: 0.32,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const windMatCore = new THREE.MeshBasicMaterial({
+    map: windTex,
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.22,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+  const windMatWhisp = new THREE.MeshBasicMaterial({
+    map: windTex,
+    color: 0xaaf0ff,
+    transparent: true,
+    opacity: 0.14,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+  });
+
+  /**
+   * Orient a flat plane so it lies in the path's local "floor" —
+   * wide face horizontal-ish, length along dir (no vertical wall planks).
+   */
+  function layFlatAlong(mesh: THREE.Object3D, dir: THREE.Vector3) {
+    const flat = new THREE.Vector3(dir.x, 0, dir.z);
+    if (flat.lengthSq() < 1e-8) flat.set(0, 0, 1);
+    else flat.normalize();
+    const yaw = Math.atan2(flat.x, flat.z);
+    const pitch = Math.atan2(dir.y, Math.hypot(dir.x, dir.z));
+    mesh.rotation.order = 'YXZ';
+    mesh.rotation.y = yaw;
+    mesh.rotation.x = -pitch; // pitch with the arc, still flat underfoot
+    mesh.rotation.z = 0;
+  }
+
+  /**
+   * Wind skyway between two islands — soft faded streaks (board-only).
+   * Visuals: spaced flat planks with soft edges, not solid roads.
+   * Ride colliders stay continuous under the wind lane.
+   */
+  function windSkyway(
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    opts?: { arch?: number; width?: number; entryLift?: number },
+  ) {
+    const arch = opts?.arch ?? 10;
+    const width = opts?.width ?? 9;
+    const entryLift = opts?.entryLift ?? 0.85;
+    const dx = bx - ax;
+    const dz = bz - az;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 4) return;
+
+    const ux = dx / dist;
+    const uz = dz / dist;
+    const px = -uz;
+    const pz = ux;
+    const curve = Math.min(28, dist * 0.12) * (Math.sin(ax * 0.01 + az * 0.007) > 0 ? 1 : -1);
+
+    const a0 = new THREE.Vector3(ax + ux * 8, DECK_Y + entryLift, az + uz * 8);
+    const b0 = new THREE.Vector3(bx - ux * 8, DECK_Y + entryLift, bz - uz * 8);
+    const mid = new THREE.Vector3(
+      (ax + bx) / 2 + px * curve,
+      DECK_Y + entryLift + arch,
+      (az + bz) / 2 + pz * curve,
+    );
+    const q1 = a0
+      .clone()
+      .lerp(mid, 0.45)
+      .add(new THREE.Vector3(px * curve * 0.35, arch * 0.15, pz * curve * 0.35));
+    const q2 = mid
+      .clone()
+      .lerp(b0, 0.55)
+      .add(new THREE.Vector3(-px * curve * 0.35, arch * 0.1, -pz * curve * 0.35));
+
+    const pts: THREE.Vector3[] = [];
+    // Dense sample for smooth colliders + wind placement
+    const segs = Math.max(16, Math.ceil(dist / 10));
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      const u = 1 - t;
+      pts.push(
+        new THREE.Vector3()
+          .addScaledVector(a0, u * u * u)
+          .addScaledVector(q1, 3 * u * u * t)
+          .addScaledVector(q2, 3 * u * t * t)
+          .addScaledVector(b0, t * t * t),
+      );
+    }
+    skyRoutes.push({ path: pts, pathDist: pathDist(pts) });
+
+    // ——— Soft flat wind planks (gappy, multi-lane, faded) ———
+    // Place more planks than path samples, with lateral jitter so it reads as wind
+    const plankCount = Math.max(22, Math.ceil(dist / 5.5));
+    for (let i = 0; i < plankCount; i++) {
+      const t = (i + 0.5) / plankCount;
+      // Skip a few for air gaps
+      const gapSeed = Math.sin(i * 2.71 + ax * 0.03) * 0.5 + 0.5;
+      if (gapSeed < 0.12) continue;
+
+      // Sample path
+      const fi = t * (pts.length - 1);
+      const i0 = Math.min(pts.length - 2, Math.floor(fi));
+      const frac = fi - i0;
+      const p0 = pts[i0]!;
+      const p1 = pts[i0 + 1]!;
+      const pos = p0.clone().lerp(p1, frac);
+      const dir = p1.clone().sub(p0);
+      if (dir.lengthSq() < 1e-8) continue;
+      dir.normalize();
+      const right = new THREE.Vector3(-dir.z, 0, dir.x);
+      if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
+      else right.normalize();
+
+      // Multiple wind layers / lanes per station
+      const lanes = 3 + (i % 2); // 3–4 wisps
+      for (let L = 0; L < lanes; L++) {
+        const lat =
+          (L - (lanes - 1) / 2) * (width * 0.22) +
+          Math.sin(i * 1.7 + L * 2.1) * (width * 0.08);
+        const alongJit = Math.sin(i * 3.1 + L) * 1.1;
+        const elevJit = Math.sin(i * 2.3 + L * 1.4) * 0.35;
+
+        const plankLen = 2.8 + (i % 5) * 0.55 + L * 0.35;
+        const plankW = 1.1 + (L % 3) * 0.45 + gapSeed * 0.6;
+        // PlaneGeometry is XY by default → rotate to XZ flat via layFlatAlong
+        const plane = new THREE.Mesh(
+          new THREE.PlaneGeometry(plankW, plankLen),
+          L === 0 ? windMatCore : L === 1 ? windMatSoft : windMatWhisp,
+        );
+        // Plane is in XY; after layFlatAlong with pitch/yaw it sits as a floor strip
+        // Swap: use geometry so local Y is along path length after rotation
+        plane.geometry.rotateX(-Math.PI / 2); // now in XZ, long axis along +Z before yaw
+
+        plane.position
+          .copy(pos)
+          .addScaledVector(right, lat)
+          .addScaledVector(dir, alongJit)
+          .add(new THREE.Vector3(0, elevJit, 0));
+        layFlatAlong(plane, dir);
+        // Extra roll scatter for windy feel (small)
+        plane.rotation.z += Math.sin(i * 1.9 + L * 2.4) * 0.12;
+        plane.renderOrder = 2;
+        addMesh(plane);
+      }
+
+      // Occasional longer outer whisps
+      if (i % 3 === 0) {
+        for (const side of [-1, 1]) {
+          const whisp = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.7 + (i % 4) * 0.15, 4.5 + (i % 3)),
+            windMatWhisp,
+          );
+          whisp.geometry.rotateX(-Math.PI / 2);
+          whisp.position
+            .copy(pos)
+            .addScaledVector(right, side * (width * 0.42 + Math.sin(i) * 0.6))
+            .add(new THREE.Vector3(0, 0.4 + Math.sin(i * 0.7) * 0.3, 0));
+          layFlatAlong(whisp, dir);
+          whisp.rotation.z += side * 0.2;
+          whisp.renderOrder = 1;
+          addMesh(whisp);
+        }
+      }
+    }
+
+    // Continuous board colliders (invisible) along path
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i]!;
+      const p1 = pts[i + 1]!;
+      const midp = p0.clone().lerp(p1, 0.5);
+      const halfW = width * 0.58;
+      const top = midp.y + 0.2;
+      const bot = midp.y - 0.65;
+      addCol({
+        min: new THREE.Vector3(
+          Math.min(p0.x, p1.x) - halfW,
+          bot,
+          Math.min(p0.z, p1.z) - halfW,
+        ),
+        max: new THREE.Vector3(
+          Math.max(p0.x, p1.x) + halfW,
+          top,
+          Math.max(p0.z, p1.z) + halfW,
+        ),
+        kind: 'skyway',
+      });
+    }
+
+    // Soft entry rings (faded, not hard rails)
+    for (const p of [a0, b0]) {
+      const beacon = new THREE.Mesh(
+        new THREE.RingGeometry(1.4, 2.6, 32),
+        new THREE.MeshBasicMaterial({
+          color: 0x88eeff,
+          transparent: true,
+          opacity: 0.28,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+          blending: THREE.AdditiveBlending,
+        }),
+      );
+      beacon.position.copy(p);
+      beacon.rotation.x = -Math.PI / 2; // flat on the wind
+      beacon.renderOrder = 3;
+      addMesh(beacon);
+    }
+  }
+
+  // Must declare before windSkyway uses it
+  const skyRoutes: SkyRoute[] = [];
+
+
+  // ——— Every district plaza ———
+  for (let di = 0; di < CITY_DISTRICTS.length; di++) {
+    const d = CITY_DISTRICTS[di]!;
+    const cx = d.x;
+    const cz = d.z;
+    const sz = d.size;
+    const pad = floorPad(mats, sz, sz, cx, DECK_Y, cz, d.color);
+    addMesh(pad.mesh);
+    addCol(pad.col);
+
+    const lab = labelSprite(d.name.toUpperCase());
+    lab.position.set(cx, 4.2, cz + sz * 0.35);
+    lab.scale.set(4.2, 0.75, 1);
+    addMesh(lab);
+
+    // Fountain / center piece
+    const fountain = solidBox(mats, mats.brass, 3.5, 1.1, 3.5, cx, 0.9, cz);
+    addMesh(fountain.mesh);
+    addCol(fountain.col);
+
+    // Buildings & greenery density
+    const bCount = d.role === 'premium' ? 8 : d.role === 'industrial' ? 10 : 6;
+    for (let i = 0; i < bCount; i++) {
+      const a = (i / bCount) * Math.PI * 2 + di * 0.2;
+      const r = sz * 0.32;
+      const bx = cx + Math.cos(a) * r;
+      const bz = cz + Math.sin(a) * r;
+      placeScenery(
+        group,
+        mats,
+        'building',
+        (i + di) % 5,
+        bx,
+        bz,
+        0.4,
+        0.75 + ((i + di) % 4) * 0.12,
+        a,
+        colliders,
+        true,
+      );
+    }
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 + 0.4;
+      const r = sz * 0.38;
+      placeScenery(
+        group,
+        mats,
+        'tree',
+        i % 5,
+        cx + Math.cos(a) * r,
+        cz + Math.sin(a) * r,
+        0.4,
+        0.9 + (i % 3) * 0.15,
+      );
+    }
+    if (d.role === 'premium' || d.role === 'market') {
+      placeScenery(group, mats, 'fountain', di % 5, cx + 10, cz - 8, 0.4, 0.8);
+    }
+    if (d.role === 'industrial' || d.role === 'harbor') {
+      placeScenery(group, mats, 'vehicle', di % 5, cx - 12, cz + 6, 0.4, 1.0, 0.5);
+      placeScenery(group, mats, 'vehicle', (di + 2) % 5, cx + 14, cz - 10, 0.4, 0.95, -0.8);
+    }
+
+    // Stall lease marker (all districts except pure residential can sell — residential too for local trade)
+    const stallG = new THREE.Group();
+    stallG.name = `Stall_${d.id}`;
+    stallG.visible = false;
+    const counter = solidBox(mats, mats.wood, 3.2, 1, 0.8, cx + sz * 0.28, 0.85, cz + sz * 0.22);
+    stallG.add(counter.mesh);
+    group.add(stallG);
+    districtStallGroups[d.id] = stallG;
+    if (d.id === 'grand_market') stallGroup = stallG;
+
+    const sm = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 8, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0xff8866,
+        emissive: 0xaa4422,
+        emissiveIntensity: 0.55,
+      }),
+    );
+    sm.position.set(cx + sz * 0.28, 1.3, cz + sz * 0.18);
+    addMesh(sm);
+    const sl = labelSprite(`STALL · ${d.stallCost}b · ${d.name}`);
+    sl.position.set(cx + sz * 0.28, 2.9, cz + sz * 0.22);
+    sl.scale.set(3.6, 0.6, 1);
+    addMesh(sl);
+    interactables.push({
+      id: `stall_${d.id}`,
+      kind: 'city_stall',
+      position: sm.position.clone(),
+      radius: 2.6,
+      mesh: sm,
+      label: `Retail stall · ${d.name} (${d.stallCost}b lease)`,
+      districtId: d.id,
+    });
+
+    // Specialized harvest reefs — most districts have one (different mats by biome)
+    if (
+      d.role === 'harbor' ||
+      d.role === 'industrial' ||
+      d.role === 'premium' ||
+      d.id === 'spore_gardens' ||
+      d.id === 'south_docks' ||
+      d.id === 'mid_ring_east' ||
+      d.id === 'mid_ring_west' ||
+      d.id === 'grand_market'
+    ) {
+      const biome = harvestBiomeForDistrict(d.id);
+      const hx = cx - sz * 0.55;
+      const hz = cz + (d.role === 'premium' ? 4 : 0);
+      const reef = new THREE.Mesh(
+        new THREE.CylinderGeometry(10, 10.5, FLOOR_THICK, 10),
+        new THREE.MeshStandardMaterial({ color: biome.color, roughness: 0.7 }),
+      );
+      reef.position.set(hx, DECK_Y, hz);
+      addMesh(reef);
+      addCol({
+        min: new THREE.Vector3(hx - 11, DECK_Y - 0.4, hz - 11),
+        max: new THREE.Vector3(hx + 11, DECK_Y + 0.4, hz + 11),
+        kind: 'floor',
+      });
+      windSkyway(cx, cz, hx, hz, { arch: 6, width: 6.5 });
+      const hm = new THREE.Mesh(
+        new THREE.TorusGeometry(1.1, 0.08, 6, 16),
+        new THREE.MeshStandardMaterial({
+          color: 0x66d8ff,
+          emissive: 0x2288cc,
+          emissiveIntensity: 0.6,
+        }),
+      );
+      hm.rotation.x = Math.PI / 2;
+      hm.position.set(hx, 0.55, hz);
+      addMesh(hm);
+      const matNames = biome.mats.join('/');
+      const hl = labelSprite(`${biome.name}`);
+      hl.position.set(hx, 2.6, hz);
+      hl.scale.set(3.6, 0.6, 1);
+      addMesh(hl);
+      interactables.push({
+        id: `harvest_${d.id}`,
+        kind: 'harvest',
+        position: new THREE.Vector3(hx, 0.5, hz),
+        radius: 3.5,
+        mesh: hm,
+        label: `Harvest · ${biome.name} (${matNames})`,
+        districtId: d.id,
+        harvestPool: [...biome.mats],
+        harvestName: biome.name,
+      });
+    }
+
+    // Vendors on market / premium / mixed plazas
+    if (d.role === 'market' || d.role === 'premium' || d.role === 'mixed') {
+      VENDORS.forEach((v, i) => {
+        if (d.role === 'mixed' && i > 1) return;
+        const a = (i / VENDORS.length) * Math.PI * 2;
+        const x = cx + Math.cos(a) * (sz * 0.22);
+        const z = cz + Math.sin(a) * (sz * 0.22);
+        const body = new THREE.Mesh(
+          new THREE.CapsuleGeometry(0.32, 0.85, 4, 8),
+          new THREE.MeshStandardMaterial({ color: 0xc4a882, roughness: 0.8 }),
+        );
+        body.position.set(x, 1.2, z);
+        addMesh(body);
+        const mark = new THREE.Mesh(
+          new THREE.SphereGeometry(0.16, 8, 8),
+          new THREE.MeshStandardMaterial({
+            color: 0xc4a35a,
+            emissive: 0x886622,
+            emissiveIntensity: 0.4,
+          }),
+        );
+        mark.position.set(x + 1.3, 1.1, z);
+        addMesh(mark);
+        const vl = labelSprite(v.name);
+        vl.position.set(x, 2.6, z);
+        addMesh(vl);
+        interactables.push({
+          id: `vendor_${d.id}_${v.id}`,
+          kind: 'vendor',
+          position: mark.position.clone(),
+          radius: 2.3,
+          mesh: mark,
+          vendor: v,
+          label: `${v.title} · ${v.name} (${d.name})`,
+          districtId: d.id,
+        });
+      });
+    }
+
+    // Broker at industrial / grand market
+    if (d.role === 'industrial' || d.id === 'grand_market') {
+      const bx = cx + sz * 0.3;
+      const bz = cz - sz * 0.25;
+      const bot = solidBox(mats, mats.iron, 1.2, 1.8, 0.9, bx, 1.2, bz);
+      addMesh(bot.mesh);
+      const bm = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 8, 8),
+        new THREE.MeshStandardMaterial({
+          color: 0xaa88ff,
+          emissive: 0x5533aa,
+          emissiveIntensity: 0.5,
+        }),
+      );
+      bm.position.set(bx, 1.2, bz + 2);
+      addMesh(bm);
+      const bl = labelSprite('FRAME BROKER');
+      bl.position.set(bx, 3.2, bz);
+      addMesh(bl);
+      interactables.push({
+        id: `broker_${d.id}`,
+        kind: 'broker',
+        position: bm.position.clone(),
+        radius: 2.5,
+        mesh: bm,
+        label: `Sell robot frames · ${d.name}`,
+        districtId: d.id,
+      });
+    }
+
+    districts.push({
+      def: d,
+      center: new THREE.Vector3(cx, 0, cz),
+      stallMesh: sm,
+    });
+  }
+
+  // ——— Wind skyways only between islands (no solid roads) ———
+  const skywayPairs: [string, string][] = [
+    ['residential', 'mid_ring_east'],
+    ['residential', 'mid_ring_west'],
+    ['residential', 'harbor'],
+    ['mid_ring_east', 'grand_market'],
+    ['mid_ring_west', 'industrial'],
+    ['mid_ring_east', 'clocktower'],
+    ['mid_ring_west', 'gearworks'],
+    ['harbor', 'spore_gardens'],
+    ['harbor', 'brass_arcade'],
+    ['grand_market', 'clocktower'],
+    ['grand_market', 'aether_spire'],
+    ['grand_market', 'south_docks'],
+    ['industrial', 'sky_foundry'],
+    ['industrial', 'gearworks'],
+    ['gearworks', 'brass_arcade'],
+    ['spore_gardens', 'north_observatory'],
+    ['brass_arcade', 'north_observatory'],
+    ['spore_gardens', 'clocktower'],
+    ['sky_foundry', 'south_docks'],
+    ['aether_spire', 'south_docks'],
+  ];
+  for (const [a, b] of skywayPairs) {
+    const da = byId(a);
+    const db = byId(b);
+    const dist = Math.hypot(da.x - db.x, da.z - db.z);
+    windSkyway(da.x, da.z, db.x, db.z, {
+      arch: Math.min(22, 6 + dist * 0.035),
+      width: 8,
+    });
+  }
+
+  // ——— Apartment at residential ———
+  {
+    const home = floorPad(mats, 22, 18, apartmentPos.x, DECK_Y, apartmentPos.z, 0x6a5f50);
+    addMesh(home.mesh);
+    addCol(home.col);
+    // Same residential island cluster — short wind hop to plaza center
+    windSkyway(apartmentPos.x, apartmentPos.z, residential.x, residential.z, { arch: 4, width: 6.5, entryLift: 0.7 });
+    const wall = solidBox(mats, mats.wood, 8, 4, 7, apartmentPos.x - 2, 2.4, apartmentPos.z);
+    addMesh(wall.mesh);
+    addCol(wall.col);
+    const roof = solidBox(mats, mats.copper, 9, 0.4, 8, apartmentPos.x - 2, 4.6, apartmentPos.z);
+    addMesh(roof.mesh);
+    placeScenery(group, mats, 'tree', 0, apartmentPos.x + 6, apartmentPos.z + 5, 0.4, 0.95);
+    const homeLab = labelSprite('YOUR APARTMENT');
+    homeLab.position.set(apartmentPos.x, 5.2, apartmentPos.z + 2);
+    addMesh(homeLab);
+  }
+
+  // Neighbors on residential ring
+  const neighborSpots = [
+    {
+      x: residential.x + 26,
+      z: residential.z + 22,
+      name: 'Pip Harper',
+      lines: [
+        'Empire city! Lease stalls on many plazas — Spore Gardens & Aether Spire pay invent premiums.',
+        'Expand your bay forever. Raise worker pay for long program lists. Multi-shop cash flow is the game.',
+        'No roads between islands — only wind skyways. Q board and ride the cyan lanes.',
+      ],
+    },
+    {
+      x: residential.x - 24,
+      z: residential.z - 24,
+      name: 'Sera Quinn',
+      lines: [
+        'One board purchase forever. Q anywhere. Islands only connect by wind skyways — ride them.',
+        'Invent at the city workshop or L3 bay, craft, stock premium plazas — that’s the market cycle.',
+      ],
+    },
+    {
+      x: residential.x + 28,
+      z: residential.z - 18,
+      name: 'Bolt Voss',
+      lines: [
+        'Industrial slips west. Hire a crew, raise pay grades, run harvest→craft→stock programs.',
+        'Shops tax upkeep — earn more than you burn with a retail network.',
+      ],
+    },
+  ];
+  for (const n of neighborSpots) {
+    const pad = floorPad(mats, 14, 12, n.x, DECK_Y, n.z, 0x555048);
+    addMesh(pad.mesh);
+    addCol(pad.col);
+    windSkyway(n.x, n.z, residential.x, residential.z, { arch: 5, width: 6, entryLift: 0.7 });
+    const house = solidBox(mats, mats.wood, 5, 3.2, 5, n.x, 2.0, n.z);
+    addMesh(house.mesh);
+    addCol(house.col);
+    placeScenery(group, mats, 'tree', 0, n.x - 4, n.z + 3, 0.4, 0.95);
+    const mark = new THREE.Mesh(
+      new THREE.SphereGeometry(0.2, 8, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0xe8c878,
+        emissive: 0xaa8800,
+        emissiveIntensity: 0.45,
+      }),
+    );
+    mark.position.set(n.x + 3, 1.2, n.z);
+    addMesh(mark);
+    const lab = labelSprite(`NEIGHBOR · ${n.name}`);
+    lab.position.set(n.x, 3.8, n.z + 2);
+    addMesh(lab);
+    interactables.push({
+      id: `neighbor_${n.name}`,
+      kind: 'neighbor',
+      position: mark.position.clone(),
+      radius: 2.4,
+      mesh: mark,
+      label: `Talk to ${n.name}`,
+      lines: n.lines,
+    });
+  }
+
+  // Board shop on residential
+  {
+    const rack = solidBox(mats, mats.iron, 2.5, 1.2, 0.5, residential.x + 14, 1.0, residential.z - 12);
+    addMesh(rack.mesh);
+    const bm = new THREE.Mesh(
+      new THREE.SphereGeometry(0.2, 8, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0x66e0ff,
+        emissive: 0x2288cc,
+        emissiveIntensity: 0.5,
+      }),
+    );
+    bm.position.set(residential.x + 14, 1.2, residential.z - 10);
+    addMesh(bm);
+    const bl = labelSprite('CITY BOARD SHOP');
+    bl.position.set(residential.x + 14, 2.8, residential.z - 12);
+    addMesh(bl);
+    interactables.push({
+      id: 'city_board',
+      kind: 'board_shop',
+      position: bm.position.clone(),
+      radius: 2.5,
+      mesh: bm,
+      label: 'Board shop — buy once, ride forever',
+    });
+  }
+
+  // Ferry
+  {
+    const pad = floorPad(mats, 12, 10, residential.x, DECK_Y, residential.z + 36, 0x4a5060);
+    addMesh(pad.mesh);
+    addCol(pad.col);
+    windSkyway(residential.x, residential.z, residential.x, residential.z + 36, { arch: 5, width: 6.5, entryLift: 0.7 });
+    const fm = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 8, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0xaaddff,
+        emissive: 0x4488aa,
+        emissiveIntensity: 0.5,
+      }),
+    );
+    fm.position.set(residential.x, 1.2, residential.z + 38);
+    addMesh(fm);
+    const fl = labelSprite('FERRY · training market');
+    fl.position.set(residential.x, 2.8, residential.z + 38);
+    addMesh(fl);
+    interactables.push({
+      id: 'ferry',
+      kind: 'ferry_training',
+      position: fm.position.clone(),
+      radius: 2.6,
+      mesh: fm,
+      label: 'Ferry back to Market Training',
+    });
+  }
+
+  // ——— Full industrial workshop complex (empire HQ) ———
+  {
+    const ix = industrialDef.x;
+    const iz = industrialDef.z;
+    // Lease marker (always)
+    const lm = new THREE.Mesh(
+      new THREE.SphereGeometry(0.25, 8, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0x82e0aa,
+        emissive: 0x228844,
+        emissiveIntensity: 0.5,
+      }),
+    );
+    lm.position.set(ix + 18, 1.3, iz + 10);
+    addMesh(lm);
+    const ll = labelSprite('LEASE CITY WORKSHOP · empire HQ');
+    ll.position.set(ix + 18, 3, iz + 10);
+    ll.scale.set(4.2, 0.7, 1);
+    addMesh(ll);
+    interactables.push({
+      id: 'city_workshop_lease',
+      kind: 'workshop_lease',
+      position: lm.position.clone(),
+      radius: 2.6,
+      mesh: lm,
+      label: 'Lease city workshop (craft · hire · invent · expand forever)',
+    });
+
+    // Interior props — shown when leased
+    const floorMark = solidBox(mats, mats.iron, 22, 0.2, 18, ix - 2, 0.45, iz);
+    workshopGroup.add(floorMark.mesh);
+    const bench = solidBox(mats, mats.iron, 4, 1, 2, ix - 8, 0.95, iz + 3);
+    workshopGroup.add(bench.mesh);
+    const anvil = solidBox(mats, mats.brass, 1.2, 0.8, 1.2, ix - 8, 0.85, iz + 0.5);
+    workshopGroup.add(anvil.mesh);
+    const chest = solidBox(mats, mats.wood, 1.5, 1, 1.2, ix + 2, 0.95, iz - 5);
+    workshopGroup.add(chest.mesh);
+    const hirePost = solidBox(mats, mats.copper, 0.4, 2.2, 0.4, ix + 6, 1.5, iz + 4);
+    workshopGroup.add(hirePost.mesh);
+    const inventTable = solidBox(mats, mats.wood, 2.5, 0.9, 1.4, ix - 2, 0.9, iz - 5);
+    workshopGroup.add(inventTable.mesh);
+    // Expand wings (visual only — always in group; scale with bay via game if needed)
+    const wingL2 = solidBox(mats, mats.iron, 8, 3, 6, ix - 14, 1.8, iz - 2);
+    wingL2.mesh.name = 'cityWingL2';
+    workshopGroup.add(wingL2.mesh);
+    const wingL3 = solidBox(mats, mats.copper, 10, 4, 8, ix + 10, 2.2, iz - 6);
+    wingL3.mesh.name = 'cityWingL3';
+    workshopGroup.add(wingL3.mesh);
+    group.add(workshopGroup);
+
+    const addMark = (
+      id: string,
+      kind: CityInteractKind,
+      x: number,
+      z: number,
+      color: number,
+      emissive: number,
+      label: string,
+      y = 1.25,
+    ) => {
+      const m = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 8, 8),
+        new THREE.MeshStandardMaterial({
+          color,
+          emissive,
+          emissiveIntensity: 0.5,
+        }),
+      );
+      m.position.set(x, y, z);
+      workshopGroup.add(m);
+      const lab = labelSprite(label.split('·')[0]!.trim());
+      lab.position.set(x, y + 1.5, z);
+      workshopGroup.add(lab);
+      interactables.push({
+        id,
+        kind,
+        position: m.position.clone(),
+        radius: 2.5,
+        mesh: m,
+        label,
+      });
+    };
+
+    addMark(
+      'city_workshop_chest',
+      'workshop_chest',
+      ix + 2,
+      iz - 5,
+      0xffd700,
+      0xaa8800,
+      'Bay office · I inventory · workers · invent',
+    );
+    addMark(
+      'city_craft',
+      'craft_bench',
+      ix - 8,
+      iz + 3,
+      0xff8866,
+      0xaa4422,
+      'Workbench · craft & assemble',
+    );
+    addMark(
+      'city_hire',
+      'hire_board',
+      ix + 6,
+      iz + 4,
+      0x66e0aa,
+      0x228844,
+      'Hire board · crew & worker upgrades',
+    );
+    // Expand is on Sky Foundry (separate island) — pointer only
+    {
+      const tip = labelSprite('EXPAND YARDS → Sky Foundry (board west)');
+      tip.position.set(ix - 12, 2.8, iz - 4);
+      tip.scale.set(5.2, 0.75, 1);
+      workshopGroup.add(tip);
+    }
+    addMark(
+      'city_invent',
+      'invent_desk',
+      ix - 2,
+      iz - 5,
+      0xdda0ff,
+      0x6622aa,
+      'Invent desk · market-cycle recipes',
+    );
+    addMark(
+      'city_repair_post',
+      'repair_job',
+      ix + 10,
+      iz + 2,
+      0xffaa66,
+      0xcc6622,
+      'Repair post · spend kit for brass',
+    );
+  }
+
+  // ——— Empire expand yards (Sky Foundry — NOT home or workshop) ———
+  // Board west from Industrial Slips along the wind skyway.
+  const expandYardGroup = new THREE.Group();
+  expandYardGroup.name = 'ExpandYard';
+  expandYardGroup.visible = false;
+  {
+    const fd = byId('sky_foundry');
+    const fx = fd.x;
+    const fz = fd.z;
+    // Yard apron (extra walkable deck on foundry island)
+    const apron = floorPad(mats, 36, 28, fx + 8, DECK_Y, fz - 6, 0x3a3834);
+    expandYardGroup.add(apron.mesh);
+    addCol(apron.col);
+    const office = solidBox(mats, mats.iron, 10, 4, 8, fx + 14, 2.2, fz - 14);
+    expandYardGroup.add(office.mesh);
+    addCol(office.col);
+    const stack = solidBox(mats, mats.copper, 3, 8, 3, fx + 20, 4.2, fz - 10);
+    expandYardGroup.add(stack.mesh);
+    addCol(stack.col);
+    const crane = solidBox(mats, mats.brass, 14, 0.6, 1.2, fx + 4, 6.5, fz - 4);
+    expandYardGroup.add(crane.mesh);
+
+    // Progressive bay wings — shown by game via name + bayLevel
+    const wingDefs: {
+      name: string;
+      minLevel: number;
+      w: number;
+      h: number;
+      d: number;
+      ox: number;
+      oy: number;
+      oz: number;
+      mat: THREE.Material;
+    }[] = [
+      { name: 'expandWingL2', minLevel: 2, w: 10, h: 2.5, d: 8, ox: -6, oy: 1.5, oz: 4, mat: mats.iron },
+      { name: 'expandWingL3', minLevel: 3, w: 12, h: 3.2, d: 10, ox: 2, oy: 1.9, oz: 8, mat: mats.copper },
+      { name: 'expandWingL4', minLevel: 4, w: 14, h: 3.6, d: 11, ox: -10, oy: 2.1, oz: -2, mat: mats.brass },
+      { name: 'expandWingL5', minLevel: 5, w: 16, h: 4, d: 12, ox: 12, oy: 2.4, oz: 2, mat: mats.iron },
+      { name: 'expandWingL6', minLevel: 6, w: 18, h: 4.5, d: 14, ox: -4, oy: 2.6, oz: -12, mat: mats.copper },
+    ];
+    for (const w of wingDefs) {
+      const box = solidBox(mats, w.mat, w.w, w.h, w.d, fx + w.ox, w.oy, fz + w.oz);
+      box.mesh.name = w.name;
+      box.mesh.userData.expandMinLevel = w.minLevel;
+      box.mesh.visible = false;
+      expandYardGroup.add(box.mesh);
+    }
+
+    // Expand kiosk (pay brass → raise bayLevel / crew cap)
+    const kiosk = new THREE.Mesh(
+      new THREE.SphereGeometry(0.32, 10, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0x88aaff,
+        emissive: 0x4466cc,
+        emissiveIntensity: 0.65,
+      }),
+    );
+    kiosk.position.set(fx + 6, 1.4, fz - 2);
+    expandYardGroup.add(kiosk);
+    const kLab = labelSprite('EXPAND BAY · more crew slots · no hard cap');
+    kLab.position.set(fx + 6, 3.2, fz - 2);
+    kLab.scale.set(5.4, 0.8, 1);
+    expandYardGroup.add(kLab);
+    const title = labelSprite('EMPIRE EXPAND YARDS · Sky Foundry');
+    title.position.set(fx + 8, 5.5, fz - 16);
+    title.scale.set(5.5, 0.85, 1);
+    expandYardGroup.add(title);
+
+    interactables.push({
+      id: 'city_expand',
+      kind: 'bay_expand',
+      position: kiosk.position.clone(),
+      radius: 2.8,
+      mesh: kiosk,
+      label: 'Expand bay · Empire yards · more worker slots (unlimited)',
+      districtId: 'sky_foundry',
+    });
+
+    group.add(expandYardGroup);
+  }
+
+  // Extra wander pads for density (same deck height)
+  const extraPads: [number, number, number, number][] = [];
+  for (let i = 0; i < 40; i++) {
+    const a = (i / 40) * Math.PI * 2;
+    const r = 180 + (i % 5) * 55;
+    extraPads.push([
+      Math.cos(a) * r + (i % 3) * 20,
+      Math.sin(a) * r + ((i * 7) % 5) * 15,
+      14 + (i % 4) * 2,
+      12 + (i % 3) * 2,
+    ]);
+  }
+  for (let i = 0; i < extraPads.length; i++) {
+    const [x, z, w, d] = extraPads[i]!;
+    const p = floorPad(mats, w, d, x, DECK_Y, z, 0x4a4844);
+    addMesh(p.mesh);
+    addCol(p.col);
+    if (i % 2 === 0) {
+      placeScenery(group, mats, 'tree', i % 5, x + 2, z - 1, 0.4, 0.9);
+    }
+    if (i % 3 === 0) {
+      placeScenery(group, mats, 'building', i % 5, x - 1, z + 2, 0.4, 0.7, i * 0.3, colliders, true);
+    }
+  }
+
+  // Link scattered islands with wind skyways (no roads)
+  for (let i = 0; i < extraPads.length; i += 3) {
+    const [x, z] = extraPads[i]!;
+    let best = CITY_DISTRICTS[0]!;
+    let bestD = Infinity;
+    for (const d of CITY_DISTRICTS) {
+      const dd = Math.hypot(d.x - x, d.z - z);
+      if (dd < bestD) {
+        bestD = dd;
+        best = d;
+      }
+    }
+    if (bestD > 30 && bestD < 220) {
+      windSkyway(best.x, best.z, x, z, { arch: 8 + bestD * 0.02, width: 6.5 });
+    }
+  }
+
+  // Ambient NPCs — dense lived-in city
+  const homePts = CITY_DISTRICTS.map((d) => new THREE.Vector3(d.x, 0, d.z));
+  const workPts = CITY_DISTRICTS.filter((d) => d.role === 'industrial' || d.role === 'market').map(
+    (d) => new THREE.Vector3(d.x, 0, d.z),
+  );
+  const marketPts = CITY_DISTRICTS.filter(
+    (d) => d.role === 'market' || d.role === 'premium' || d.role === 'mixed',
+  ).map((d) => new THREE.Vector3(d.x, 0, d.z));
+
+  // Residents + flyers
+  for (let i = 0; i < 48; i++) {
+    const home = homePts[i % homePts.length]!.clone();
+    home.x += (Math.random() - 0.5) * 20;
+    home.z += (Math.random() - 0.5) * 20;
+    const work = workPts[i % workPts.length]!.clone();
+    const market = marketPts[i % marketPts.length]!.clone();
+    const flyer = i % 4 === 0;
+    const mesh = makeNpcMesh(flyer ? 'flyer' : 'resident', mats);
+    mesh.position.copy(home);
+    if (flyer) mesh.position.y = 4 + Math.random() * 5;
+    addMesh(mesh);
+    npcs.push({
+      mesh,
+      home,
+      work,
+      market,
+      role: flyer ? 'flyer' : 'resident',
+      phase: Math.random(),
+      speed: flyer ? 9 + Math.random() * 5 : 2.4 + Math.random() * 1.8,
+    });
+  }
+
+  // Helper + rogue robots
+  for (let i = 0; i < 22; i++) {
+    const d = CITY_DISTRICTS[i % CITY_DISTRICTS.length]!;
+    const rogue = i % 3 === 0;
+    const x = d.x + (Math.random() - 0.5) * d.size * 0.5;
+    const z = d.z + (Math.random() - 0.5) * d.size * 0.5;
+    const mesh = makeNpcMesh(rogue ? 'rogue' : 'robot_helper', mats, rogue);
+    mesh.position.set(x, 0, z);
+    addMesh(mesh);
+    if (rogue) {
+      const mark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 8, 8),
+        new THREE.MeshStandardMaterial({
+          color: 0xff6644,
+          emissive: 0xcc2200,
+          emissiveIntensity: 0.6,
+        }),
+      );
+      mark.position.set(x, 1.3, z + 1.2);
+      addMesh(mark);
+      interactables.push({
+        id: `rogue_${i}`,
+        kind: 'rogue_robot',
+        position: mark.position.clone(),
+        radius: 2.4,
+        mesh: mark,
+        label: 'Rogue robot — repair for brass',
+      });
+    }
+    npcs.push({
+      mesh,
+      home: new THREE.Vector3(x, 0, z),
+      work: workPts[i % workPts.length]!.clone(),
+      market: marketPts[i % marketPts.length]!.clone(),
+      role: rogue ? 'rogue' : 'robot_helper',
+      phase: Math.random(),
+      speed: 2.2,
+      rogue,
+    });
+  }
+
+  // Sky routes already built by windSkyway()
+  {
+    const skyLab = labelSprite('SKYWAYS · Q board · wind paths only · no roads');
+    skyLab.position.set(apartmentPos.x + 8, 5.5, apartmentPos.z);
+    skyLab.scale.set(5.5, 0.8, 1);
+    addMesh(skyLab);
+  }
+
+
+  const apartmentSpawn = new THREE.Vector3(apartmentPos.x + 4, 1.75, apartmentPos.z);
+  const harvestSpot = new THREE.Vector3(byId('harbor').x - 30, 0.5, byId('harbor').z);
+
+  const animate = (cityTime: number, dt: number) => {
+    for (const n of npcs) {
+      if (n.role === 'rogue') {
+        n.mesh.position.y = 0.05 + Math.sin(cityTime * Math.PI * 2 * 4 + n.phase) * 0.05;
+        continue;
+      }
+      if (n.role === 'robot_helper') {
+        n.mesh.rotation.y += dt * 0.4;
+        continue;
+      }
+      let target: THREE.Vector3;
+      const t = (cityTime + n.phase * 0.15) % 1;
+      if (t < 0.2) target = n.home;
+      else if (t < 0.45) target = n.work;
+      else if (t < 0.7) target = n.market;
+      else target = n.home;
+
+      if (n.role === 'flyer') {
+        const dest = target.clone();
+        dest.y = 5 + Math.sin(cityTime * Math.PI * 2 + n.phase) * 2;
+        const pos = n.mesh.position;
+        const dir = dest.clone().sub(pos);
+        const dist = dir.length();
+        if (dist > 0.5) {
+          dir.normalize();
+          pos.addScaledVector(dir, Math.min(n.speed * dt, dist));
+          n.mesh.rotation.y = Math.atan2(dir.x, dir.z);
+        }
+      } else {
+        const dest = target.clone();
+        dest.y = 0;
+        const pos = n.mesh.position;
+        const dx = dest.x - pos.x;
+        const dz = dest.z - pos.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.4) {
+          const step = Math.min(n.speed * dt, dist);
+          pos.x += (dx / dist) * step;
+          pos.z += (dz / dist) * step;
+          pos.y = 0;
+          n.mesh.rotation.y = Math.atan2(dx, dz);
+        }
+      }
+    }
+  };
+
+  const built: SkyCityBuilt = {
+    group,
+    colliders,
+    mats,
+    apartmentSpawn,
+    interactables,
+    npcs,
+    skyRoutes,
+    workshopGroup,
+    expandYardGroup,
+    stallGroup,
+    districtStallGroups,
+    districts,
+    harvestSpot,
+    residentialPlaza,
+    grandMarket,
+    industrial,
+    mapSnapshot: null as unknown as MapSnapshot,
+    animate,
+    lowestY: lowestY - 2,
+  };
+  built.mapSnapshot = buildMapSnapshot(built);
+  return built;
+}

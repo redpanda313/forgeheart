@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ForgeHeart: Gift of the Brass Gods</title>
+    <meta
+      name="description"
+      content="Heartfelt steampunk — wake your brother’s soul in a brass frame. Tutorial lab, demon automata, sky docks. Separate from Trump Doom."
+    />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game-canvas"></canvas>
+      <div id="hurt-vignette" class="hurt-vignette hidden" aria-hidden="true"></div>
+      <div id="speed-blur" class="speed-blur hidden" aria-hidden="true"></div>
+      <div id="hud" class="hud hidden">
+        <div class="hud-top">
+          <div id="location-line" class="location-line">Voss Workshop</div>
+          <div id="stats-line" class="stats-line">Read the lab · wake Elias</div>
+          <div id="dash-meter" class="dash-meter">
+            <span class="dash-label">JUMP ½ WALL</span>
+            <div class="dash-track"><div id="dash-fill" class="dash-fill" style="width:100%"></div></div>
+          </div>
+        </div>
+        <div class="hud-bar resolve-panel">
+          <div class="resolve-header">
+            <span class="face" id="resolve-face" title="Integrity">⚙️</span>
+            <span class="label">INTEGRITY</span>
+            <span class="resolve-pct" id="resolve-pct">100</span>
+          </div>
+          <div class="meter meter-resolve">
+            <div id="resolve-fill" class="fill resolve"></div>
+            <div class="meter-segments" aria-hidden="true"></div>
+          </div>
+        </div>
+        <div id="weapon-name" class="weapon-name">ARC WRENCH</div>
+        <div class="hud-bar">
+          <span class="label">PLASMA</span>
+          <div class="meter"><div id="voice-fill" class="fill voice"></div></div>
+        </div>
+        <div id="plaque-toast" class="plaque-toast hidden"></div>
+        <div id="convert-toast" class="convert-toast hidden"></div>
+        <div class="help-line">WASD · E read/interact · 1 Hand reprogram · Space jump · Esc</div>
+      </div>
+      <!-- Empire city map (M) — data-driven from live world -->
+      <div id="city-map-panel" class="city-map-panel hidden" aria-hidden="true">
+        <div class="city-map-card">
+          <header class="city-map-head">
+            <div>
+              <h3>Sky Empire Map</h3>
+              <p class="city-map-sub">Live · scroll zoom · drag pan · gold = route · M/Esc close</p>
+            </div>
+            <button type="button" id="city-map-close" class="maker-close" title="Close">×</button>
+          </header>
+          <div class="city-map-body">
+            <div class="city-map-canvas">
+              <div class="city-map-tools" id="city-map-tools">
+                <button type="button" data-map-tool="fit" title="Fit empire">Fit</button>
+                <button type="button" data-map-tool="you" title="Center on you">You</button>
+                <button type="button" data-map-tool="focus" title="Focus selection">Focus</button>
+                <button type="button" data-map-tool="follow" title="Follow you" id="city-map-follow">Follow</button>
+                <button type="button" data-map-tool="zin" title="Zoom in">+</button>
+                <button type="button" data-map-tool="zout" title="Zoom out">−</button>
+              </div>
+              <svg id="city-map-svg" class="city-map-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+            </div>
+            <aside class="city-map-side">
+              <div class="city-map-legend">
+                <div><span class="ml home"></span> Home</div>
+                <div><span class="ml work"></span> Workshop</div>
+                <div><span class="ml reef"></span> Harvest reef</div>
+                <div><span class="ml stall"></span> Stall / market</div>
+                <div><span class="ml sky"></span> Wind skyway</div>
+                <div><span class="ml route"></span> Route guide</div>
+                <div><span class="ml you"></span> You</div>
+                <div><span class="ml crew"></span> Crew</div>
+                <div><span class="ml attn"></span> Needs attention</div>
+              </div>
+              <p id="city-map-detail" class="city-map-detail">Click a plaza or pin</p>
+              <p id="city-map-attn" class="city-map-attn craft-hint"></p>
+              <div class="city-map-filters" id="city-map-filters">
+                <button type="button" data-map-filter="all" class="active">All</button>
+                <button type="button" data-map-filter="district">Plazas</button>
+                <button type="button" data-map-filter="harvest">Reefs</button>
+                <button type="button" data-map-filter="stall">Stalls</button>
+                <button type="button" data-map-filter="service">Services</button>
+                <button type="button" data-map-filter="crew">Crew</button>
+              </div>
+              <div id="city-map-places" class="city-map-places"></div>
+            </aside>
+          </div>
+        </div>
+      </div>
+      <!-- Outside #hud so it can sit top-right of the full game view -->
+      <div id="nav-compass" class="nav-compass hidden" aria-hidden="true">
+        <div class="nav-compass-face">
+          <div class="nav-compass-fwd" title="Facing">▲</div>
+          <div class="nav-compass-rim" aria-hidden="true"></div>
+          <div id="nav-mark-home" class="nav-mark home" title="Apartment">
+            <span class="nav-mark-pip">⌂</span>
+          </div>
+          <div id="nav-mark-work" class="nav-mark work" title="Workshop">
+            <span class="nav-mark-pip">⚙</span>
+          </div>
+          <div class="nav-compass-hub"></div>
+        </div>
+        <div class="nav-compass-legend">
+          <div id="nav-home-line" class="nav-legend home">
+            <span class="nav-dot home"></span>
+            <span class="nav-legend-lab">HOME</span>
+            <span id="nav-home-dist" class="nav-legend-dist">—</span>
+          </div>
+          <div id="nav-work-line" class="nav-legend work">
+            <span class="nav-dot work"></span>
+            <span class="nav-legend-lab">WORK</span>
+            <span id="nav-work-dist" class="nav-legend-dist">—</span>
+          </div>
+        </div>
+      </div>
+      <div id="shop-panel" class="shop-panel hidden"></div>
+      <div id="market-panel" class="market-panel hidden" aria-hidden="true">
+        <div class="market-card">
+          <header class="market-head">
+            <div>
+              <h3 id="market-title">Market</h3>
+              <p class="market-sub" id="market-greeting">Welcome.</p>
+            </div>
+            <button type="button" id="market-close" class="maker-close">×</button>
+          </header>
+          <p class="market-wallet" id="market-wallet">Brass 0 · Aether 0</p>
+          <div class="market-cols">
+            <div>
+              <h4>Their stock (you buy)</h4>
+              <div id="market-buy-list" class="market-list"></div>
+            </div>
+            <div>
+              <h4>Your goods (you sell)</h4>
+              <div id="market-sell-list" class="market-list"></div>
+            </div>
+          </div>
+          <p class="market-log" id="market-log"></p>
+        </div>
+      </div>
+      <div id="harvest-overlay" class="harvest-overlay hidden" aria-hidden="true">
+        <div class="harvest-card">
+          <h3>Cloud Reef Extraction</h3>
+          <p id="harvest-hint">Hold steady… press Space when the marker hits the zone</p>
+          <div class="harvest-track">
+            <div class="harvest-zone"></div>
+            <div id="harvest-needle" class="harvest-needle"></div>
+          </div>
+          <p class="harvest-keys">Space · extract · Esc cancel</p>
+        </div>
+      </div>
+      <div id="craft-panel" class="market-panel craft-panel hidden" aria-hidden="true">
+        <div class="market-card craft-card craft-card-wide">
+          <header class="market-head">
+            <div>
+              <h3 id="craft-title">Bay Workbench</h3>
+              <p class="market-sub" id="craft-sub">Pick a filter · select a recipe · craft from the detail pane.</p>
+            </div>
+            <button type="button" id="craft-close" class="maker-close">×</button>
+          </header>
+          <p class="market-wallet" id="craft-wallet">Brass 0</p>
+          <div id="craft-filters" class="ui-chips" role="tablist" aria-label="Recipe filters"></div>
+          <div class="craft-split">
+            <div class="craft-list-col">
+              <div id="craft-recipe-list" class="market-list craft-recipe-list"></div>
+            </div>
+            <div class="craft-detail-col" id="craft-detail">
+              <p class="craft-detail-empty" id="craft-detail-empty">Select a recipe</p>
+              <div id="craft-detail-body" class="craft-detail-body hidden">
+                <h4 id="craft-detail-name">Recipe</h4>
+                <p class="craft-detail-out" id="craft-detail-out"></p>
+                <div id="craft-detail-needs" class="craft-detail-needs"></div>
+                <p class="craft-detail-reason" id="craft-detail-reason"></p>
+                <button type="button" id="craft-do-btn" class="craft-do-btn">Craft</button>
+              </div>
+            </div>
+          </div>
+          <p class="market-log" id="craft-log"></p>
+          <p class="craft-hint">Ready = craftable now. Frames sell at the Frame Broker (75 brass).</p>
+        </div>
+      </div>
+      <div id="bay-panel" class="market-panel bay-panel hidden" aria-hidden="true">
+        <div class="market-card bay-card">
+          <header class="market-head">
+            <div>
+              <h3>Bay Office</h3>
+              <p class="market-sub" id="bay-sub">Inventory · workers · invent</p>
+            </div>
+            <button type="button" id="bay-close" class="maker-close">×</button>
+          </header>
+          <p class="market-wallet" id="bay-wallet">Brass 0</p>
+          <div class="bay-tabs">
+            <button type="button" class="bay-tab active" data-bay-tab="inv">Inventory</button>
+            <button type="button" class="bay-tab" data-bay-tab="workers">Workers</button>
+            <button type="button" class="bay-tab" data-bay-tab="invent">Invent</button>
+            <button type="button" class="bay-tab" data-bay-tab="code">Programs</button>
+          </div>
+          <div id="bay-tab-inv" class="bay-tab-body"></div>
+          <div id="bay-tab-workers" class="bay-tab-body hidden"></div>
+          <div id="bay-tab-invent" class="bay-tab-body hidden"></div>
+          <div id="bay-tab-code" class="bay-tab-body hidden">
+            <p class="craft-hint">Build programs and assign crew to jobs / reefs / program chains. Workers tab is status &amp; gear only.</p>
+            <button type="button" id="bay-open-programs" class="program-new-btn">Open programs &amp; crew assignment</button>
+          </div>
+          <p class="market-log" id="bay-log"></p>
+        </div>
+      </div>
+      <div id="board-panel" class="market-panel board-panel hidden" aria-hidden="true">
+        <div class="market-card craft-card">
+          <header class="market-head">
+            <div>
+              <h3>Board Shop</h3>
+              <p class="market-sub">Buy a chassis, fit thruster / rails / deck. Worker boards equip from Hire board.</p>
+            </div>
+            <button type="button" id="board-close" class="maker-close">×</button>
+          </header>
+          <p class="market-wallet" id="board-wallet">Brass 0</p>
+          <div id="board-shop-list" class="market-list"></div>
+          <p class="market-log" id="board-log"></p>
+        </div>
+      </div>
+      <div id="stall-panel" class="market-panel stall-panel hidden" aria-hidden="true">
+        <div class="market-card craft-card">
+          <header class="market-head">
+            <div>
+              <h3>Your Retail Stall</h3>
+              <p class="market-sub">Stock the shelf · auto-list from inventory · customers buy over time.</p>
+            </div>
+            <button type="button" id="stall-close" class="maker-close">×</button>
+          </header>
+          <p class="market-wallet" id="stall-wallet">Brass 0</p>
+          <div id="stall-status" class="bay-inv-row"></div>
+          <div id="stall-actions" class="bay-worker-actions"></div>
+          <h4 class="stall-h4">Shelf · set your ask (demand reacts)</h4>
+          <div id="stall-shelf" class="market-list stall-shelf-list"></div>
+          <h4 class="stall-h4">Stock from inventory</h4>
+          <div id="stall-stock-btns" class="bay-worker-actions"></div>
+          <p class="market-log" id="stall-log"></p>
+        </div>
+      </div>
+      <div id="program-panel" class="market-panel program-panel hidden" aria-hidden="true">
+        <div class="market-card program-card">
+          <header class="market-head">
+            <div>
+              <h3>Visual Programs</h3>
+              <p class="market-sub">Chain task nodes · assign a worker · they path around walls to each stop.</p>
+            </div>
+            <button type="button" id="program-close" class="maker-close">×</button>
+          </header>
+          <div class="program-layout">
+            <div>
+              <h4>Programs</h4>
+              <div id="program-list" class="market-list"></div>
+              <button type="button" id="program-new" class="program-new-btn">+ New program</button>
+            </div>
+            <div>
+              <h4 id="program-edit-title">Nodes</h4>
+              <div id="program-nodes" class="program-nodes"></div>
+              <h4>Add node</h4>
+              <div id="program-filters" class="ui-chips" role="tablist" aria-label="Node categories"></div>
+              <div class="program-add-split">
+                <div id="program-add-nodes" class="market-list program-add-list"></div>
+                <div class="program-add-detail">
+                  <p id="program-add-blurb" class="craft-hint">Select a node type, then Add.</p>
+                  <button type="button" id="program-add-btn" class="craft-do-btn" disabled>Add to program</button>
+                </div>
+              </div>
+              <h4>Crew assignment</h4>
+              <p class="craft-hint program-assign-hint">
+                Assign programs &amp; harvest reefs here. Workers tab is status / gear only.
+              </p>
+              <div id="program-assign" class="program-assign-list"></div>
+            </div>
+          </div>
+          <p class="market-log" id="program-log"></p>
+        </div>
+      </div>
+      <div id="pause-menu" class="pause-menu hidden">
+        <div class="pause-card pause-card-wide">
+          <h2>PAUSED</h2>
+          <p class="pause-sub" id="pause-slot-label">Slot · Esc to resume</p>
+          <div class="pause-settings">
+            <label class="slider-row" for="look-sens-slider">
+              <span>LOOK</span>
+              <input
+                type="range"
+                id="look-sens-slider"
+                min="0.5"
+                max="3"
+                step="0.1"
+                value="1"
+                aria-valuemin="0.5"
+                aria-valuemax="3"
+              />
+              <span class="vol-val" id="look-sens-val">1.0×</span>
+            </label>
+          </div>
+          <div class="pause-actions">
+            <button type="button" id="btn-save">SAVE PROGRESS</button>
+            <button type="button" id="btn-resume">RESUME</button>
+            <button type="button" id="btn-game-maker">GAME MAKER MODE</button>
+            <button type="button" id="btn-exit-maker" class="hidden">EXIT GAME MAKER</button>
+            <button type="button" id="btn-title">TITLE SCREEN</button>
+          </div>
+          <p class="pause-hint">
+            Look sensitivity 0.5×–3× (saved on this browser) · Save writes to the active slot
+          </p>
+        </div>
+      </div>
+      <div id="maker-hud" class="maker-hud hidden" aria-hidden="true">
+        <span class="maker-badge">GAME MAKER</span>
+        <span id="maker-status">Fly · ~ menu · LMB place/select · Esc pause</span>
+      </div>
+      <div id="maker-palette" class="maker-palette hidden" aria-hidden="true">
+        <div class="maker-palette-card">
+          <header class="maker-palette-head">
+            <h3>Place objects</h3>
+            <button type="button" id="maker-close" class="maker-close" title="Close (˜)">×</button>
+          </header>
+          <div class="maker-cats" id="maker-cats"></div>
+          <div class="maker-variants" id="maker-variants"></div>
+          <div class="maker-tools">
+            <button type="button" id="maker-tool-place" class="active">P Place</button>
+            <button type="button" id="maker-tool-select">X Select/Move</button>
+            <button type="button" id="maker-tool-copy">C Copy</button>
+            <button type="button" id="maker-tool-city">B City section</button>
+            <button type="button" id="maker-dup">V Duplicate</button>
+            <button type="button" id="maker-del">Del Delete</button>
+            <button type="button" id="maker-cycle">G Change type</button>
+          </div>
+          <div class="maker-tools maker-city-row hidden" id="maker-city-row">
+            <button type="button" id="maker-city-reroll">G Re-roll layout</button>
+            <button type="button" id="maker-city-confirm">Enter Place city</button>
+          </div>
+          <div class="maker-tools">
+            <button type="button" id="maker-scale-uni" class="active">Z Uni scale</button>
+            <button type="button" id="maker-scale-h">H scale</button>
+            <button type="button" id="maker-scale-v">V scale</button>
+            <button type="button" id="maker-layer-dn">PgDn layer −</button>
+            <button type="button" id="maker-layer-up">PgUp layer +</button>
+          </div>
+          <p id="maker-layer-label" class="maker-layer-label">Layer 0</p>
+          <div class="maker-tools">
+            <button type="button" id="maker-erase-gen">Hide generated race path</button>
+            <button type="button" id="maker-show-gen">Show generated path</button>
+            <button type="button" id="maker-erase-all">Erase all placed</button>
+          </div>
+          <p class="maker-keys">
+            P place · X select/move · C copy · B city section · 1–5 prefab · WASD fly · Q/E height ·
+            Shift boost · arrows move · PgUp/Dn layer · R/F rotate · Z scale axis · [/] scale ·
+            V duplicate · G change/re-roll · Del · Enter/Space confirm city · ~ menu · Esc cancel/pause
+            · Paths auto-join · City section: 6 buildings + path + platforms (editable after place)
+          </p>
+        </div>
+      </div>
+      <div id="title-screen" class="title-screen">
+        <div class="title-card title-card-wide">
+          <p class="eyebrow">HEARTFELT STEAMPUNK · TRUE 3D · SEPARATE FROM TRUMP DOOM</p>
+          <h1>FORGEHEART</h1>
+          <p class="subtitle">Gift of the Brass Gods</p>
+          <p class="blurb">
+            Your brother is gone. In a brass workshop above the clouds, you try to call his soul into a frame.<br />
+            <strong>Hand</strong> reprograms. <strong>Arc wrench</strong> fights demon-ridden scrap.<br />
+            Then ride the sky city on a plasma surfboard.
+          </p>
+
+          <div class="save-slots" id="save-slots">
+            <!-- filled by main.ts -->
+          </div>
+
+          <div class="title-actions">
+            <button id="btn-continue" type="button" class="hidden">CONTINUE</button>
+            <button id="btn-new-game" type="button">NEW GAME</button>
+          </div>
+          <p id="save-info" class="save-info">Select a slot · New Game overwrites that slot · Continue loads last used</p>
+          <p class="disclaimer">
+            Branch feature/steampunk-vertical-slice · Three.js · Trump Doom stays on main
+          </p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
