@@ -21,6 +21,7 @@ import {
 import type { NavGrid } from './navGrid';
 import { makeKitNpc } from './npcKit';
 import { makeMaterials } from './materials';
+import { RobotUnit } from './robot';
 
 export type HubWaypointKey = string;
 
@@ -82,6 +83,8 @@ export class WorkerAgent {
   private legQueue: { key: HubWaypointKey; work?: JobId }[] = [];
   private stuckAcc = 0;
   private repathHint = 0;
+  /** Tutorial-style chassis for robot workers */
+  private robot: RobotUnit | null = null;
 
   constructor(worker: WorkerState, start: THREE.Vector3) {
     this.workerId = worker.id;
@@ -91,26 +94,30 @@ export class WorkerAgent {
     this.mesh.position.y = 0;
 
     if (worker.kind === 'robot') {
-      const kit = makeKitNpc('robot_helper', _workerMats, {
-        medallion: !!worker.hasMedallion,
-        variant: worker.name.length,
-      });
-      this.mesh.add(kit.root);
+      this.robot = new RobotUnit(_workerMats, new THREE.Vector3(0, 0, 0));
+      this.robot.displayName = worker.name;
+      this.robot.setPhase('ally');
+      this.robot.mesh.position.set(0, 0, 0);
+      this.mesh.add(this.robot.mesh);
+      if (worker.hasMedallion) {
+        const medal = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.11, 0.11, 0.05, 10),
+          new THREE.MeshStandardMaterial({
+            color: 0xffd700,
+            emissive: 0xaa8800,
+            emissiveIntensity: 0.55,
+            metalness: 0.85,
+            roughness: 0.25,
+          }),
+        );
+        medal.rotation.x = Math.PI / 2;
+        medal.position.set(0.22, 1.25, 0.22);
+        medal.name = 'eliasMedal';
+        this.robot.mesh.add(medal);
+      }
     } else {
-      const body = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.32, 0.7, 4, 8),
-        new THREE.MeshStandardMaterial({ color: 0x8a7060, roughness: 0.85, metalness: 0.15 }),
-      );
-      body.position.y = 1.0;
-      body.castShadow = true;
-      this.mesh.add(body);
-
-      const head = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 8, 8),
-        new THREE.MeshStandardMaterial({ color: 0xc4a882, roughness: 0.7 }),
-      );
-      head.position.y = 1.65;
-      this.mesh.add(head);
+      const kit = makeKitNpc('resident', _workerMats, { variant: worker.name.length });
+      this.mesh.add(kit.root);
     }
 
     this.boardMesh = new THREE.Mesh(
@@ -246,8 +253,13 @@ export class WorkerAgent {
     }
 
     this.bob += dt * 6;
-    const body = this.mesh.children[0];
-    if (body) body.position.y = 1.0 + Math.sin(this.bob) * 0.04;
+    const moving = this.phase === 'walk';
+    if (this.robot) {
+      this.robot.tickAnim(dt, moving, 'ally');
+    } else {
+      const body = this.mesh.children[0];
+      if (body) body.position.y = Math.sin(this.bob) * 0.04;
+    }
 
     // Finished a cycle with empty legs → restart job
     if (this.phase === 'idle' && w.job !== 'idle' && this.legQueue.length === 0 && !this.pendingWork) {

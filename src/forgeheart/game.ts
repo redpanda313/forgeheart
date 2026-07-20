@@ -147,10 +147,15 @@ import {
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
+  quoteStallBuild,
+  finalizeStallBuild,
+  isValidStallPlot,
   giftRomanceNpc,
   onMedallionHostLost,
   districtById,
   type PlacementRecord,
+  type StallLayout,
+  type StallTier,
   storageUpgradeCost,
   getStorageLevel,
   storageCapAtLevel,
@@ -189,6 +194,15 @@ import {
 import { generateBackstory, type Backstory } from './backstory';
 import { WorkerAgent, createWorkerAgents } from './workerAgent';
 import { NavGrid, pointInBayBounds, getBayBuildBounds } from './navGrid';
+import {
+  STALL_TIERS,
+  STALL_DECOR_NAMES,
+  STALL_COLOR_NAMES,
+  buildStallVisual,
+  rotateLocal,
+  worldStallColliders,
+  defaultStallLayout,
+} from './stallBuild';
 
 /** Game Maker interaction mode */
 type MakerTool = 'place' | 'select' | 'copy' | 'city';
@@ -242,6 +256,20 @@ export class ForgeHeartGame {
     baseCost: number;
     scale: number;
     decorCount: number;
+  } | null = null;
+  /** Stall lease / redesign wizard (plot → tier → décor → color) */
+  private stallWizard: {
+    districtId: string;
+    redesign: boolean;
+    step: 'plot' | 'tier' | 'decor' | 'color' | 'finalize';
+    plotX: number;
+    plotZ: number;
+    yaw: number;
+    plotPlaced: boolean;
+    tier: StallTier;
+    decor: number;
+    color: number;
+    ghost: THREE.Group | null;
   } | null = null;
   private velocity = new THREE.Vector3();
   private onGround = false;
@@ -860,6 +888,7 @@ export class ForgeHeartGame {
   /** Leave maker and resume normal play at current camera position. */
   exitGameMaker() {
     if (!this.gameMakerActive) return;
+    if (this.stallWizard) this.clearStallWizardVisuals();
     this.gameMakerActive = false;
     this.clearCityGhost();
     this.setMakerPaletteOpen(false);
@@ -1259,6 +1288,38 @@ export class ForgeHeartGame {
   /** Returns true if key was consumed by maker edit tools */
   private handleMakerKey(code: string): boolean {
     if (!this.cityEditor || this.makerPaletteOpen) return false;
+
+    // Stall build wizard
+    if (this.stallWizard) {
+      if (code === 'Escape') {
+        this.cancelStallWizard();
+        return true;
+      }
+      if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+        this.stallWizardAdvance();
+        return true;
+      }
+      if (code === 'BracketRight' || code === 'Equal' || code === 'NumpadAdd') {
+        this.stallWizardCycle(1);
+        return true;
+      }
+      if (code === 'BracketLeft' || code === 'Minus' || code === 'NumpadSubtract') {
+        this.stallWizardCycle(-1);
+        return true;
+      }
+      if (code === 'Digit1' || code === 'Digit2' || code === 'Digit3' || code === 'Digit4') {
+        if (this.stallWizard.step === 'tier') {
+          const idx = Number(code.replace('Digit', '')) - 1;
+          const t = STALL_TIERS[idx];
+          if (t && this.canAffordStallOption({ tier: t.id })) {
+            this.stallWizard.tier = t.id;
+            this.refreshStallWizardUi();
+            this.rebuildStallWizardGhost();
+          }
+          return true;
+        }
+      }
+    }
 
     // Purchase placement session overrides normal maker tools
     if (this.placementSession) {
@@ -2311,6 +2372,7 @@ export class ForgeHeartGame {
       'storage-panel',
       'program-panel',
       'stall-panel',
+      'stall-wizard',
       'harvest-overlay',
       'shop-panel',
       'maker-palette',
@@ -4043,6 +4105,7 @@ export class ForgeHeartGame {
       perfStats.streamTotal = this.cityStreamer?.totalCount ?? 0;
     }
     this.skyCity.animate(this.cityTime, dt);
+    this.tickStallWizardGhost();
     perfStats.npcsActive = this.skyCity.lastNpcActive;
     perfStats.npcsTotal = this.skyCity.npcs.length;
 
@@ -4349,14 +4412,9 @@ export class ForgeHeartGame {
     if (it.kind === 'city_stall') {
       const did = it.districtId ?? 'grand_market';
       this.activeStallKey = did;
-      // New lease → Game Maker placement session
       const existing = this.inv.cityStalls[did];
-      if (!existing?.owned) {
-        this.beginPlacementSession({
-          kind: 'stall',
-          districtId: did,
-          baseCost: districtById(did)?.stallCost ?? 100,
-        });
+      if (!existing?.owned || !existing.layout?.built) {
+        this.beginStallWizard(did, false);
         return true;
       }
       this.openStall();
@@ -4438,6 +4496,463 @@ export class ForgeHeartGame {
     this.setHelp(
       `PLACE ${opts.kind.toUpperCase()} · [/] scale · G décor+ · Enter confirm (${q.total}b) · Esc cancel`,
     );
+  }
+
+  cancelStallWizardPublic() {
+    this.cancelStallWizard();
+  }
+  stallWizardBackPublic() {
+    this.stallWizardBack();
+  }
+  stallWizardNextPublic() {
+    this.stallWizardAdvance();
+  }
+
+  private beginStallWizard(districtId: string, redesign: boolean) {
+    const dist = districtById(districtId);
+    if (!dist) {
+      this.toast('Unknown district.', 2);
+      return;
+    }
+    const existing = this.inv.cityStalls[districtId]?.layout;
+    const start = existing?.built
+      ? { ...existing }
+      : defaultStallLayout(dist.x + dist.size * 0.28, dist.z + dist.size * 0.22);
+    this.closeStall();
+    this.stallWizard = {
+      districtId,
+      redesign,
+      step: redesign && existing?.built ? 'tier' : 'plot',
+      plotX: start.plotX,
+      plotZ: start.plotZ,
+      yaw: start.yaw,
+      plotPlaced: !!redesign && !!existing?.built,
+      tier: start.tier,
+      decor: start.decor,
+      color: start.color,
+      ghost: null,
+    };
+    this.enterGameMaker();
+    // Free look for plaza plot placement
+    if (this.megaCityActive) {
+      const d = dist;
+      this.camera.position.set(d.x, Math.max(this.camera.position.y, 14), d.z + d.size * 0.2);
+    }
+    this.rebuildStallWizardGhost();
+    this.refreshStallWizardUi();
+    this.toast(
+      redesign
+        ? 'Redesign stall — update tier, décor, or colors. Unaffordable options stay locked.'
+        : 'Stall build — fly over the plaza, Enter to place your ground plot.',
+      4.5,
+    );
+    this.setHelp(
+      redesign
+        ? 'STALL REDESIGN · [/] cycle · 1–4 tier · Enter next · Esc cancel'
+        : 'STALL BUILD · fly to plaza · Enter place plot · then pick stand · Esc cancel',
+    );
+  }
+
+  private clearStallWizardVisuals() {
+    if (!this.stallWizard) return;
+    if (this.stallWizard.ghost) {
+      this.scene.remove(this.stallWizard.ghost);
+      this.stallWizard.ghost = null;
+    }
+    this.stallWizard = null;
+    const panel = document.getElementById('stall-wizard');
+    panel?.classList.add('hidden');
+    panel?.setAttribute('aria-hidden', 'true');
+  }
+
+  private cancelStallWizard() {
+    if (!this.stallWizard) return;
+    this.clearStallWizardVisuals();
+    if (this.gameMakerActive) this.exitGameMaker();
+    this.toast('Stall build cancelled.', 2);
+  }
+
+  private stallWizardLayout(): StallLayout {
+    const w = this.stallWizard!;
+    return {
+      plotX: w.plotX,
+      plotZ: w.plotZ,
+      yaw: w.yaw,
+      tier: w.tier,
+      decor: w.decor,
+      color: w.color,
+      built: false,
+    };
+  }
+
+  private stallWizardChargePreview(): number {
+    const w = this.stallWizard!;
+    const buildQ = quoteStallBuild({
+      districtId: w.districtId,
+      tier: w.tier,
+      decor: w.decor,
+      color: w.color,
+      includeLease: false,
+    });
+    if (w.redesign) {
+      const prev = this.inv.cityStalls[w.districtId]?.layout;
+      const prevTotal = prev
+        ? quoteStallBuild({
+            districtId: w.districtId,
+            tier: prev.tier,
+            decor: prev.decor,
+            color: prev.color,
+            includeLease: false,
+          }).total
+        : 0;
+      return Math.max(0, buildQ.total - prevTotal);
+    }
+    return quoteStallBuild({
+      districtId: w.districtId,
+      tier: w.tier,
+      decor: w.decor,
+      color: w.color,
+      includeLease: true,
+    }).total;
+  }
+
+  private canAffordStallOption(opts: {
+    tier?: StallTier;
+    decor?: number;
+    color?: number;
+  }): boolean {
+    const w = this.stallWizard;
+    if (!w) return false;
+    const tier = opts.tier ?? w.tier;
+    const decor = opts.decor ?? w.decor;
+    const color = opts.color ?? w.color;
+    const buildQ = quoteStallBuild({
+      districtId: w.districtId,
+      tier,
+      decor,
+      color,
+      includeLease: false,
+    });
+    let charge: number;
+    if (w.redesign) {
+      const prev = this.inv.cityStalls[w.districtId]?.layout;
+      const prevTotal = prev
+        ? quoteStallBuild({
+            districtId: w.districtId,
+            tier: prev.tier,
+            decor: prev.decor,
+            color: prev.color,
+            includeLease: false,
+          }).total
+        : 0;
+      charge = Math.max(0, buildQ.total - prevTotal);
+    } else {
+      charge = quoteStallBuild({
+        districtId: w.districtId,
+        tier,
+        decor,
+        color,
+        includeLease: true,
+      }).total;
+    }
+    return this.inv.brass >= charge;
+  }
+
+  private rebuildStallWizardGhost() {
+    const w = this.stallWizard;
+    if (!w || !this.skyCity) return;
+    if (w.ghost) {
+      this.scene.remove(w.ghost);
+      w.ghost = null;
+    }
+    const layout = this.stallWizardLayout();
+    if (w.step === 'plot' && !w.plotPlaced) {
+      // Soft pad ghost under camera
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(6.5, 0.12, 5.5),
+        new THREE.MeshStandardMaterial({
+          color: 0xc4a35a,
+          transparent: true,
+          opacity: 0.45,
+          depthWrite: false,
+        }),
+      );
+      const g = new THREE.Group();
+      g.add(pad);
+      g.position.set(this.camera.position.x, 0.1, this.camera.position.z);
+      this.scene.add(g);
+      w.ghost = g;
+      return;
+    }
+    const built = buildStallVisual(this.skyCity.mats, layout);
+    built.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && m.material) {
+        const mats = Array.isArray(m.material) ? m.material : [m.material];
+        for (const mat of mats) {
+          const sm = mat as THREE.MeshStandardMaterial;
+          if (sm.opacity !== undefined) {
+            sm.transparent = true;
+            sm.opacity = 0.7;
+            sm.depthWrite = false;
+          }
+        }
+      }
+    });
+    built.group.position.set(w.plotX, 0, w.plotZ);
+    built.group.rotation.y = w.yaw;
+    this.scene.add(built.group);
+    w.ghost = built.group;
+  }
+
+  private tickStallWizardGhost() {
+    const w = this.stallWizard;
+    if (!w || !w.ghost) return;
+    if (w.step === 'plot' && !w.plotPlaced) {
+      w.ghost.position.x = this.camera.position.x;
+      w.ghost.position.z = this.camera.position.z;
+      const ok = isValidStallPlot(w.districtId, w.ghost.position.x, w.ghost.position.z);
+      w.ghost.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && m.material && !Array.isArray(m.material)) {
+          (m.material as THREE.MeshStandardMaterial).color.setHex(ok ? 0x66cc88 : 0xcc6644);
+        }
+      });
+    }
+  }
+
+  private refreshStallWizardUi() {
+    const w = this.stallWizard;
+    const panel = document.getElementById('stall-wizard');
+    const body = document.getElementById('stall-wizard-body');
+    const quoteEl = document.getElementById('stall-wizard-quote');
+    const stepEl = document.getElementById('stall-wizard-step');
+    const title = document.getElementById('stall-wizard-title');
+    const sub = document.getElementById('stall-wizard-sub');
+    const nextBtn = document.getElementById('stall-wizard-next') as HTMLButtonElement | null;
+    const backBtn = document.getElementById('stall-wizard-back') as HTMLButtonElement | null;
+    if (!w || !panel || !body) return;
+    panel.classList.remove('hidden');
+    panel.setAttribute('aria-hidden', 'false');
+    const charge = this.stallWizardChargePreview();
+    const q = quoteStallBuild({
+      districtId: w.districtId,
+      tier: w.tier,
+      decor: w.decor,
+      color: w.color,
+      includeLease: !w.redesign,
+    });
+    if (quoteEl) {
+      quoteEl.textContent = `Brass ${this.inv.brass} · quote ${charge}b (lease ${q.lease} · tier ${q.tierFee} · décor ${q.decorFee} · color ${q.colorFee})`;
+    }
+    if (title) title.textContent = w.redesign ? 'Update your stall' : 'Build your stall';
+    const steps = ['plot', 'tier', 'decor', 'color', 'finalize'] as const;
+    const si = steps.indexOf(w.step);
+    if (stepEl) stepEl.textContent = `Step ${si + 1} / ${steps.length} · ${w.step}`;
+    body.innerHTML = '';
+    if (backBtn) backBtn.disabled = w.step === 'plot' && !w.redesign;
+    if (nextBtn) {
+      nextBtn.textContent =
+        w.step === 'finalize' ? `Finalize (${charge}b)` : w.step === 'plot' ? 'Place plot' : 'Next';
+      nextBtn.disabled = w.step === 'finalize' && !this.canAffordStallOption({});
+    }
+
+    if (w.step === 'plot') {
+      if (sub) sub.textContent = 'Fly over the plaza (or just past the rim). Green = valid. Enter places.';
+      const p = document.createElement('p');
+      p.className = 'stall-wizard-hint';
+      p.textContent = w.plotPlaced
+        ? `Plot set at ${w.plotX.toFixed(0)}, ${w.plotZ.toFixed(0)}. Next to choose a stand.`
+        : 'Ghost pad follows you. Stay on the plaza deck so NPCs can reach your stall.';
+      body.appendChild(p);
+    } else if (w.step === 'tier') {
+      if (sub) sub.textContent = 'Pick a stand. Higher tiers cost more. Locked if you cannot afford.';
+      for (const t of STALL_TIERS) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'stall-wizard-opt' + (w.tier === t.id ? ' selected' : '');
+        const affordable = this.canAffordStallOption({ tier: t.id });
+        if (!affordable) {
+          btn.disabled = true;
+          btn.classList.add('unaffordable');
+        }
+        btn.innerHTML = `<strong>${t.name} · +${t.extraCost}b</strong><span class="hint">${t.blurb}${affordable ? '' : ' · cannot afford'}</span>`;
+        btn.addEventListener('click', () => {
+          if (!this.canAffordStallOption({ tier: t.id })) return;
+          w.tier = t.id;
+          this.rebuildStallWizardGhost();
+          this.refreshStallWizardUi();
+        });
+        body.appendChild(btn);
+      }
+    } else if (w.step === 'decor') {
+      if (sub) sub.textContent = 'Cycle décor ([ / ]) or tap an option.';
+      STALL_DECOR_NAMES.forEach((name, i) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'stall-wizard-opt' + (w.decor === i ? ' selected' : '');
+        const affordable = this.canAffordStallOption({ decor: i });
+        if (!affordable) {
+          btn.disabled = true;
+          btn.classList.add('unaffordable');
+        }
+        btn.innerHTML = `<strong>${name} · +${i * 40}b</strong><span class="hint">${affordable ? 'Click to select' : 'Cannot afford'}</span>`;
+        btn.addEventListener('click', () => {
+          if (!this.canAffordStallOption({ decor: i })) return;
+          w.decor = i;
+          this.rebuildStallWizardGhost();
+          this.refreshStallWizardUi();
+        });
+        body.appendChild(btn);
+      });
+    } else if (w.step === 'color') {
+      if (sub) sub.textContent = 'Pick a color palette. Base weathered wood is free.';
+      STALL_COLOR_NAMES.forEach((name, i) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'stall-wizard-opt' + (w.color === i ? ' selected' : '');
+        const affordable = this.canAffordStallOption({ color: i });
+        if (!affordable) {
+          btn.disabled = true;
+          btn.classList.add('unaffordable');
+        }
+        const fee = i === 0 ? 0 : 20 + i * 15;
+        btn.innerHTML = `<strong>${name} · +${fee}b</strong><span class="hint">${affordable ? 'Click to select' : 'Cannot afford'}</span>`;
+        btn.addEventListener('click', () => {
+          if (!this.canAffordStallOption({ color: i })) return;
+          w.color = i;
+          this.rebuildStallWizardGhost();
+          this.refreshStallWizardUi();
+        });
+        body.appendChild(btn);
+      });
+    } else {
+      if (sub) sub.textContent = 'Confirm to pay and open for business. You can redesign later.';
+      const p = document.createElement('p');
+      p.className = 'stall-wizard-hint';
+      p.textContent = `${STALL_TIERS.find((t) => t.id === w.tier)?.name} · ${STALL_DECOR_NAMES[w.decor]} · ${STALL_COLOR_NAMES[w.color]} · charge ${charge}b`;
+      body.appendChild(p);
+    }
+    // Unlock cursor for UI clicks after the plot is set; keep lock while flying the pad
+    try {
+      if (w.step === 'plot' && !w.plotPlaced) this.controls.lock();
+      else this.controls.unlock();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private stallWizardCycle(dir: number) {
+    const w = this.stallWizard;
+    if (!w) return;
+    if (w.step === 'tier') {
+      const idx = STALL_TIERS.findIndex((t) => t.id === w.tier);
+      for (let n = 1; n <= STALL_TIERS.length; n++) {
+        const next = STALL_TIERS[(idx + dir * n + STALL_TIERS.length * 4) % STALL_TIERS.length]!;
+        if (this.canAffordStallOption({ tier: next.id })) {
+          w.tier = next.id;
+          break;
+        }
+      }
+    } else if (w.step === 'decor') {
+      for (let n = 1; n <= STALL_DECOR_NAMES.length; n++) {
+        const next = (w.decor + dir * n + STALL_DECOR_NAMES.length * 4) % STALL_DECOR_NAMES.length;
+        if (this.canAffordStallOption({ decor: next })) {
+          w.decor = next;
+          break;
+        }
+      }
+    } else if (w.step === 'color') {
+      for (let n = 1; n <= STALL_COLOR_NAMES.length; n++) {
+        const next = (w.color + dir * n + STALL_COLOR_NAMES.length * 4) % STALL_COLOR_NAMES.length;
+        if (this.canAffordStallOption({ color: next })) {
+          w.color = next;
+          break;
+        }
+      }
+    } else if (w.step === 'plot' && w.plotPlaced) {
+      w.yaw += dir * 0.25;
+    }
+    this.rebuildStallWizardGhost();
+    this.refreshStallWizardUi();
+  }
+
+  private stallWizardBack() {
+    const w = this.stallWizard;
+    if (!w) return;
+    const order: typeof w.step[] = w.redesign
+      ? ['tier', 'decor', 'color', 'finalize']
+      : ['plot', 'tier', 'decor', 'color', 'finalize'];
+    const i = order.indexOf(w.step);
+    if (i <= 0) return;
+    w.step = order[i - 1]!;
+    if (w.step === 'plot') w.plotPlaced = false;
+    this.rebuildStallWizardGhost();
+    this.refreshStallWizardUi();
+  }
+
+  private stallWizardAdvance() {
+    const w = this.stallWizard;
+    if (!w) return;
+    if (w.step === 'plot') {
+      const x = w.plotPlaced ? w.plotX : this.camera.position.x;
+      const z = w.plotPlaced ? w.plotZ : this.camera.position.z;
+      if (!isValidStallPlot(w.districtId, x, z)) {
+        this.toast('Plot must be on the plaza or within NPC reach of the rim.', 3);
+        return;
+      }
+      w.plotX = x;
+      w.plotZ = z;
+      w.yaw = this.camera.rotation.y;
+      w.plotPlaced = true;
+      w.step = 'tier';
+      // Snap unaffordable tier down to cheapest affordable
+      if (!this.canAffordStallOption({ tier: w.tier })) {
+        for (const t of STALL_TIERS) {
+          if (this.canAffordStallOption({ tier: t.id })) {
+            w.tier = t.id;
+            break;
+          }
+        }
+      }
+      this.rebuildStallWizardGhost();
+      this.refreshStallWizardUi();
+      this.setHelp('STALL · choose stand (1–4 or click) · Enter next · Esc cancel');
+      return;
+    }
+    if (w.step === 'tier') {
+      if (!this.canAffordStallOption({})) {
+        this.toast('Cannot afford this stand — pick a cheaper tier.', 3);
+        return;
+      }
+      w.step = 'decor';
+    } else if (w.step === 'decor') {
+      w.step = 'color';
+    } else if (w.step === 'color') {
+      w.step = 'finalize';
+    } else if (w.step === 'finalize') {
+      this.confirmStallWizard();
+      return;
+    }
+    this.rebuildStallWizardGhost();
+    this.refreshStallWizardUi();
+  }
+
+  private confirmStallWizard() {
+    const w = this.stallWizard;
+    if (!w) return;
+    const layout = this.stallWizardLayout();
+    const r = finalizeStallBuild(this.inv, w.districtId, layout, { redesign: w.redesign });
+    this.toast(r.msg, 4);
+    if (!r.ok) return;
+    this.brass = this.inv.brass;
+    this.clearStallWizardVisuals();
+    if (this.gameMakerActive) this.exitGameMaker();
+    this.syncCityStallVisuals();
+    this.audio.playPickup();
+    writeSlot(this.activeSlot, this.buildSaveData());
+    this.syncEconomyHud();
+    this.openStall();
   }
 
   private confirmPlacementSession(): boolean {
@@ -7058,12 +7573,35 @@ export class ForgeHeartGame {
   private syncCityStallVisuals() {
     if (!this.skyCity?.districtStallGroups) return;
     for (const [id, g] of Object.entries(this.skyCity.districtStallGroups)) {
-      g.visible = !!this.inv.cityStalls?.[id]?.owned;
+      const stall = this.inv.cityStalls?.[id];
+      while (g.children.length) g.remove(g.children[0]!);
+      const builtOk = !!stall?.owned && !!stall.layout?.built;
+      g.visible = builtOk;
+      this.spatialGrid?.removeChunk(`stall_${id}`);
+      if (!builtOk || !stall?.layout) continue;
+      const layout = stall.layout;
+      const built = buildStallVisual(this.skyCity.mats, layout);
+      built.group.position.set(layout.plotX, 0, layout.plotZ);
+      built.group.rotation.y = layout.yaw;
+      g.add(built.group);
+      const cols = worldStallColliders(built, layout.plotX, layout.plotZ, layout.yaw);
+      this.spatialGrid?.setChunk(`stall_${id}`, cols);
+      const it = this.skyCity.interactables.find((x) => x.id === `stall_${id}`);
+      if (it) {
+        const world = rotateLocal(built.interactLocal, layout.yaw, layout.plotX, layout.plotZ);
+        it.position.copy(world);
+        it.mesh.position.copy(world);
+        it.label = stall.open
+          ? `Your stall · ${districtById(id)?.name ?? id} · manage / redesign`
+          : `Your stall · ${districtById(id)?.name ?? id} (closed)`;
+      }
     }
-    // Legacy group
     if (this.skyCity.stallGroup) {
       const gm = this.inv.cityStalls?.['grand_market'];
-      this.skyCity.stallGroup.visible = !!gm?.owned;
+      this.skyCity.stallGroup.visible = !!gm?.owned && !!gm.layout?.built;
+    }
+    if (this.spatialGrid) {
+      this.colliders = this.spatialGrid.getAll() as Collider[];
     }
   }
 
@@ -7131,11 +7669,16 @@ export class ForgeHeartGame {
         const b = document.createElement('button');
         b.type = 'button';
         const cost = dist?.stallCost ?? STALL_LEASE_COST;
-        b.textContent = `Lease ${label} (${cost}b)`;
+        b.textContent = districtId
+          ? `Build stall · from ${cost}b`
+          : `Lease ${label} (${cost}b)`;
         b.addEventListener('click', () => {
-          const r = districtId
-            ? leaseCityStall(this.inv, districtId)
-            : leaseStall(this.inv);
+          if (districtId) {
+            this.closeStall();
+            this.beginStallWizard(districtId, false);
+            return;
+          }
+          const r = leaseStall(this.inv);
           this.stallLog(r.msg);
           if (r.ok) {
             this.brass = this.inv.brass;
@@ -7178,6 +7721,16 @@ export class ForgeHeartGame {
         mkToggle('Auto harvest', 'autoHarvest');
         mkToggle('Auto wire', 'autoWire');
         mkToggle('Auto invent', 'autoInvent');
+        if (districtId) {
+          const redesign = document.createElement('button');
+          redesign.type = 'button';
+          redesign.textContent = 'Redesign stall';
+          redesign.addEventListener('click', () => {
+            this.closeStall();
+            this.beginStallWizard(districtId, true);
+          });
+          actions.appendChild(redesign);
+        }
       }
     }
     if (shelf) {

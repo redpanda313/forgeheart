@@ -198,6 +198,16 @@ document.getElementById('stall-close')?.addEventListener('click', () => {
   (game as { closeStallPublic?: () => void } | null)?.closeStallPublic?.();
 });
 
+document.getElementById('stall-wizard-cancel')?.addEventListener('click', () => {
+  (game as { cancelStallWizardPublic?: () => void } | null)?.cancelStallWizardPublic?.();
+});
+document.getElementById('stall-wizard-back')?.addEventListener('click', () => {
+  (game as { stallWizardBackPublic?: () => void } | null)?.stallWizardBackPublic?.();
+});
+document.getElementById('stall-wizard-next')?.addEventListener('click', () => {
+  (game as { stallWizardNextPublic?: () => void } | null)?.stallWizardNextPublic?.();
+});
+
 document.getElementById('program-new')?.addEventListener('click', () => {
   (game as { newProgramPublic?: () => void } | null)?.newProgramPublic?.();
 });
@@ -263,6 +273,7 @@ btnTitle?.addEventListener('click', () => {
     'storage-panel',
     'program-panel',
     'stall-panel',
+    'stall-wizard',
     'harvest-overlay',
     'maker-palette',
     'maker-hud',

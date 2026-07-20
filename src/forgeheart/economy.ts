@@ -572,6 +572,22 @@ export interface CustomRecipe {
   quality?: number;
 }
 
+/** Stall structure tier — rising build cost past the basic bench */
+export type StallTier = 'bench' | 'shade' | 'shop' | 'large';
+
+/** Saved stall plot + cosmetics (Game Maker wizard) */
+export interface StallLayout {
+  plotX: number;
+  plotZ: number;
+  yaw: number;
+  tier: StallTier;
+  /** Décor index 0..n */
+  decor: number;
+  /** Color palette index 0..n */
+  color: number;
+  built: boolean;
+}
+
 /** Player plaza stall — auto-sells stocked shelf goods at player-set prices */
 export interface StallState {
   owned: boolean;
@@ -600,6 +616,10 @@ export interface StallState {
     fair: number;
     ttl: number;
   };
+  /** Plot + stall build from wizard */
+  layout?: StallLayout | null;
+  /** Brass already paid toward layout (redesign charges delta only) */
+  layoutPaid?: number;
 }
 
 /** Retail districts in the mega-city (multi-plaza empire) */
@@ -635,7 +655,7 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
     name: 'Residential Ring',
     x: 0,
     z: 0,
-    size: 56,
+    size: 120,
     stallCost: 90,
     demandMul: 0.95,
     inventBonus: 0.9,
@@ -645,9 +665,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'grand_market',
     name: 'Grand Market',
-    x: 320,
-    z: -110,
-    size: 72,
+    x: 400,
+    z: -140,
+    size: 152,
     stallCost: 280,
     demandMul: 1.4,
     inventBonus: 1.25,
@@ -658,9 +678,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'industrial',
     name: 'Industrial Slips',
-    x: -280,
-    z: -200,
-    size: 64,
+    x: -350,
+    z: -250,
+    size: 135,
     stallCost: 160,
     demandMul: 0.85,
     inventBonus: 0.75,
@@ -670,9 +690,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'harbor',
     name: 'Cloud Harbor',
-    x: 40,
-    z: 380,
-    size: 60,
+    x: 50,
+    z: 480,
+    size: 128,
     stallCost: 200,
     demandMul: 1.2,
     inventBonus: 1.0,
@@ -682,9 +702,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'clocktower',
     name: 'Clocktower Bazaar',
-    x: 480,
-    z: 200,
-    size: 58,
+    x: 600,
+    z: 250,
+    size: 122,
     stallCost: 340,
     demandMul: 1.55,
     inventBonus: 1.45,
@@ -694,9 +714,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'gearworks',
     name: 'Gearworks Ward',
-    x: -420,
-    z: 160,
-    size: 56,
+    x: -520,
+    z: 200,
+    size: 120,
     stallCost: 220,
     demandMul: 1.1,
     inventBonus: 1.05,
@@ -706,9 +726,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'spore_gardens',
     name: 'Spore Gardens',
-    x: 240,
-    z: 420,
-    size: 54,
+    x: 300,
+    z: 530,
+    size: 115,
     stallCost: 260,
     demandMul: 1.25,
     inventBonus: 1.7,
@@ -718,9 +738,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'brass_arcade',
     name: 'Brass Arcade',
-    x: -220,
-    z: 400,
-    size: 58,
+    x: -280,
+    z: 500,
+    size: 122,
     stallCost: 300,
     demandMul: 1.35,
     inventBonus: 1.5,
@@ -731,9 +751,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'sky_foundry',
     name: 'Sky Foundry',
-    x: -480,
-    z: -380,
-    size: 62,
+    x: -600,
+    z: -480,
+    size: 132,
     stallCost: 240,
     demandMul: 1.05,
     inventBonus: 0.85,
@@ -743,9 +763,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'aether_spire',
     name: 'Aether Spire',
-    x: 440,
-    z: -380,
-    size: 52,
+    x: 550,
+    z: -480,
+    size: 110,
     stallCost: 480,
     demandMul: 1.8,
     inventBonus: 2.0,
@@ -755,9 +775,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'mid_ring_east',
     name: 'East Mid-Ring',
-    x: 180,
-    z: 80,
-    size: 48,
+    x: 230,
+    z: 100,
+    size: 102,
     stallCost: 140,
     demandMul: 1.05,
     inventBonus: 1.0,
@@ -767,9 +787,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'mid_ring_west',
     name: 'West Mid-Ring',
-    x: -160,
-    z: 60,
-    size: 48,
+    x: -200,
+    z: 75,
+    size: 102,
     stallCost: 140,
     demandMul: 1.0,
     inventBonus: 0.95,
@@ -779,9 +799,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'south_docks',
     name: 'South Docks',
-    x: 80,
-    z: -420,
-    size: 50,
+    x: 100,
+    z: -530,
+    size: 105,
     stallCost: 180,
     demandMul: 1.15,
     inventBonus: 0.9,
@@ -792,9 +812,9 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
   {
     id: 'north_observatory',
     name: 'North Observatory',
-    x: -80,
-    z: 520,
-    size: 46,
+    x: -100,
+    z: 650,
+    size: 98,
     stallCost: 320,
     demandMul: 1.3,
     inventBonus: 1.6,
@@ -1386,6 +1406,128 @@ export function emptyStall(): StallState {
     earned: 0,
     lastDemand: 'Steady',
     pendingHaggle: null,
+    layout: null,
+    layoutPaid: 0,
+  };
+}
+
+const STALL_TIER_EXTRA: Record<StallTier, number> = {
+  bench: 0,
+  shade: 75,
+  shop: 200,
+  large: 450,
+};
+
+/** Live quote for stall wizard (lease + tier + décor + color). */
+export function quoteStallBuild(opts: {
+  districtId: string;
+  tier: StallTier;
+  decor: number;
+  color: number;
+  /** Include district lease (false when redesigning an owned stall) */
+  includeLease?: boolean;
+}): {
+  total: number;
+  lease: number;
+  tierFee: number;
+  decorFee: number;
+  colorFee: number;
+} {
+  const d = districtById(opts.districtId);
+  const lease = opts.includeLease === false ? 0 : (d?.stallCost ?? STALL_LEASE_COST);
+  const tierFee = STALL_TIER_EXTRA[opts.tier] ?? 0;
+  const decorFee = Math.max(0, Math.min(5, opts.decor | 0)) * 40;
+  const c = Math.max(0, Math.min(5, opts.color | 0));
+  const colorFee = c === 0 ? 0 : 20 + c * 15;
+  return {
+    lease,
+    tierFee,
+    decorFee,
+    colorFee,
+    total: lease + tierFee + decorFee + colorFee,
+  };
+}
+
+/** Plot must sit on the plaza deck or just past the rim (NPC-reachable). */
+export function isValidStallPlot(districtId: string, x: number, z: number): boolean {
+  const d = districtById(districtId);
+  if (!d) return false;
+  const dist = Math.hypot(x - d.x, z - d.z);
+  return dist <= d.size * 0.58;
+}
+
+/**
+ * Finalize new lease or redesign. Charges full quote on first build;
+ * redesigns charge only the positive delta vs layoutPaid.
+ */
+export function finalizeStallBuild(
+  inv: InventoryState,
+  districtId: string,
+  layout: StallLayout,
+  opts?: { redesign?: boolean },
+): { ok: boolean; msg: string; charged: number } {
+  const dist = districtById(districtId);
+  if (!dist) return { ok: false, msg: 'Unknown district.', charged: 0 };
+  if (!isValidStallPlot(districtId, layout.plotX, layout.plotZ)) {
+    return {
+      ok: false,
+      msg: 'Plot must be on the plaza or within NPC reach of the rim.',
+      charged: 0,
+    };
+  }
+  const stall = ensureCityStall(inv, districtId);
+  const redesign = !!opts?.redesign && stall.owned;
+  if (!redesign && stall.owned) {
+    return { ok: false, msg: `You already lease a stall in ${dist.name}.`, charged: 0 };
+  }
+  const buildQuote = quoteStallBuild({
+    districtId,
+    tier: layout.tier,
+    decor: layout.decor,
+    color: layout.color,
+    includeLease: false,
+  });
+  let charge: number;
+  if (redesign) {
+    const prev = stall.layout;
+    const prevBuild = prev
+      ? quoteStallBuild({
+          districtId,
+          tier: prev.tier,
+          decor: prev.decor,
+          color: prev.color,
+          includeLease: false,
+        }).total
+      : 0;
+    charge = Math.max(0, buildQuote.total - prevBuild);
+  } else {
+    charge = quoteStallBuild({
+      districtId,
+      tier: layout.tier,
+      decor: layout.decor,
+      color: layout.color,
+      includeLease: true,
+    }).total;
+  }
+  if (inv.brass < charge) {
+    return {
+      ok: false,
+      msg: `Need ${charge} brass (have ${inv.brass}).`,
+      charged: 0,
+    };
+  }
+  inv.brass -= charge;
+  stall.owned = true;
+  stall.open = true;
+  stall.layout = { ...layout, built: true };
+  stall.layoutPaid = (stall.layoutPaid ?? 0) + charge;
+  const n = ownedCityStallCount(inv);
+  return {
+    ok: true,
+    charged: charge,
+    msg: redesign
+      ? `Stall updated · ${dist.name} (−${charge}b).`
+      : `Stall open · ${dist.name} (−${charge}b). Empire shops: ${n}.`,
   };
 }
 
@@ -1594,11 +1736,19 @@ export function stallPlacementMul(inv: InventoryState, districtId: string): numb
   const list = inv.placements.filter(
     (p) => p.districtId === districtId && (p.kind === 'stall' || p.kind === 'shop'),
   );
-  if (!list.length) return 1;
   let m = 1;
   for (const p of list) {
     m *= (p.trafficMul || 1) * (p.attractMul || 1) * Math.sqrt(p.capacityMul || 1);
   }
+  // Wizard layout quality — nicer stands draw more traffic
+  const layout = inv.cityStalls?.[districtId]?.layout;
+  if (layout?.built) {
+    const tierMul =
+      layout.tier === 'large' ? 1.35 : layout.tier === 'shop' ? 1.22 : layout.tier === 'shade' ? 1.1 : 1;
+    const decorMul = 1 + layout.decor * 0.03;
+    m *= tierMul * decorMul;
+  }
+  if (!list.length && !layout?.built) return 1;
   return Math.max(0.8, Math.min(2.2, m));
 }
 
@@ -3303,6 +3453,8 @@ function stallToSave(s: StallState) {
     earned: s.earned,
     lastDemand: s.lastDemand,
     pendingHaggle: s.pendingHaggle ? { ...s.pendingHaggle } : null,
+    layout: s.layout ? { ...s.layout } : null,
+    layoutPaid: s.layoutPaid ?? 0,
   };
 }
 
@@ -3332,6 +3484,24 @@ function stallFromSave(s: Partial<StallState> | undefined): StallState {
           ttl: Number((s.pendingHaggle as { ttl: number }).ttl) || 1,
         }
       : null;
+  base.layoutPaid = typeof s.layoutPaid === 'number' ? s.layoutPaid : 0;
+  if (s.layout && typeof s.layout === 'object') {
+    const L = s.layout as StallLayout;
+    const tier = (['bench', 'shade', 'shop', 'large'] as StallTier[]).includes(L.tier as StallTier)
+      ? (L.tier as StallTier)
+      : 'bench';
+    base.layout = {
+      plotX: Number(L.plotX) || 0,
+      plotZ: Number(L.plotZ) || 0,
+      yaw: Number(L.yaw) || 0,
+      tier,
+      decor: Math.max(0, Math.min(5, Number(L.decor) || 0)),
+      color: Math.max(0, Math.min(5, Number(L.color) || 0)),
+      built: !!L.built,
+    };
+  } else {
+    base.layout = null;
+  }
   return base;
 }
 

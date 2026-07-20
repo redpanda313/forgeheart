@@ -22,6 +22,7 @@ import { makeIslandImpostor, type StreamChunk } from './cityStreamer';
 import { makeKitNpc, tickNpcAnim, type NpcMeshParts, type NpcVisualRole } from './npcKit';
 import { buildEnterableShell, offsetColliders } from './enterableBuilding';
 import { buildPlazaCircuit, type PlazaCircuit } from './plazaCircuit';
+import { RobotUnit } from './robot';
 export type CityInteractKind =
   | 'neighbor'
   | 'vendor'
@@ -75,7 +76,9 @@ export interface DistrictBuilt {
 
 export interface CityNpc {
   mesh: THREE.Group;
-  parts: NpcMeshParts;
+  parts?: NpcMeshParts;
+  /** Tutorial RobotUnit chassis for city robots */
+  robot?: RobotUnit;
   home: THREE.Vector3;
   work: THREE.Vector3;
   market: THREE.Vector3;
@@ -681,31 +684,10 @@ export function buildSkyCity(): SkyCityBuilt {
     addMesh(fountain.mesh);
     addCol(fountain.col);
 
-    // Buildings & greenery density — larger, lusher plazas
-    const bCount = d.role === 'premium' ? 14 : d.role === 'industrial' ? 16 : d.role === 'market' ? 12 : 10;
-    for (let i = 0; i < bCount; i++) {
-      const a = (i / bCount) * Math.PI * 2 + di * 0.2;
-      const r = sz * (0.28 + (i % 3) * 0.04);
-      const bx = cx + Math.cos(a) * r;
-      const bz = cz + Math.sin(a) * r;
-      const sc = 0.95 + ((i + di) % 4) * 0.18;
-      placeScenery(
-        dGroup,
-        mats,
-        'building',
-        (i + di) % 5,
-        bx,
-        bz,
-        0.4,
-        sc,
-        a,
-        dCols,
-        true,
-      );
-    }
-    for (let i = 0; i < 10; i++) {
-      const a = (i / 10) * Math.PI * 2 + 0.4;
-      const r = sz * (0.34 + (i % 4) * 0.03);
+    // Only purposeful scenery — roomy plazas (no dense filler buildings)
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + 0.5;
+      const r = sz * 0.42;
       placeScenery(
         dGroup,
         mats,
@@ -714,41 +696,39 @@ export function buildSkyCity(): SkyCityBuilt {
         cx + Math.cos(a) * r,
         cz + Math.sin(a) * r,
         0.4,
-        1.05 + (i % 3) * 0.2,
+        1.1,
       );
     }
-    // Accent lamps / fountains
+    // Edge lamps for readability
     for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + di;
-      const lx = cx + Math.cos(a) * (sz * 0.22);
-      const lz = cz + Math.sin(a) * (sz * 0.22);
-      const lamp = solidBox(mats, mats.brass, 0.2, 2.4, 0.2, lx, 1.4, lz);
+      const a = (i / 4) * Math.PI * 2 + di * 0.1;
+      const lx = cx + Math.cos(a) * (sz * 0.46);
+      const lz = cz + Math.sin(a) * (sz * 0.46);
+      const lamp = solidBox(mats, mats.brass, 0.18, 2.2, 0.18, lx, 1.3, lz);
       addMesh(lamp.mesh);
       const glow = new THREE.Mesh(
-        new THREE.SphereGeometry(0.18, 6, 6),
+        new THREE.SphereGeometry(0.16, 6, 6),
         new THREE.MeshStandardMaterial({
           color: 0xffe8a0,
           emissive: 0xffcc66,
-          emissiveIntensity: 0.7,
+          emissiveIntensity: 0.65,
         }),
       );
-      glow.position.set(lx, 2.7, lz);
+      glow.position.set(lx, 2.5, lz);
       addMesh(glow);
     }
     if (d.role === 'premium' || d.role === 'market') {
-      placeScenery(dGroup, mats, 'fountain', di % 5, cx + 10, cz - 8, 0.4, 0.8);
+      placeScenery(dGroup, mats, 'fountain', di % 5, cx + 8, cz - 6, 0.4, 0.85);
     }
+    // Industrial / harbor: one work vehicle (purposeful prop)
     if (d.role === 'industrial' || d.role === 'harbor') {
-      placeScenery(dGroup, mats, 'vehicle', di % 5, cx - 12, cz + 6, 0.4, 1.0, 0.5);
-      placeScenery(dGroup, mats, 'vehicle', (di + 2) % 5, cx + 14, cz - 10, 0.4, 0.95, -0.8);
+      placeScenery(dGroup, mats, 'vehicle', di % 5, cx - 14, cz + 8, 0.4, 1.0, 0.5);
     }
 
-    // Stall lease marker (all districts except pure residential can sell — residential too for local trade)
+    // Stall lease marker — visual filled later from player layout
     const stallG = new THREE.Group();
     stallG.name = `Stall_${d.id}`;
     stallG.visible = false;
-    const counter = solidBox(mats, mats.wood, 3.2, 1, 0.8, cx + sz * 0.28, 0.85, cz + sz * 0.22);
-    stallG.add(counter.mesh);
     dGroup.add(stallG);
     districtStallGroups[d.id] = stallG;
     if (d.id === 'grand_market') stallGroup = stallG;
@@ -901,18 +881,16 @@ export function buildSkyCity(): SkyCityBuilt {
       });
     }
 
-    // Enterable plaza homes / shops (2–3 per district)
-    const homeSlots = d.role === 'home' ? 4 : d.role === 'premium' || d.role === 'market' ? 3 : 2;
-    for (let hi = 0; hi < homeSlots; hi++) {
-      const a = (hi / homeSlots) * Math.PI * 2 + di * 0.5;
-      const r = sz * 0.4;
+    // One enterable NPC home per district (purposeful — owners visit)
+    {
+      const a = di * 0.7 + 0.8;
+      const r = sz * 0.38;
       const hx = cx + Math.cos(a) * r;
       const hz = cz + Math.sin(a) * r;
-      const kind = d.role === 'market' || d.role === 'premium' ? 'shop' : 'home';
-      const shell = buildEnterableShell(kind, mats, {
-        floors: kind === 'shop' ? 2 : 1,
-        color: d.color + 0x101010,
-        label: kind === 'shop' ? `${d.name} SHOP` : `HOME ${hi + 1}`,
+      const shell = buildEnterableShell('home', mats, {
+        floors: 1,
+        color: d.color + 0x0a0a08,
+        label: 'HOME',
       });
       shell.group.position.set(hx, 0, hz);
       shell.group.rotation.y = a + Math.PI;
@@ -924,12 +902,12 @@ export function buildSkyCity(): SkyCityBuilt {
         lowestY = Math.min(lowestY, c.min.y);
       }
       interactables.push({
-        id: `home_${d.id}_${hi}`,
+        id: `home_${d.id}_0`,
         kind: 'npc_home',
         position: new THREE.Vector3(hx + shell.doorWorld.x, 1.2, hz + shell.doorWorld.z),
         radius: 2.2,
         mesh: shell.group,
-        label: kind === 'shop' ? 'Enter shop' : 'Enter home',
+        label: 'Enter home',
         districtId: d.id,
       });
     }
@@ -1652,15 +1630,17 @@ export function buildSkyCity(): SkyCityBuilt {
     });
   }
 
-  // Helper + rogue robots (NPC-owned workers)
+  // Helper + rogue robots — same RobotUnit model/mechanics as tutorial
   for (let i = 0; i < 22; i++) {
     const d = CITY_DISTRICTS[i % CITY_DISTRICTS.length]!;
     const rogue = i % 3 === 0;
     const x = d.x + (Math.random() - 0.5) * d.size * 0.5;
     const z = d.z + (Math.random() - 0.5) * d.size * 0.5;
-    const parts = makeNpcMesh(rogue ? 'rogue' : 'robot_helper', mats, rogue, i);
-    parts.root.position.set(x, 0, z);
-    addMesh(parts.root);
+    const robot = new RobotUnit(mats, new THREE.Vector3(x, 0, z));
+    robot.displayName = rogue ? `Rogue-${i}` : `Frame-${i}`;
+    if (rogue) robot.setPhase('active');
+    else robot.setPhase('ally');
+    addMesh(robot.mesh);
     if (rogue) {
       const mark = new THREE.Mesh(
         new THREE.SphereGeometry(0.2, 8, 8),
@@ -1682,8 +1662,8 @@ export function buildSkyCity(): SkyCityBuilt {
       });
     }
     npcs.push({
-      mesh: parts.root,
-      parts,
+      mesh: robot.mesh,
+      robot,
       home: new THREE.Vector3(x, 0, z),
       work: workPts[i % workPts.length]!.clone(),
       market: marketPts[i % marketPts.length]!.clone(),
@@ -1794,16 +1774,17 @@ export function buildSkyCity(): SkyCityBuilt {
       }
       active++;
 
-      if (n.role === 'rogue') {
-        n.mesh.position.y = 0.05 + Math.sin(cityTime * Math.PI * 2 * 4 + n.phase) * 0.05;
-        tickNpcAnim(n.parts, n.visual, cityTime * 20, false, n.phase);
+      if (n.robot) {
+        if (n.role === 'rogue') {
+          n.mesh.position.y = 0.05 + Math.sin(cityTime * Math.PI * 2 * 4 + n.phase) * 0.05;
+          n.robot.tickAnim(dt, false, 'chase');
+        } else {
+          n.mesh.rotation.y += dt * 0.4;
+          n.robot.tickAnim(dt, false, 'ally');
+        }
         continue;
       }
-      if (n.role === 'robot_helper') {
-        n.mesh.rotation.y += dt * 0.4;
-        tickNpcAnim(n.parts, n.visual, cityTime * 20, false, n.phase);
-        continue;
-      }
+      if (!n.parts) continue;
       let target: THREE.Vector3;
       const t = (cityTime + n.phase * 0.15) % 1;
       const atHomePhase = t < 0.2 || t >= 0.7;

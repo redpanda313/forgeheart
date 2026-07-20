@@ -1553,6 +1553,107 @@ h1 {
   font-style: normal;
 }
 
+.stall-wizard {
+  position: fixed;
+  right: 1rem;
+  top: 4.5rem;
+  z-index: 40;
+  pointer-events: auto;
+  max-width: min(360px, 92vw);
+}
+.stall-wizard.hidden {
+  display: none;
+}
+.stall-wizard-card {
+  background: rgba(10, 18, 28, 0.92);
+  border: 1px solid #3a5568;
+  padding: 0.75rem 0.85rem 0.85rem;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.stall-wizard-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-bottom: 0.4rem;
+}
+.stall-wizard-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #e8c878;
+}
+.stall-wizard-step {
+  margin: 0.35rem 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #88a8c0;
+}
+.stall-wizard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 50vh;
+  overflow: auto;
+  margin: 0.4rem 0;
+}
+.stall-wizard-opt {
+  appearance: none;
+  text-align: left;
+  border: 1px solid #2a4055;
+  background: #0c1c2c;
+  color: #c8d8e8;
+  padding: 0.45rem 0.55rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+.stall-wizard-opt strong {
+  display: block;
+  color: #e8c878;
+  font-size: 0.82rem;
+}
+.stall-wizard-opt .hint {
+  color: #8098a8;
+  font-size: 0.68rem;
+}
+.stall-wizard-opt.selected {
+  border-color: #c4a35a;
+  background: #142838;
+}
+.stall-wizard-opt:disabled,
+.stall-wizard-opt.unaffordable {
+  opacity: 0.4;
+  cursor: not-allowed;
+  border-color: #2a3038;
+}
+.stall-wizard-nav {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+.stall-wizard-btn {
+  appearance: none;
+  border: 1px solid #3a5568;
+  background: #142838;
+  color: #c8d8e8;
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+.stall-wizard-btn.primary {
+  border-color: #c4a35a;
+  color: #e8c878;
+}
+.stall-wizard-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.stall-wizard-hint {
+  font-size: 0.72rem;
+  color: #88a0b0;
+  margin: 0;
+}
+
 /* Phase 2 bay office */
 .bay-card {
   width: min(520px, 94vw);
