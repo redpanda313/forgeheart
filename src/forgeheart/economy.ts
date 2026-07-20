@@ -986,6 +986,12 @@ export interface InventoryState {
   inventionsMade: number;
   /** Units of invented goods sold via stalls / vendors */
   inventionsSold: number;
+  /** Bonded storage — resources track (North Observatory) */
+  storageResourcesLevel: number;
+  /** Bonded storage — crafted goods (Clocktower) */
+  storageCraftedLevel: number;
+  /** Bonded storage — inventions (Aether Spire) */
+  storageInventionsLevel: number;
 }
 
 const WORKER_NAMES = [
@@ -1056,6 +1062,9 @@ export function emptyInventory(starterBrass = 40): InventoryState {
     cityWorkshopLeased: false,
     inventionsMade: 0,
     inventionsSold: 0,
+    storageResourcesLevel: 0,
+    storageCraftedLevel: 0,
+    storageInventionsLevel: 0,
   };
 }
 
@@ -1175,6 +1184,121 @@ export function expandBayCost(fromLevel: number): number {
 /** Hire cost rises with crew size */
 export function hireCost(inv: InventoryState): number {
   return LABORER_HIRE_COST + inv.workers.length * 18;
+}
+
+// ——— Bonded storage (per-category stack caps) ———
+
+export type StorageTrack = 'resources' | 'crafted' | 'inventions';
+
+/** Raw / harvest mats */
+export const STORAGE_RESOURCE_IDS: readonly CommodityId[] = [
+  'cloud_iron',
+  'scrap_brass',
+  'spore_silk',
+  'sky_salt',
+  'wire',
+];
+
+/** Crafted & equipment goods */
+export const STORAGE_CRAFTED_IDS: readonly CommodityId[] = [
+  'glass_pane',
+  'fuel_cell',
+  'gear_blank',
+  'basic_frame',
+  'repair_kit',
+  'speed_tool',
+  'haul_pack',
+  'polished_wire',
+  'fine_frame',
+];
+
+export const STORAGE_MAX_LEVEL = 3;
+/** L0 = base stack; L1+ absolute caps */
+export const STORAGE_CAP_TIERS = [0, 999, 999_999, 999_999_999] as const;
+export const STORAGE_INVENTION_BASE_CAP = 99;
+
+const STORAGE_COST_BASE: Record<StorageTrack, number> = {
+  inventions: 500,
+  crafted: 850,
+  resources: 1500,
+};
+const STORAGE_COST_SCALE = 40;
+
+export function storageTrackLabel(track: StorageTrack): string {
+  if (track === 'resources') return 'Resources';
+  if (track === 'crafted') return 'Crafted';
+  return 'Inventions';
+}
+
+export function storageOfficeDistrict(track: StorageTrack): string {
+  if (track === 'resources') return 'north_observatory';
+  if (track === 'crafted') return 'clocktower';
+  return 'aether_spire';
+}
+
+export function storageTrackForCommodity(id: CommodityId): StorageTrack {
+  if ((STORAGE_RESOURCE_IDS as readonly string[]).includes(id)) return 'resources';
+  return 'crafted';
+}
+
+export function getStorageLevel(inv: InventoryState, track: StorageTrack): number {
+  const raw =
+    track === 'resources'
+      ? inv.storageResourcesLevel
+      : track === 'crafted'
+        ? inv.storageCraftedLevel
+        : inv.storageInventionsLevel;
+  return Math.max(0, Math.min(STORAGE_MAX_LEVEL, Math.floor(raw ?? 0)));
+}
+
+export function storageCapAtLevel(track: StorageTrack, level: number, baseStack: number): number {
+  const lv = Math.max(0, Math.min(STORAGE_MAX_LEVEL, level));
+  if (lv <= 0) {
+    return track === 'inventions' ? STORAGE_INVENTION_BASE_CAP : baseStack;
+  }
+  return STORAGE_CAP_TIERS[lv] ?? STORAGE_CAP_TIERS[STORAGE_MAX_LEVEL]!;
+}
+
+export function effectiveStack(inv: InventoryState, id: CommodityId): number {
+  const def = COMMODITIES[id];
+  const track = storageTrackForCommodity(id);
+  return storageCapAtLevel(track, getStorageLevel(inv, track), def.stack);
+}
+
+export function effectiveInventionStack(inv: InventoryState): number {
+  return storageCapAtLevel('inventions', getStorageLevel(inv, 'inventions'), STORAGE_INVENTION_BASE_CAP);
+}
+
+export function storageUpgradeCost(track: StorageTrack, fromLevel: number): number {
+  if (fromLevel < 0 || fromLevel >= STORAGE_MAX_LEVEL) return 0;
+  const base = STORAGE_COST_BASE[track];
+  return Math.round(base * Math.pow(STORAGE_COST_SCALE, fromLevel));
+}
+
+export function upgradeStorage(
+  inv: InventoryState,
+  track: StorageTrack,
+): { ok: boolean; msg: string } {
+  const from = getStorageLevel(inv, track);
+  if (from >= STORAGE_MAX_LEVEL) {
+    return { ok: false, msg: `${storageTrackLabel(track)} storage is fully expanded.` };
+  }
+  const cost = storageUpgradeCost(track, from);
+  if (inv.brass < cost) {
+    return { ok: false, msg: `Need ${cost} brass (have ${inv.brass}).` };
+  }
+  inv.brass -= cost;
+  const next = from + 1;
+  if (track === 'resources') inv.storageResourcesLevel = next;
+  else if (track === 'crafted') inv.storageCraftedLevel = next;
+  else inv.storageInventionsLevel = next;
+
+  const base = track === 'inventions' ? STORAGE_INVENTION_BASE_CAP : 99;
+  const cap = storageCapAtLevel(track, next, base);
+  return {
+    ok: true,
+    msg: `${storageTrackLabel(track)} storage → L${next} · hold up to ${cap.toLocaleString()} each (${cost}b).`,
+  };
 }
 
 /** Nodes free on base wage; each extra node needs pay grade / costs more wages */
@@ -2657,7 +2781,16 @@ export function craftCustom(
   for (const inp of recipe.inputs) {
     removeItem(inv, inp.id, inp.n);
   }
-  inv.customStock[recipe.id] = (inv.customStock[recipe.id] ?? 0) + 1;
+  if (!addInventionStock(inv, recipe.id, 1)) {
+    // Refund inputs if invent stock is full
+    for (const inp of recipe.inputs) {
+      addItem(inv, inp.id, inp.n);
+    }
+    return {
+      ok: false,
+      msg: `Invention storage full (${effectiveInventionStack(inv)}). Expand at Aether Spire.`,
+    };
+  }
   return { ok: true, msg: `Crafted 1× ${recipe.name}` };
 }
 
@@ -2687,10 +2820,17 @@ export function getQty(inv: InventoryState, id: CommodityId): number {
 
 export function addItem(inv: InventoryState, id: CommodityId, n: number): boolean {
   if (n <= 0) return true;
-  const def = COMMODITIES[id];
   const cur = getQty(inv, id);
-  const next = Math.min(def.stack, cur + n);
+  const next = Math.min(effectiveStack(inv, id), cur + n);
   inv.items[id] = next;
+  return next === cur + n;
+}
+
+export function addInventionStock(inv: InventoryState, recipeId: string, n = 1): boolean {
+  if (n <= 0) return true;
+  const cur = inv.customStock[recipeId] ?? 0;
+  const next = Math.min(effectiveInventionStack(inv), cur + n);
+  inv.customStock[recipeId] = next;
   return next === cur + n;
 }
 
@@ -2892,6 +3032,9 @@ export function invToSave(inv: InventoryState) {
     cityWorkshopLeased: inv.cityWorkshopLeased,
     inventionsMade: inv.inventionsMade ?? 0,
     inventionsSold: inv.inventionsSold ?? 0,
+    storageResourcesLevel: inv.storageResourcesLevel ?? 0,
+    storageCraftedLevel: inv.storageCraftedLevel ?? 0,
+    storageInventionsLevel: inv.storageInventionsLevel ?? 0,
   };
 }
 
@@ -2993,6 +3136,14 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
   inv.cityWorkshopLeased = !!o.cityWorkshopLeased;
   inv.inventionsMade = typeof o.inventionsMade === 'number' ? o.inventionsMade : inv.customRecipes.length;
   inv.inventionsSold = typeof o.inventionsSold === 'number' ? o.inventionsSold : 0;
+  inv.storageResourcesLevel =
+    typeof o.storageResourcesLevel === 'number' ? Math.max(0, Math.min(STORAGE_MAX_LEVEL, o.storageResourcesLevel)) : 0;
+  inv.storageCraftedLevel =
+    typeof o.storageCraftedLevel === 'number' ? Math.max(0, Math.min(STORAGE_MAX_LEVEL, o.storageCraftedLevel)) : 0;
+  inv.storageInventionsLevel =
+    typeof o.storageInventionsLevel === 'number'
+      ? Math.max(0, Math.min(STORAGE_MAX_LEVEL, o.storageInventionsLevel))
+      : 0;
   // Clamp pre-apartment training bays (empire expands only after deed / city workshop)
   if (!canEmpireExpand(inv) && inv.bayLevel > TRAINING_MAX_BAY_LEVEL) {
     inv.bayLevel = TRAINING_MAX_BAY_LEVEL;

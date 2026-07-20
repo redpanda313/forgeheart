@@ -134,6 +134,16 @@ import {
   leaseCityWorkshop,
   repairRogueRobot,
   districtById,
+  upgradeStorage,
+  storageUpgradeCost,
+  getStorageLevel,
+  storageCapAtLevel,
+  storageTrackLabel,
+  STORAGE_MAX_LEVEL,
+  STORAGE_INVENTION_BASE_CAP,
+  effectiveStack,
+  effectiveInventionStack,
+  type StorageTrack,
   APARTMENT_COST,
   STALL_LEASE_COST,
   STALL_INTERVAL,
@@ -281,6 +291,8 @@ export class ForgeHeartGame {
   private craftSelectedId: string | null = null;
   private bayOpen = false;
   private boardShopOpen = false;
+  private storageOpen = false;
+  private activeStorageTrack: StorageTrack = 'resources';
   private programOpen = false;
   private programFilter:
     | 'haul'
@@ -610,6 +622,10 @@ export class ForgeHeartGame {
         this.closeBoardShop();
         return;
       }
+      if (this.storageOpen && e.code === 'Escape') {
+        this.closeStorageOffice();
+        return;
+      }
       if (this.programOpen && e.code === 'Escape') {
         this.closeProgram();
         return;
@@ -636,6 +652,7 @@ export class ForgeHeartGame {
           !this.craftOpen &&
           !this.bayOpen &&
           !this.boardShopOpen &&
+          !this.storageOpen &&
           !this.programOpen &&
           !this.stallOpen &&
           !this.activeVendor
@@ -2169,6 +2186,7 @@ export class ForgeHeartGame {
     this.bayOpen = false;
     this.craftOpen = false;
     this.boardShopOpen = false;
+    this.storageOpen = false;
     this.programOpen = false;
     this.stallOpen = false;
     this.harvestOpen = false;
@@ -2182,6 +2200,7 @@ export class ForgeHeartGame {
       'craft-panel',
       'market-panel',
       'board-panel',
+      'storage-panel',
       'program-panel',
       'stall-panel',
       'harvest-overlay',
@@ -3427,6 +3446,7 @@ export class ForgeHeartGame {
     this.craftOpen = false;
     this.bayOpen = false;
     this.boardShopOpen = false;
+    this.storageOpen = false;
     this.programOpen = false;
     this.stallOpen = false;
     this.syncBoardOwnership();
@@ -3828,6 +3848,7 @@ export class ForgeHeartGame {
       this.craftOpen ||
       this.bayOpen ||
       this.boardShopOpen ||
+      this.storageOpen ||
       this.programOpen ||
       this.stallOpen ||
       this.cityMapOpen ||
@@ -3843,6 +3864,8 @@ export class ForgeHeartGame {
     if (bay && !bay.classList.contains('hidden')) return true;
     const board = document.getElementById('board-panel');
     if (board && !board.classList.contains('hidden')) return true;
+    const storage = document.getElementById('storage-panel');
+    if (storage && !storage.classList.contains('hidden')) return true;
     const prog = document.getElementById('program-panel');
     if (prog && !prog.classList.contains('hidden')) return true;
     const stall = document.getElementById('stall-panel');
@@ -4001,6 +4024,10 @@ export class ForgeHeartGame {
     }
     if (it.kind === 'board_shop') {
       this.openBoardShop();
+      return true;
+    }
+    if (it.kind === 'storage_office' && it.storageTrack) {
+      this.openStorageOffice(it.storageTrack);
       return true;
     }
     if (it.kind === 'workshop_lease') {
@@ -5385,7 +5412,8 @@ export class ForgeHeartGame {
         const def = COMMODITIES[id as CommodityId];
         const row = document.createElement('div');
         row.className = 'bay-inv-row';
-        row.textContent = `${def?.name ?? id} × ${n}`;
+        const max = effectiveStack(this.inv, id as CommodityId);
+        row.textContent = `${def?.name ?? id} × ${n} / ${max.toLocaleString()}`;
         invEl.appendChild(row);
       }
       for (const [rid, n] of Object.entries(this.inv.customStock)) {
@@ -5393,7 +5421,8 @@ export class ForgeHeartGame {
         const recipe = this.inv.customRecipes.find((r) => r.id === rid);
         const row = document.createElement('div');
         row.className = 'bay-inv-row';
-        row.textContent = `${recipe?.name ?? rid} × ${n} (invention · sell ${recipe?.sellValue ?? '?'}b)`;
+        const max = effectiveInventionStack(this.inv);
+        row.textContent = `${recipe?.name ?? rid} × ${n} / ${max.toLocaleString()} (invention · sell ${recipe?.sellValue ?? '?'}b)`;
         const sell = document.createElement('button');
         sell.type = 'button';
         sell.textContent = 'Sell 1 (any vendor-ish · Mira rate)';
@@ -5639,6 +5668,98 @@ export class ForgeHeartGame {
     panel?.classList.add('hidden');
     panel?.setAttribute('aria-hidden', 'true');
     if (!this.paused && !this.disposed) this.controls.lock();
+  }
+
+  private openStorageOffice(track: StorageTrack) {
+    this.activeStorageTrack = track;
+    this.storageOpen = true;
+    const panel = document.getElementById('storage-panel');
+    const title = document.getElementById('storage-title');
+    const sub = document.getElementById('storage-sub');
+    const where =
+      track === 'resources'
+        ? 'North Observatory'
+        : track === 'crafted'
+          ? 'Clocktower Bazaar'
+          : 'Aether Spire';
+    if (title) title.textContent = `${storageTrackLabel(track)} Storage`;
+    if (sub) {
+      sub.textContent =
+        track === 'resources'
+          ? `${where} · raise raw mat stack caps (most valuable track)`
+          : track === 'crafted'
+            ? `${where} · raise kits, frames, tools & craft goods`
+            : `${where} · raise invented goods stock (first expand 500b)`;
+    }
+    this.fillStorageOffice();
+    panel?.classList.remove('hidden');
+    panel?.setAttribute('aria-hidden', 'false');
+    try {
+      this.controls.unlock();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private closeStorageOffice() {
+    this.storageOpen = false;
+    const panel = document.getElementById('storage-panel');
+    panel?.classList.add('hidden');
+    panel?.setAttribute('aria-hidden', 'true');
+    if (!this.paused && !this.disposed) this.controls.lock();
+  }
+
+  private fillStorageOffice() {
+    const track = this.activeStorageTrack;
+    const wallet = document.getElementById('storage-wallet');
+    const info = document.getElementById('storage-info');
+    const actions = document.getElementById('storage-actions');
+    const log = document.getElementById('storage-log');
+    if (wallet) wallet.textContent = `Brass ${this.inv.brass}`;
+    const level = getStorageLevel(this.inv, track);
+    const base = track === 'inventions' ? STORAGE_INVENTION_BASE_CAP : 99;
+    const curCap = storageCapAtLevel(track, level, base);
+    if (info) {
+      info.textContent =
+        level >= STORAGE_MAX_LEVEL
+          ? `Level ${level} · max capacity ${curCap.toLocaleString()} each · fully expanded`
+          : `Level ${level} · current cap ${curCap.toLocaleString()} each`;
+    }
+    if (!actions) return;
+    actions.innerHTML = '';
+    if (level >= STORAGE_MAX_LEVEL) {
+      const done = document.createElement('p');
+      done.className = 'craft-hint';
+      done.textContent = 'This vault is fully bonded.';
+      actions.appendChild(done);
+    } else {
+      const next = level + 1;
+      const nextCap = storageCapAtLevel(track, next, base);
+      const cost = storageUpgradeCost(track, level);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'craft-do-btn';
+      btn.textContent = `Expand to L${next} · hold ${nextCap.toLocaleString()} · ${cost}b`;
+      btn.addEventListener('click', () => {
+        const r = upgradeStorage(this.inv, track);
+        if (log) log.textContent = r.msg;
+        this.toast(r.msg, r.ok ? 3.5 : 2.5);
+        if (r.ok) {
+          this.brass = this.inv.brass;
+          this.audio.playPickup();
+          writeSlot(this.activeSlot, this.buildSaveData());
+          this.syncEconomyHud();
+        }
+        this.fillStorageOffice();
+      });
+      actions.appendChild(btn);
+    }
+    // Close button wiring (once)
+    const close = document.getElementById('storage-close');
+    if (close && !(close as HTMLButtonElement).dataset.wired) {
+      (close as HTMLButtonElement).dataset.wired = '1';
+      close.addEventListener('click', () => this.closeStorageOffice());
+    }
   }
 
   private fillBoardShop() {
@@ -6342,6 +6463,7 @@ export class ForgeHeartGame {
     this.craftOpen = false;
     this.bayOpen = false;
     this.boardShopOpen = false;
+    this.storageOpen = false;
     this.programOpen = false;
     this.stallOpen = false;
 

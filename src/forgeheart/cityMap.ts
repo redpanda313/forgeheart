@@ -26,7 +26,8 @@ export type MapLandmarkKind =
   | 'vendor'
   | 'rogue'
   | 'district'
-  | 'expand';
+  | 'expand'
+  | 'storage';
 
 export interface MapPad {
   id: string;
@@ -128,6 +129,7 @@ const KIND_COLOR: Record<MapLandmarkKind, string> = {
   rogue: '#ff6644',
   district: '#c4a35a',
   expand: '#88aaff',
+  storage: '#f0d080',
 };
 
 /** District skyway graph — keep in sync with skyCity skywayPairs. */
@@ -363,6 +365,32 @@ function landmarkFromInteract(it: CityInteract): MapLandmark | null {
         tag: 'EXPAND',
         blurb: 'Raise bay level · more crew slots · unlimited empire expands',
       };
+    case 'storage_office': {
+      const track = it.storageTrack ?? 'resources';
+      const label =
+        track === 'resources'
+          ? 'Bonded Resources · Observatory'
+          : track === 'crafted'
+            ? 'Craft Vault · Clocktower'
+            : 'Invention Vault · Aether Spire';
+      const tag = track === 'resources' ? 'STORE' : track === 'crafted' ? 'CRAFT' : 'INVENT';
+      const blurb =
+        track === 'resources'
+          ? 'Raise raw mat stack caps'
+          : track === 'crafted'
+            ? 'Raise kits · frames · tools caps'
+            : 'Raise invention stock caps';
+      return {
+        id: it.id,
+        kind: 'storage',
+        label,
+        x,
+        z,
+        districtId: it.districtId,
+        tag,
+        blurb,
+      };
+    }
     case 'workshop_chest':
     case 'craft_bench':
     case 'hire_board':
@@ -819,7 +847,8 @@ function isServiceLandmark(kind: MapLandmarkKind): boolean {
     kind === 'workshop' ||
     kind === 'home' ||
     kind === 'vendor' ||
-    kind === 'expand'
+    kind === 'expand' ||
+    kind === 'storage'
   );
 }
 

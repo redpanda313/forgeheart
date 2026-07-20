@@ -34,7 +34,8 @@ export type CityInteractKind =
   | 'hire_board'
   | 'bay_expand'
   | 'invent_desk'
-  | 'repair_job';
+  | 'repair_job'
+  | 'storage_office';
 
 export interface CityInteract {
   id: string;
@@ -51,6 +52,8 @@ export interface CityInteract {
   /** Specialized harvest mat pool for this reef */
   harvestPool?: CommodityId[];
   harvestName?: string;
+  /** Bonded storage office track */
+  storageTrack?: 'resources' | 'crafted' | 'inventions';
 }
 
 export interface DistrictBuilt {
@@ -1201,6 +1204,100 @@ export function buildSkyCity(): SkyCityBuilt {
     });
 
     group.add(expandYardGroup);
+  }
+
+  // Bonded storage offices — one track per distant plaza (no dedicated HQs)
+  {
+    const placeStorage = (
+      districtId: string,
+      track: 'resources' | 'crafted' | 'inventions',
+      title: string,
+      blurb: string,
+      color: number,
+      emissive: number,
+      ox: number,
+      oz: number,
+    ) => {
+      const d = byId(districtId);
+      const x = d.x + ox;
+      const z = d.z + oz;
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(7, 0.35, 7),
+        new THREE.MeshStandardMaterial({ color: 0x3a3834, roughness: 0.75 }),
+      );
+      pad.position.set(x, DECK_Y + 0.2, z);
+      addMesh(pad);
+      addCol({
+        min: new THREE.Vector3(x - 3.6, DECK_Y - 0.2, z - 3.6),
+        max: new THREE.Vector3(x + 3.6, DECK_Y + 0.55, z + 3.6),
+        kind: 'floor',
+      });
+      const booth = new THREE.Mesh(
+        new THREE.BoxGeometry(3.2, 2.4, 2.6),
+        new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 0.65, metalness: 0.35 }),
+      );
+      booth.position.set(x, DECK_Y + 1.4, z);
+      addMesh(booth);
+      const mark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.22, 8, 8),
+        new THREE.MeshStandardMaterial({
+          color,
+          emissive,
+          emissiveIntensity: 0.55,
+        }),
+      );
+      mark.position.set(x + 2.2, DECK_Y + 1.15, z);
+      addMesh(mark);
+      const lab = labelSprite(title);
+      lab.position.set(x, DECK_Y + 3.2, z);
+      lab.scale.set(4.2, 0.7, 1);
+      addMesh(lab);
+      const sub = labelSprite(blurb);
+      sub.position.set(x, DECK_Y + 2.55, z);
+      sub.scale.set(3.6, 0.55, 1);
+      addMesh(sub);
+      interactables.push({
+        id: `storage_${track}`,
+        kind: 'storage_office',
+        position: mark.position.clone(),
+        radius: 2.6,
+        mesh: mark,
+        label: `${title} · ${blurb}`,
+        districtId,
+        storageTrack: track,
+      });
+    };
+
+    placeStorage(
+      'north_observatory',
+      'resources',
+      'BONDED RESOURCES',
+      'Expand raw mat stacks',
+      0xe8c878,
+      0xaa8844,
+      14,
+      -10,
+    );
+    placeStorage(
+      'clocktower',
+      'crafted',
+      'BONDED CRAFT VAULT',
+      'Expand kits · frames · tools',
+      0x7ec8e8,
+      0x2a6a88,
+      -12,
+      14,
+    );
+    placeStorage(
+      'aether_spire',
+      'inventions',
+      'INVENTION VAULT',
+      'Expand invention stock',
+      0xdda0ff,
+      0x6622aa,
+      12,
+      12,
+    );
   }
 
   // Extra wander pads for density (same deck height)

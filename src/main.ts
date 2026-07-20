@@ -260,6 +260,7 @@ btnTitle?.addEventListener('click', () => {
     'craft-panel',
     'market-panel',
     'board-panel',
+    'storage-panel',
     'program-panel',
     'stall-panel',
     'harvest-overlay',
