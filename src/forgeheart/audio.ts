@@ -55,6 +55,10 @@ export class ForgeAudio {
   private boardJetGain: GainNode | null = null;
   private boardJetOsc: OscillatorNode | null = null;
   private musicTimer: number | null = null;
+  private musicNextNoteTime = 0;
+  private readonly musicBeatSec = 0.25; // 120 BPM eighths
+  private readonly musicLookaheadSec = 0.35;
+  private hatBuffer: AudioBuffer | null = null;
   private step = 0;
   private tension = 0; // 0 calm lab · 1 siege
   /** 0 indoor · 1 full outdoor wind */
@@ -126,9 +130,11 @@ export class ForgeAudio {
     this.resetPhraseBuffers();
 
     if (this.musicTimer != null) {
-      window.clearInterval(this.musicTimer);
+      window.clearTimeout(this.musicTimer);
       this.musicTimer = null;
     }
+    this.musicNextNoteTime = 0;
+    this.hatBuffer = null;
 
     // Mute immediately before tearing nodes down
     if (this.ctx && this.master) {
@@ -380,11 +386,12 @@ export class ForgeAudio {
 
   private ensureMusic() {
     if (!this.ctx || !this.musicGain || !this.enabled) return;
-    // Never stack intervals (title→play without stop used to double music)
+    // Never stack schedulers (title→play without stop used to double music)
     if (this.musicTimer != null) {
-      window.clearInterval(this.musicTimer);
+      window.clearTimeout(this.musicTimer);
       this.musicTimer = null;
     }
+    this.ensureHatBuffer();
     // Fresh seed each session so the score never restarts the same way
     this.rng = mulberry32((Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0);
     this.step = 0;
@@ -395,9 +402,71 @@ export class ForgeAudio {
     this.sectionEnergy = 0.45 + this.rng() * 0.35;
     this.motif = this.composeMotif();
     this.composePhrase();
-    // ~120 bpm, swung eighths — parlor ragtime feel
-    const beatMs = 250;
-    this.musicTimer = window.setInterval(() => this.tickMusic(), beatMs);
+    // Schedule from AudioContext clock so FPS stalls don't drag the tempo
+    this.musicNextNoteTime = this.ctx.currentTime + 0.05;
+    this.schedulerTick();
+  }
+
+  private ensureHatBuffer() {
+    if (!this.ctx || this.hatBuffer) return;
+    const dur = 0.04;
+    const n = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
+    const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    this.hatBuffer = buf;
+  }
+
+  /** Top up the lookahead window from AudioContext.currentTime (FPS-independent). */
+  private schedulerTick = () => {
+    this.musicTimer = null;
+    if (!this.enabled || !this.ctx || !this.musicGain) return;
+    const ctx = this.ctx;
+    const horizon = ctx.currentTime + this.musicLookaheadSec;
+    while (this.musicNextNoteTime < horizon) {
+      this.scheduleMusicStep(this.musicNextNoteTime);
+      this.musicNextNoteTime += this.musicBeatSec;
+    }
+    // Wake again before the buffer runs dry (~ half lookahead)
+    const delayMs = Math.max(25, (this.musicLookaheadSec * 0.45) * 1000);
+    this.musicTimer = window.setTimeout(this.schedulerTick, delayMs);
+  };
+
+  private scheduleMusicStep(when: number) {
+    if (!this.ctx || !this.musicGain) return;
+    const s = this.step % 16;
+    if (s === 0 && this.step > 0) {
+      this.phraseIndex++;
+      this.composePhrase();
+    }
+    this.step++;
+
+    const b = this.phraseBass[s] ?? 0;
+    const m = this.phraseMel[s] ?? 0;
+    const f = this.phraseFill[s] ?? 0;
+    const swing = s % 2 === 1 ? 0.035 + this.sectionEnergy * 0.015 : 0;
+    const ten = this.tension;
+
+    if (b > 0) {
+      this.tone(b, when, 0.17 + ten * 0.04, 0.05 + ten * 0.018, 'triangle', this.musicGain);
+    }
+    if (m > 0) {
+      this.tone(
+        m,
+        when + swing,
+        0.11 + (s % 4 === 0 ? 0.04 : 0),
+        0.026 + this.sectionEnergy * 0.008,
+        'square',
+        this.musicGain,
+      );
+    }
+    if (f > 0) {
+      this.tone(f, when + swing * 0.5, 0.09, 0.012 + ten * 0.006, 'triangle', this.musicGain);
+    }
+    if (this.phraseHat[s]) {
+      const hatGain = 0.0055 + this.sectionEnergy * 0.003 + ten * 0.002;
+      this.noise(when, 0.028, hatGain, this.musicGain);
+    }
   }
 
   private resetPhraseBuffers() {
@@ -598,37 +667,6 @@ export class ForgeAudio {
     this.phraseHat = hat;
   }
 
-  private tickMusic() {
-    if (!this.enabled || !this.ctx || !this.musicGain) return;
-    const t = this.ctx.currentTime;
-    const s = this.step % 16;
-    if (s === 0 && this.step > 0) {
-      this.phraseIndex++;
-      this.composePhrase();
-    }
-    this.step++;
-
-    const b = this.phraseBass[s] ?? 0;
-    const m = this.phraseMel[s] ?? 0;
-    const f = this.phraseFill[s] ?? 0;
-    const swing = s % 2 === 1 ? 0.035 + this.sectionEnergy * 0.015 : 0;
-    const ten = this.tension;
-
-    if (b > 0) {
-      this.tone(b, t, 0.17 + ten * 0.04, 0.05 + ten * 0.018, 'triangle', this.musicGain);
-    }
-    if (m > 0) {
-      this.tone(m, t + swing, 0.11 + (s % 4 === 0 ? 0.04 : 0), 0.026 + this.sectionEnergy * 0.008, 'square', this.musicGain);
-    }
-    if (f > 0) {
-      this.tone(f, t + swing * 0.5, 0.09, 0.012 + ten * 0.006, 'triangle', this.musicGain);
-    }
-    if (this.phraseHat[s]) {
-      const hatGain = 0.0055 + this.sectionEnergy * 0.003 + ten * 0.002;
-      this.noise(t, 0.028, hatGain, this.musicGain);
-    }
-  }
-
   private tone(
     freq: number,
     when: number,
@@ -659,12 +697,18 @@ export class ForgeAudio {
     if (!this.ctx || !this.enabled) return;
     const now = this.ctx.currentTime;
     const start = Math.max(when, now);
-    const n = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
-    const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    this.ensureHatBuffer();
     const src = this.ctx.createBufferSource();
-    src.buffer = buf;
+    // Prefer pooled hat buffer; fall back to tiny alloc only if missing
+    if (this.hatBuffer) {
+      src.buffer = this.hatBuffer;
+    } else {
+      const n = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
+      const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+      src.buffer = buf;
+    }
     const g = this.ctx.createGain();
     const peak = Math.min(0.12, Math.max(0, gain));
     g.gain.setValueAtTime(0.0001, start);

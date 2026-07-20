@@ -54,6 +54,14 @@ import {
 import type { FloatingCityBuilt } from './floatingCity';
 import { buildMarketHub, type MarketHubBuilt, type HubInteract } from './marketHub';
 import { buildSkyCity, type SkyCityBuilt, type CityInteract } from './skyCity';
+import { SpatialColliderGrid } from './spatialGrid';
+import { CityStreamer } from './cityStreamer';
+import { perfStats } from './perfStats';
+import {
+  computeAoiSubscriptions,
+  AOI_SHARD_TARGET_CCU,
+  type AoiEntity,
+} from './aoiPresence';
 import {
   buildLiveMarkers,
   renderCityMap,
@@ -211,6 +219,14 @@ export class ForgeHeartGame {
 
   private level: LevelBuilt;
   private colliders: Collider[] = [];
+  /** Spatial hash for mega-city (null in lab / race / training). */
+  private spatialGrid: SpatialColliderGrid | null = null;
+  private cityStreamer: CityStreamer | null = null;
+  /** Throttle map / compass DOM while empire is open */
+  private cityHudAcc = 0;
+  private cityMapAcc = 0;
+  private aoiAcc = 0;
+  private aoiSubsCount = 0;
   private velocity = new THREE.Vector3();
   private onGround = false;
   private keys = new Set<string>();
@@ -513,6 +529,25 @@ export class ForgeHeartGame {
       this.setHelp('WASD look · E read / interact · 1 Hand reprogram · Space jump');
     }
     this.wireNavCompassTap();
+    this.wirePerfHud();
+  }
+
+  private wirePerfHud() {
+    perfStats.ensureDom();
+    const toggle = document.getElementById('perf-hud-toggle') as HTMLInputElement | null;
+    toggle?.addEventListener('change', () => {
+      perfStats.setEnabled(!!toggle.checked);
+    });
+  }
+
+  /** Nearby colliders for physics (spatial grid in empire, flat list elsewhere). */
+  private queryCollidersNear(x: number, z: number, radius: number): Collider[] {
+    if (this.spatialGrid) {
+      const hits = this.spatialGrid.queryRadius(x, z, radius);
+      perfStats.colliderQueries = this.spatialGrid.queryHits;
+      return hits;
+    }
+    return this.colliders;
   }
 
   private bindInput() {
@@ -575,6 +610,13 @@ export class ForgeHeartGame {
         } else {
           this.toast('Find and claim the plasma surfboard first (E near it).', 2.5);
         }
+      }
+      if (!wasDown && e.code === 'F3') {
+        e.preventDefault();
+        perfStats.toggle();
+        const toggle = document.getElementById('perf-hud-toggle') as HTMLInputElement | null;
+        if (toggle) toggle.checked = perfStats.enabled;
+        return;
       }
       // Q: market board mount/stow (always available once owned — not a weapon slot)
       if (
@@ -762,6 +804,8 @@ export class ForgeHeartGame {
     this.camera.far = 500;
     this.camera.near = 0.1;
     this.camera.updateProjectionMatrix();
+    // Empire overview: keep all districts resident while editing
+    if (this.megaCityActive) this.cityStreamer?.loadAll();
     this.setMakerPaletteOpen(false);
     this.cityEditor?.highlightLayer(this.makerLayer, null);
     this.syncMakerHud();
@@ -2302,13 +2346,17 @@ export class ForgeHeartGame {
     // Keep touch controls present in workshop, market tutorial, and empire
     if (this.mobile.enabled) this.syncMobileGameplay();
     const dt = Math.min(0.05, this.clock.getDelta());
+    perfStats.beginFrame();
+    if (this.spatialGrid) this.spatialGrid.queryHits = 0;
     if (this.paused) {
       this.renderer.render(this.scene, this.camera);
+      perfStats.endFrame(dt, this.renderer);
       return;
     }
     // won freezes only the brief skiff cinematic before race loads
     if (this.won && !this.raceActive) {
       this.renderer.render(this.scene, this.camera);
+      perfStats.endFrame(dt, this.renderer);
       return;
     }
 
@@ -2331,6 +2379,7 @@ export class ForgeHeartGame {
       this.plasmaFill.style.width = `${this.plasma}%`;
       this.renderer.render(this.scene, this.camera);
       this.drawOverlay();
+      perfStats.endFrame(dt, this.renderer);
       return;
     }
 
@@ -2443,6 +2492,7 @@ export class ForgeHeartGame {
     this.renderer.render(this.scene, this.camera);
     // overlay messages
     this.drawOverlay();
+    perfStats.endFrame(dt, this.renderer);
   }
 
   /** Compatibility with main loop that calls render separately */
@@ -2540,7 +2590,8 @@ export class ForgeHeartGame {
       pos[axis] += delta;
 
       let { min, max } = this.playerAabb(pos);
-      for (const c of this.colliders) {
+      const nearby = this.queryCollidersNear(pos.x, pos.z, PLAYER_R + 3.5);
+      for (const c of nearby) {
         // Wind skyways: board-only — walkers fall/pass through completely
         if (c.kind === 'skyway') continue;
         if (!aabbOverlap(min, max, c.min, c.max)) continue;
@@ -2608,7 +2659,8 @@ export class ForgeHeartGame {
     let bestTop = -Infinity;
     let found = false;
 
-    for (const c of this.colliders) {
+    const nearby = this.queryCollidersNear(pos.x, pos.z, r + 2);
+    for (const c of nearby) {
       if (!this.isWalkFloor(c)) continue;
       if (pos.x + r < c.min.x || pos.x - r > c.max.x) continue;
       if (pos.z + r < c.min.z || pos.z - r > c.max.z) continue;
@@ -3822,7 +3874,8 @@ export class ForgeHeartGame {
   private sampleWalkFloorY(x: number, z: number): number | null {
     let best: number | null = null;
     const r = 0.4;
-    for (const c of this.colliders) {
+    const nearby = this.queryCollidersNear(x, z, r + 2);
+    for (const c of nearby) {
       if (!this.isWalkFloor(c)) continue;
       if (x < c.min.x - r || x > c.max.x + r || z < c.min.z - r || z > c.max.z + r) continue;
       if (best == null || c.max.y > best) best = c.max.y;
@@ -3834,12 +3887,32 @@ export class ForgeHeartGame {
   private sampleBoardFloorY(x: number, z: number): number | null {
     let best: number | null = null;
     const r = 1.1; // wider than walk — sky ribbons feel rideable
-    for (const c of this.colliders) {
+    const nearby = this.queryCollidersNear(x, z, r + 4);
+    for (const c of nearby) {
       if (!this.isBoardFloor(c)) continue;
       if (x < c.min.x - r || x > c.max.x + r || z < c.min.z - r || z > c.max.z + r) continue;
       if (best == null || c.max.y > best) best = c.max.y;
     }
     return best;
+  }
+
+  /** Client AOI scaffold for future ~32 CCU shards (local NPCs + placeholder remotes). */
+  private tickAoiPresence(playerX: number, playerZ: number) {
+    if (!this.skyCity) return;
+    const entities: AoiEntity[] = this.skyCity.npcs.map((n, i) => ({
+      id: `npc_${i}`,
+      x: n.mesh.position.x,
+      z: n.mesh.position.z,
+      kind: n.role === 'rogue' ? 'npc' : n.role === 'robot_helper' ? 'worker' : 'npc',
+    }));
+    // Cap interest list to shard target so detail tiers stay bounded
+    const subs = computeAoiSubscriptions(playerX, playerZ, entities, {
+      fullRadius: 80,
+      lodRadius: 180,
+      maxFull: Math.min(24, AOI_SHARD_TARGET_CCU),
+    });
+    this.aoiSubsCount = subs.filter((s) => s.detail === 'full').length;
+    perfStats.aoiFull = this.aoiSubsCount;
   }
 
   private isEconomyUiOpen(): boolean {
@@ -3877,13 +3950,40 @@ export class ForgeHeartGame {
     if (!this.skyCity) return;
     this.respawnCd = Math.max(0, this.respawnCd - dt);
     this.cityTime = (this.cityTime + dt / 480) % 1; // ~8 min day cycle
+    const focus = this.board?.mounted ? this.board.position : this.camera.position;
+    this.skyCity.setLodFocus(focus.x, focus.z);
+    this.cityStreamer?.update(focus.x, focus.z);
+    // Keep flat list in sync with loaded stream set (no per-frame full clone of world)
+    if (this.spatialGrid) {
+      this.colliders = this.spatialGrid.getAll() as Collider[];
+      perfStats.colliderCount = this.spatialGrid.count;
+      perfStats.streamLoaded = this.cityStreamer?.loadedCount ?? 0;
+      perfStats.streamTotal = this.cityStreamer?.totalCount ?? 0;
+    }
     this.skyCity.animate(this.cityTime, dt);
-    // Refresh colliders if workshop toggled
-    this.colliders = [...this.skyCity.colliders];
-    this.clearCityMapRouteIfArrived();
-    this.updateNavCompass();
-    if (this.cityMapOpen) this.refreshCityMap();
+    perfStats.npcsActive = this.skyCity.lastNpcActive;
+    perfStats.npcsTotal = this.skyCity.npcs.length;
 
+    this.clearCityMapRouteIfArrived();
+    this.cityHudAcc += dt;
+    if (this.cityHudAcc >= 0.1) {
+      this.cityHudAcc = 0;
+      this.updateNavCompass();
+    }
+    if (this.cityMapOpen) {
+      this.cityMapAcc += dt;
+      if (this.cityMapAcc >= 0.12) {
+        this.cityMapAcc = 0;
+        this.refreshCityMap();
+      }
+    }
+
+    // Client AOI scaffold (~32 CCU shard): recompute nearby entity detail tiers
+    this.aoiAcc += dt;
+    if (this.aoiAcc >= 0.25) {
+      this.aoiAcc = 0;
+      this.tickAoiPresence(focus.x, focus.z);
+    }
     if (this.harvestOpen) {
       this.harvestNeedle += this.harvestDir * dt * 55;
       if (this.harvestNeedle >= 100) {
@@ -4896,7 +4996,8 @@ export class ForgeHeartGame {
     // Feet height for "can ride over" checks
     const feetY = pos.y - BOARD.hoverHeight + 0.05;
 
-    for (const c of this.colliders) {
+    const nearby = this.queryCollidersNear(pos.x, pos.z, r + 4);
+    for (const c of nearby) {
       // Decks + wind skyways never side-block the board
       if (this.isBoardFloor(c) || c.kind === 'skyway') continue;
       // Only block with real walls / tall solids (match walk horizontal resolve)
@@ -6405,6 +6506,9 @@ export class ForgeHeartGame {
       this.scene.remove(this.skyCity.group);
       this.skyCity = null;
     }
+    this.cityStreamer?.clear();
+    this.cityStreamer = null;
+    this.spatialGrid = null;
 
     // Preserve live inventory when traveling in-session (don't wipe board ownership)
     if (fromSave?.economy) {
@@ -6426,7 +6530,18 @@ export class ForgeHeartGame {
 
     this.skyCity = buildSkyCity();
     this.scene.add(this.skyCity.group);
-    this.colliders = [...this.skyCity.colliders];
+    this.spatialGrid = new SpatialColliderGrid(12);
+    this.cityStreamer = new CityStreamer(220, 300);
+    this.cityStreamer.attachGrid(this.spatialGrid);
+    for (const chunk of this.skyCity.streamChunks) {
+      this.cityStreamer.register(chunk);
+    }
+    const spawn = this.skyCity.apartmentSpawn;
+    this.cityStreamer.update(spawn.x, spawn.z);
+    this.colliders = this.spatialGrid.getAll() as Collider[];
+    perfStats.colliderCount = this.spatialGrid.count;
+    perfStats.streamLoaded = this.cityStreamer.loadedCount;
+    perfStats.streamTotal = this.cityStreamer.totalCount;
     this.initCityEditor(this.skyCity.mats);
     this.syncCityWorkshopVisuals();
     this.syncCityStallVisuals();
@@ -6434,8 +6549,9 @@ export class ForgeHeartGame {
     this.skyCity.stallGroup.visible = this.inv.stall.owned;
 
     this.scene.background = new THREE.Color(0x5a7a9a);
-    this.scene.fog = new THREE.Fog(0x7a9ab8, 80, 900);
-    this.camera.far = 1200;
+    // Fog / far plane match stream ring so unloaded content isn't drawn far away
+    this.scene.fog = new THREE.Fog(0x7a9ab8, 60, 380);
+    this.camera.far = 420;
     this.camera.fov = 70;
     this.camera.updateProjectionMatrix();
     this.camera.up.set(0, 1, 0);

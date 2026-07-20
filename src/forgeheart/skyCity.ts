@@ -18,7 +18,7 @@ import {
 import { buildPrefab } from './cityEditor';
 import { CATALOG, type CatalogEntry } from './editorCatalog';
 import { buildMapSnapshot, type MapSnapshot } from './cityMap';
-
+import { makeIslandImpostor, type StreamChunk } from './cityStreamer';
 export type CityInteractKind =
   | 'neighbor'
   | 'vendor'
@@ -60,6 +60,9 @@ export interface DistrictBuilt {
   def: CityDistrictDef;
   center: THREE.Vector3;
   stallMesh: THREE.Object3D | null;
+  /** Per-district scene graph for streaming */
+  group: THREE.Group;
+  colliders: Collider[];
 }
 
 export interface CityNpc {
@@ -73,6 +76,8 @@ export interface CityNpc {
   speed: number;
   rogue?: boolean;
   repairCd?: number;
+  /** Accumulator for budgeted mid-range ticks */
+  lodAcc?: number;
 }
 
 export interface SkyRoute {
@@ -100,13 +105,19 @@ export interface SkyCityBuilt {
   /** Per-district stall visuals */
   districtStallGroups: Record<string, THREE.Group>;
   districts: DistrictBuilt[];
+  /** Streaming chunks (districts + resident skyways/hub) */
+  streamChunks: StreamChunk[];
   harvestSpot: THREE.Vector3;
   residentialPlaza: THREE.Vector3;
   grandMarket: THREE.Vector3;
   industrial: THREE.Vector3;
   /** Live world → map projection data (rebuilds with city) */
   mapSnapshot: MapSnapshot;
+  /** Player XZ for NPC/skyway LOD (updated each frame from game) */
+  setLodFocus: (x: number, z: number) => void;
   animate: (cityTime: number, dt: number) => void;
+  /** Count of NPCs that received a full update this frame */
+  lastNpcActive: number;
   lowestY: number;
 }
 
@@ -246,6 +257,16 @@ function pathDist(path: THREE.Vector3[]): number[] {
   return d;
 }
 
+/** Shared NPC geometries — one of each, cloned materials per role tint. */
+const NPC_BODY_GEO = new THREE.CapsuleGeometry(0.28, 0.55, 4, 8);
+const NPC_BOARD_GEO = new THREE.BoxGeometry(0.4, 0.08, 1.0);
+const NPC_HEAD_GEO = new THREE.BoxGeometry(0.35, 0.28, 0.35);
+const NPC_PLANE_GEO = (() => {
+  const g = new THREE.PlaneGeometry(1, 1);
+  g.rotateX(-Math.PI / 2);
+  return g;
+})();
+
 function makeNpcMesh(
   role: CityNpc['role'],
   mats: Mats,
@@ -260,7 +281,7 @@ function makeNpcMesh(
         ? 0x8899aa
         : 0xc4a882;
   const body = new THREE.Mesh(
-    new THREE.CapsuleGeometry(0.28, 0.55, 4, 8),
+    NPC_BODY_GEO,
     new THREE.MeshStandardMaterial({
       color: bodyCol,
       emissive: rogue ? 0x660000 : 0x000000,
@@ -272,7 +293,7 @@ function makeNpcMesh(
   g.add(body);
   if (role === 'flyer') {
     const board = new THREE.Mesh(
-      new THREE.BoxGeometry(0.4, 0.08, 1.0),
+      NPC_BOARD_GEO,
       new THREE.MeshStandardMaterial({
         color: 0x44aacc,
         emissive: 0x226688,
@@ -283,7 +304,7 @@ function makeNpcMesh(
     g.add(board);
   }
   if (role === 'robot_helper' || rogue) {
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.28, 0.35), mats.brass);
+    const head = new THREE.Mesh(NPC_HEAD_GEO, mats.brass);
     head.position.y = 1.45;
     g.add(head);
   }
@@ -303,19 +324,51 @@ export function buildSkyCity(): SkyCityBuilt {
   const npcs: CityNpc[] = [];
   const districts: DistrictBuilt[] = [];
   const districtStallGroups: Record<string, THREE.Group> = {};
+  const streamChunks: StreamChunk[] = [];
+  const districtBag = new Map<string, { group: THREE.Group; cols: Collider[] }>();
   let lowestY = 0;
+  let lodFocusX = 0;
+  let lodFocusZ = 0;
 
-  const addMesh = (m: THREE.Object3D) => group.add(m);
-  const addCol = (c: Collider) => {
+  // Resident layers: skyways always loaded; hub extras stay near residential spawn
+  const skywayGroup = new THREE.Group();
+  skywayGroup.name = 'Skyways';
+  group.add(skywayGroup);
+  const skywayCols: Collider[] = [];
+  const hubGroup = new THREE.Group();
+  hubGroup.name = 'HubResidential';
+  group.add(hubGroup);
+  const hubCols: Collider[] = [];
+  const impostorGroup = new THREE.Group();
+  impostorGroup.name = 'IslandImpostors';
+  group.add(impostorGroup);
+
+  const scratchDest = new THREE.Vector3();
+  const scratchDir = new THREE.Vector3();
+  const scratchRight = new THREE.Vector3();
+  const scratchPos = new THREE.Vector3();
+  const scratchMat = new THREE.Matrix4();
+  const scratchQuat = new THREE.Quaternion();
+  const scratchScale = new THREE.Vector3();
+  const scratchEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+
+  type MeshSink = (m: THREE.Object3D) => void;
+  type ColSink = (c: Collider) => void;
+  let meshSink: MeshSink = (m) => group.add(m);
+  let colSink: ColSink = (c) => {
     colliders.push(c);
     lowestY = Math.min(lowestY, c.min.y);
   };
+  const addMesh = (m: THREE.Object3D) => meshSink(m);
+  const addCol = (c: Collider) => colSink(c);
 
   const DECK_Y = 0.2;
   const byId = (id: string) => CITY_DISTRICTS.find((d) => d.id === id)!;
   const residential = byId('residential');
   const grand = byId('grand_market');
   const industrialDef = byId('industrial');
+  lodFocusX = residential.x;
+  lodFocusZ = residential.z;
   const residentialPlaza = new THREE.Vector3(residential.x, 0, residential.z);
   const grandMarket = new THREE.Vector3(grand.x, 0, grand.z);
   const industrial = new THREE.Vector3(industrialDef.x, 0, industrialDef.z);
@@ -393,26 +446,13 @@ export function buildSkyCity(): SkyCityBuilt {
     blending: THREE.AdditiveBlending,
   });
 
-  /**
-   * Orient a flat plane so it lies in the path's local "floor" —
-   * wide face horizontal-ish, length along dir (no vertical wall planks).
-   */
-  function layFlatAlong(mesh: THREE.Object3D, dir: THREE.Vector3) {
-    const flat = new THREE.Vector3(dir.x, 0, dir.z);
-    if (flat.lengthSq() < 1e-8) flat.set(0, 0, 1);
-    else flat.normalize();
-    const yaw = Math.atan2(flat.x, flat.z);
-    const pitch = Math.atan2(dir.y, Math.hypot(dir.x, dir.z));
-    mesh.rotation.order = 'YXZ';
-    mesh.rotation.y = yaw;
-    mesh.rotation.x = -pitch; // pitch with the arc, still flat underfoot
-    mesh.rotation.z = 0;
-  }
+  // Must declare before windSkyway uses it (calls, not definition)
+  const skyRoutes: SkyRoute[] = [];
+  const skywayLods: { root: THREE.Object3D; x: number; z: number }[] = [];
 
   /**
-   * Wind skyway between two islands — soft faded streaks (board-only).
-   * Visuals: spaced flat planks with soft edges, not solid roads.
-   * Ride colliders stay continuous under the wind lane.
+   * Wind skyway — instanced ribbon planks + sparse board colliders.
+   * Far links fade via distance LOD in animate().
    */
   function windSkyway(
     ax: number,
@@ -452,8 +492,7 @@ export function buildSkyCity(): SkyCityBuilt {
       .add(new THREE.Vector3(-px * curve * 0.35, arch * 0.1, -pz * curve * 0.35));
 
     const pts: THREE.Vector3[] = [];
-    // Dense sample for smooth colliders + wind placement
-    const segs = Math.max(16, Math.ceil(dist / 10));
+    const segs = Math.max(12, Math.ceil(dist / 14));
     for (let i = 0; i <= segs; i++) {
       const t = i / segs;
       const u = 1 - t;
@@ -467,90 +506,114 @@ export function buildSkyCity(): SkyCityBuilt {
     }
     skyRoutes.push({ path: pts, pathDist: pathDist(pts) });
 
-    // ——— Soft flat wind planks (gappy, multi-lane, faded) ———
-    // Place more planks than path samples, with lateral jitter so it reads as wind
-    const plankCount = Math.max(22, Math.ceil(dist / 5.5));
+    const linkRoot = new THREE.Group();
+    linkRoot.name = 'SkywayLink';
+    skywayGroup.add(linkRoot);
+    skywayLods.push({ root: linkRoot, x: (ax + bx) * 0.5, z: (az + bz) * 0.5 });
+
+    // Collect instance transforms for 3 material layers
+    type Inst = { mat: THREE.Matrix4 };
+    const cores: Inst[] = [];
+    const softs: Inst[] = [];
+    const whisps: Inst[] = [];
+
+    const plankCount = Math.max(14, Math.ceil(dist / 8));
     for (let i = 0; i < plankCount; i++) {
       const t = (i + 0.5) / plankCount;
-      // Skip a few for air gaps
       const gapSeed = Math.sin(i * 2.71 + ax * 0.03) * 0.5 + 0.5;
       if (gapSeed < 0.12) continue;
 
-      // Sample path
       const fi = t * (pts.length - 1);
       const i0 = Math.min(pts.length - 2, Math.floor(fi));
       const frac = fi - i0;
       const p0 = pts[i0]!;
       const p1 = pts[i0 + 1]!;
-      const pos = p0.clone().lerp(p1, frac);
-      const dir = p1.clone().sub(p0);
-      if (dir.lengthSq() < 1e-8) continue;
-      dir.normalize();
-      const right = new THREE.Vector3(-dir.z, 0, dir.x);
-      if (right.lengthSq() < 1e-8) right.set(1, 0, 0);
-      else right.normalize();
+      scratchPos.copy(p0).lerp(p1, frac);
+      scratchDir.copy(p1).sub(p0);
+      if (scratchDir.lengthSq() < 1e-8) continue;
+      scratchDir.normalize();
+      scratchRight.set(-scratchDir.z, 0, scratchDir.x);
+      if (scratchRight.lengthSq() < 1e-8) scratchRight.set(1, 0, 0);
+      else scratchRight.normalize();
 
-      // Multiple wind layers / lanes per station
-      const lanes = 3 + (i % 2); // 3–4 wisps
+      const lanes = 2 + (i % 2); // 2–3 wisps (was 3–4 unique meshes)
       for (let L = 0; L < lanes; L++) {
         const lat =
-          (L - (lanes - 1) / 2) * (width * 0.22) +
-          Math.sin(i * 1.7 + L * 2.1) * (width * 0.08);
-        const alongJit = Math.sin(i * 3.1 + L) * 1.1;
-        const elevJit = Math.sin(i * 2.3 + L * 1.4) * 0.35;
+          (L - (lanes - 1) / 2) * (width * 0.28) +
+          Math.sin(i * 1.7 + L * 2.1) * (width * 0.06);
+        const alongJit = Math.sin(i * 3.1 + L) * 0.9;
+        const elevJit = Math.sin(i * 2.3 + L * 1.4) * 0.28;
+        const plankLen = 3.2 + (i % 5) * 0.5 + L * 0.3;
+        const plankW = 1.4 + (L % 3) * 0.4 + gapSeed * 0.5;
 
-        const plankLen = 2.8 + (i % 5) * 0.55 + L * 0.35;
-        const plankW = 1.1 + (L % 3) * 0.45 + gapSeed * 0.6;
-        // PlaneGeometry is XY by default → rotate to XZ flat via layFlatAlong
-        const plane = new THREE.Mesh(
-          new THREE.PlaneGeometry(plankW, plankLen),
-          L === 0 ? windMatCore : L === 1 ? windMatSoft : windMatWhisp,
+        const yaw = Math.atan2(scratchDir.x, scratchDir.z);
+        const pitch = Math.atan2(scratchDir.y, Math.hypot(scratchDir.x, scratchDir.z));
+        scratchEuler.set(-pitch, yaw, Math.sin(i * 1.9 + L * 2.4) * 0.1, 'YXZ');
+        scratchQuat.setFromEuler(scratchEuler);
+        scratchScale.set(plankW, 1, plankLen);
+        scratchMat.compose(
+          scratchPos
+            .clone()
+            .addScaledVector(scratchRight, lat)
+            .addScaledVector(scratchDir, alongJit)
+            .add(new THREE.Vector3(0, elevJit, 0)),
+          scratchQuat,
+          scratchScale,
         );
-        // Plane is in XY; after layFlatAlong with pitch/yaw it sits as a floor strip
-        // Swap: use geometry so local Y is along path length after rotation
-        plane.geometry.rotateX(-Math.PI / 2); // now in XZ, long axis along +Z before yaw
-
-        plane.position
-          .copy(pos)
-          .addScaledVector(right, lat)
-          .addScaledVector(dir, alongJit)
-          .add(new THREE.Vector3(0, elevJit, 0));
-        layFlatAlong(plane, dir);
-        // Extra roll scatter for windy feel (small)
-        plane.rotation.z += Math.sin(i * 1.9 + L * 2.4) * 0.12;
-        plane.renderOrder = 2;
-        addMesh(plane);
+        const entry = { mat: scratchMat.clone() };
+        if (L === 0) cores.push(entry);
+        else if (L === 1) softs.push(entry);
+        else whisps.push(entry);
       }
 
-      // Occasional longer outer whisps
-      if (i % 3 === 0) {
-        for (const side of [-1, 1]) {
-          const whisp = new THREE.Mesh(
-            new THREE.PlaneGeometry(0.7 + (i % 4) * 0.15, 4.5 + (i % 3)),
-            windMatWhisp,
+      if (i % 4 === 0) {
+        for (const side of [-1, 1] as const) {
+          const yaw = Math.atan2(scratchDir.x, scratchDir.z);
+          const pitch = Math.atan2(scratchDir.y, Math.hypot(scratchDir.x, scratchDir.z));
+          scratchEuler.set(-pitch, yaw, side * 0.18, 'YXZ');
+          scratchQuat.setFromEuler(scratchEuler);
+          scratchScale.set(0.75 + (i % 4) * 0.12, 1, 4.2 + (i % 3));
+          scratchMat.compose(
+            scratchPos
+              .clone()
+              .addScaledVector(scratchRight, side * (width * 0.4 + Math.sin(i) * 0.5))
+              .add(new THREE.Vector3(0, 0.35 + Math.sin(i * 0.7) * 0.25, 0)),
+            scratchQuat,
+            scratchScale,
           );
-          whisp.geometry.rotateX(-Math.PI / 2);
-          whisp.position
-            .copy(pos)
-            .addScaledVector(right, side * (width * 0.42 + Math.sin(i) * 0.6))
-            .add(new THREE.Vector3(0, 0.4 + Math.sin(i * 0.7) * 0.3, 0));
-          layFlatAlong(whisp, dir);
-          whisp.rotation.z += side * 0.2;
-          whisp.renderOrder = 1;
-          addMesh(whisp);
+          whisps.push({ mat: scratchMat.clone() });
         }
       }
     }
 
-    // Continuous board colliders (invisible) along path
-    for (let i = 0; i < pts.length - 1; i++) {
+    const flushInstanced = (
+      list: Inst[],
+      mat: THREE.Material,
+      renderOrder: number,
+    ) => {
+      if (!list.length) return;
+      const mesh = new THREE.InstancedMesh(NPC_PLANE_GEO, mat, list.length);
+      mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+      for (let i = 0; i < list.length; i++) mesh.setMatrixAt(i, list[i]!.mat);
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.frustumCulled = true;
+      mesh.renderOrder = renderOrder;
+      linkRoot.add(mesh);
+    };
+    flushInstanced(cores, windMatCore, 2);
+    flushInstanced(softs, windMatSoft, 2);
+    flushInstanced(whisps, windMatWhisp, 1);
+
+    // Sparse skyway colliders (~every 28u of path) — path-snap style
+    const colStride = Math.max(1, Math.ceil(28 / Math.max(1, dist / segs)));
+    for (let i = 0; i < pts.length - 1; i += colStride) {
       const p0 = pts[i]!;
-      const p1 = pts[i + 1]!;
-      const midp = p0.clone().lerp(p1, 0.5);
-      const halfW = width * 0.58;
-      const top = midp.y + 0.2;
-      const bot = midp.y - 0.65;
-      addCol({
+      const p1 = pts[Math.min(pts.length - 1, i + colStride)]!;
+      const midY = (p0.y + p1.y) * 0.5;
+      const halfW = width * 0.62;
+      const top = midY + 0.25;
+      const bot = midY - 0.7;
+      const col: Collider = {
         min: new THREE.Vector3(
           Math.min(p0.x, p1.x) - halfW,
           bot,
@@ -562,13 +625,16 @@ export function buildSkyCity(): SkyCityBuilt {
           Math.max(p0.z, p1.z) + halfW,
         ),
         kind: 'skyway',
-      });
+      };
+      skywayCols.push(col);
+      colliders.push(col);
+      lowestY = Math.min(lowestY, col.min.y);
     }
 
-    // Soft entry rings (faded, not hard rails)
+    // Soft entry rings
     for (const p of [a0, b0]) {
       const beacon = new THREE.Mesh(
-        new THREE.RingGeometry(1.4, 2.6, 32),
+        new THREE.RingGeometry(1.4, 2.6, 24),
         new THREE.MeshBasicMaterial({
           color: 0x88eeff,
           transparent: true,
@@ -579,15 +645,13 @@ export function buildSkyCity(): SkyCityBuilt {
         }),
       );
       beacon.position.copy(p);
-      beacon.rotation.x = -Math.PI / 2; // flat on the wind
+      beacon.rotation.x = -Math.PI / 2;
       beacon.renderOrder = 3;
-      addMesh(beacon);
+      linkRoot.add(beacon);
     }
   }
 
-  // Must declare before windSkyway uses it
-  const skyRoutes: SkyRoute[] = [];
-
+  // Removed unused layFlatAlong (instanced ribbons set orientation via matrix)
 
   // ——— Every district plaza ———
   for (let di = 0; di < CITY_DISTRICTS.length; di++) {
@@ -595,6 +659,18 @@ export function buildSkyCity(): SkyCityBuilt {
     const cx = d.x;
     const cz = d.z;
     const sz = d.size;
+    const dGroup = new THREE.Group();
+    dGroup.name = `District_${d.id}`;
+    group.add(dGroup);
+    const dCols: Collider[] = [];
+    districtBag.set(d.id, { group: dGroup, cols: dCols });
+    meshSink = (m) => dGroup.add(m);
+    colSink = (c) => {
+      dCols.push(c);
+      colliders.push(c);
+      lowestY = Math.min(lowestY, c.min.y);
+    };
+
     const pad = floorPad(mats, sz, sz, cx, DECK_Y, cz, d.color);
     addMesh(pad.mesh);
     addCol(pad.col);
@@ -617,7 +693,7 @@ export function buildSkyCity(): SkyCityBuilt {
       const bx = cx + Math.cos(a) * r;
       const bz = cz + Math.sin(a) * r;
       placeScenery(
-        group,
+        dGroup,
         mats,
         'building',
         (i + di) % 5,
@@ -626,7 +702,7 @@ export function buildSkyCity(): SkyCityBuilt {
         0.4,
         0.75 + ((i + di) % 4) * 0.12,
         a,
-        colliders,
+        dCols,
         true,
       );
     }
@@ -634,7 +710,7 @@ export function buildSkyCity(): SkyCityBuilt {
       const a = (i / 5) * Math.PI * 2 + 0.4;
       const r = sz * 0.38;
       placeScenery(
-        group,
+        dGroup,
         mats,
         'tree',
         i % 5,
@@ -645,11 +721,11 @@ export function buildSkyCity(): SkyCityBuilt {
       );
     }
     if (d.role === 'premium' || d.role === 'market') {
-      placeScenery(group, mats, 'fountain', di % 5, cx + 10, cz - 8, 0.4, 0.8);
+      placeScenery(dGroup, mats, 'fountain', di % 5, cx + 10, cz - 8, 0.4, 0.8);
     }
     if (d.role === 'industrial' || d.role === 'harbor') {
-      placeScenery(group, mats, 'vehicle', di % 5, cx - 12, cz + 6, 0.4, 1.0, 0.5);
-      placeScenery(group, mats, 'vehicle', (di + 2) % 5, cx + 14, cz - 10, 0.4, 0.95, -0.8);
+      placeScenery(dGroup, mats, 'vehicle', di % 5, cx - 12, cz + 6, 0.4, 1.0, 0.5);
+      placeScenery(dGroup, mats, 'vehicle', (di + 2) % 5, cx + 14, cz - 10, 0.4, 0.95, -0.8);
     }
 
     // Stall lease marker (all districts except pure residential can sell — residential too for local trade)
@@ -658,7 +734,7 @@ export function buildSkyCity(): SkyCityBuilt {
     stallG.visible = false;
     const counter = solidBox(mats, mats.wood, 3.2, 1, 0.8, cx + sz * 0.28, 0.85, cz + sz * 0.22);
     stallG.add(counter.mesh);
-    group.add(stallG);
+    dGroup.add(stallG);
     districtStallGroups[d.id] = stallG;
     if (d.id === 'grand_market') stallGroup = stallG;
 
@@ -810,12 +886,40 @@ export function buildSkyCity(): SkyCityBuilt {
       });
     }
 
+    // placeScenery appends only to dCols — mirror into master collider list
+    for (const c of dCols) {
+      if (colliders.indexOf(c) < 0) {
+        colliders.push(c);
+        lowestY = Math.min(lowestY, c.min.y);
+      }
+    }
+
     districts.push({
       def: d,
       center: new THREE.Vector3(cx, 0, cz),
       stallMesh: sm,
+      group: dGroup,
+      colliders: dCols,
     });
+    streamChunks.push({
+      id: `district_${d.id}`,
+      x: cx,
+      z: cz,
+      group: dGroup,
+      colliders: dCols,
+      // Keep home district + industrial HQ always resident for spawn/workshop
+      resident: d.id === 'residential' || d.id === 'industrial',
+    });
+    impostorGroup.add(makeIslandImpostor(cx, cz, sz, d.color));
   }
+
+  // Reset sinks for hub / root content
+  meshSink = (m) => hubGroup.add(m);
+  colSink = (c) => {
+    hubCols.push(c);
+    colliders.push(c);
+    lowestY = Math.min(lowestY, c.min.y);
+  };
 
   // ——— Wind skyways only between islands (no solid roads) ———
   const skywayPairs: [string, string][] = [
@@ -862,7 +966,7 @@ export function buildSkyCity(): SkyCityBuilt {
     addCol(wall.col);
     const roof = solidBox(mats, mats.copper, 9, 0.4, 8, apartmentPos.x - 2, 4.6, apartmentPos.z);
     addMesh(roof.mesh);
-    placeScenery(group, mats, 'tree', 0, apartmentPos.x + 6, apartmentPos.z + 5, 0.4, 0.95);
+    placeScenery(hubGroup, mats, 'tree', 0, apartmentPos.x + 6, apartmentPos.z + 5, 0.4, 0.95);
     const homeLab = labelSprite('YOUR APARTMENT');
     homeLab.position.set(apartmentPos.x, 5.2, apartmentPos.z + 2);
     addMesh(homeLab);
@@ -907,7 +1011,7 @@ export function buildSkyCity(): SkyCityBuilt {
     const house = solidBox(mats, mats.wood, 5, 3.2, 5, n.x, 2.0, n.z);
     addMesh(house.mesh);
     addCol(house.col);
-    placeScenery(group, mats, 'tree', 0, n.x - 4, n.z + 3, 0.4, 0.95);
+    placeScenery(hubGroup, mats, 'tree', 0, n.x - 4, n.z + 3, 0.4, 0.95);
     const mark = new THREE.Mesh(
       new THREE.SphereGeometry(0.2, 8, 8),
       new THREE.MeshStandardMaterial({
@@ -990,6 +1094,13 @@ export function buildSkyCity(): SkyCityBuilt {
 
   // ——— Full industrial workshop complex (empire HQ) ———
   {
+    const indRec = districtBag.get('industrial')!;
+    meshSink = (m) => indRec.group.add(m);
+    colSink = (c) => {
+      indRec.cols.push(c);
+      colliders.push(c);
+      lowestY = Math.min(lowestY, c.min.y);
+    };
     const ix = industrialDef.x;
     const iz = industrialDef.z;
     // Lease marker (always)
@@ -1036,7 +1147,7 @@ export function buildSkyCity(): SkyCityBuilt {
     const wingL3 = solidBox(mats, mats.copper, 10, 4, 8, ix + 10, 2.2, iz - 6);
     wingL3.mesh.name = 'cityWingL3';
     workshopGroup.add(wingL3.mesh);
-    group.add(workshopGroup);
+    indRec.group.add(workshopGroup);
 
     const addMark = (
       id: string,
@@ -1131,6 +1242,13 @@ export function buildSkyCity(): SkyCityBuilt {
   expandYardGroup.name = 'ExpandYard';
   expandYardGroup.visible = false;
   {
+    const foundryRec = districtBag.get('sky_foundry')!;
+    meshSink = (m) => foundryRec.group.add(m);
+    colSink = (c) => {
+      foundryRec.cols.push(c);
+      colliders.push(c);
+      lowestY = Math.min(lowestY, c.min.y);
+    };
     const fd = byId('sky_foundry');
     const fx = fd.x;
     const fz = fd.z;
@@ -1203,8 +1321,15 @@ export function buildSkyCity(): SkyCityBuilt {
       districtId: 'sky_foundry',
     });
 
-    group.add(expandYardGroup);
+    foundryRec.group.add(expandYardGroup);
   }
+
+  // Ambient extras + NPCs live on root (always drawn; LOD in animate)
+  meshSink = (m) => group.add(m);
+  colSink = (c) => {
+    colliders.push(c);
+    lowestY = Math.min(lowestY, c.min.y);
+  };
 
   // Bonded storage offices — one track per distant plaza (no dedicated HQs)
   {
@@ -1300,7 +1425,7 @@ export function buildSkyCity(): SkyCityBuilt {
     );
   }
 
-  // Extra wander pads for density (same deck height)
+  // Extra wander pads for density (same deck height) — streamed individually
   const extraPads: [number, number, number, number][] = [];
   for (let i = 0; i < 40; i++) {
     const a = (i / 40) * Math.PI * 2;
@@ -1314,15 +1439,33 @@ export function buildSkyCity(): SkyCityBuilt {
   }
   for (let i = 0; i < extraPads.length; i++) {
     const [x, z, w, d] = extraPads[i]!;
+    const eg = new THREE.Group();
+    eg.name = `ExtraPad_${i}`;
+    group.add(eg);
     const p = floorPad(mats, w, d, x, DECK_Y, z, 0x4a4844);
-    addMesh(p.mesh);
-    addCol(p.col);
+    eg.add(p.mesh);
+    const eCols: Collider[] = [p.col];
+    colliders.push(p.col);
+    lowestY = Math.min(lowestY, p.col.min.y);
     if (i % 2 === 0) {
-      placeScenery(group, mats, 'tree', i % 5, x + 2, z - 1, 0.4, 0.9);
+      placeScenery(eg, mats, 'tree', i % 5, x + 2, z - 1, 0.4, 0.9);
     }
     if (i % 3 === 0) {
-      placeScenery(group, mats, 'building', i % 5, x - 1, z + 2, 0.4, 0.7, i * 0.3, colliders, true);
+      placeScenery(eg, mats, 'building', i % 5, x - 1, z + 2, 0.4, 0.7, i * 0.3, eCols, true);
+      for (const c of eCols) {
+        if (colliders.indexOf(c) < 0) {
+          colliders.push(c);
+          lowestY = Math.min(lowestY, c.min.y);
+        }
+      }
     }
+    streamChunks.push({
+      id: `extra_${i}`,
+      x,
+      z,
+      group: eg,
+      colliders: eCols,
+    });
   }
 
   // Link scattered islands with wind skyways (no roads)
@@ -1427,8 +1570,65 @@ export function buildSkyCity(): SkyCityBuilt {
   const apartmentSpawn = new THREE.Vector3(apartmentPos.x + 4, 1.75, apartmentPos.z);
   const harvestSpot = new THREE.Vector3(byId('harbor').x - 30, 0.5, byId('harbor').z);
 
+  // Resident stream chunks
+  streamChunks.push({
+    id: 'skyways',
+    x: residential.x,
+    z: residential.z,
+    group: skywayGroup,
+    colliders: skywayCols,
+    resident: true,
+  });
+  streamChunks.push({
+    id: 'hub_residential',
+    x: apartmentPos.x,
+    z: apartmentPos.z,
+    group: hubGroup,
+    colliders: hubCols,
+    resident: true,
+  });
+  // Impostors always visible (cheap distant islands)
+  streamChunks.push({
+    id: 'impostors',
+    x: 0,
+    z: 0,
+    group: impostorGroup,
+    colliders: [],
+    resident: true,
+  });
+
+  const animState = { npcActive: 0 };
+
+  const setLodFocus = (x: number, z: number) => {
+    lodFocusX = x;
+    lodFocusZ = z;
+  };
+
   const animate = (cityTime: number, dt: number) => {
+    // Skyway distance LOD — hide far ribbon groups
+    for (const s of skywayLods) {
+      const d = Math.hypot(s.x - lodFocusX, s.z - lodFocusZ);
+      s.root.visible = d < 320;
+    }
+
+    let active = 0;
     for (const n of npcs) {
+      const nx = n.mesh.position.x;
+      const nz = n.mesh.position.z;
+      const dist = Math.hypot(nx - lodFocusX, nz - lodFocusZ);
+      if (dist > 220) {
+        n.mesh.visible = false;
+        continue;
+      }
+      n.mesh.visible = true;
+      // Mid range: update at ~12 Hz
+      if (dist > 90) {
+        n.lodAcc = (n.lodAcc ?? 0) + dt;
+        if (n.lodAcc < 1 / 12) continue;
+        n.lodAcc = 0;
+      }
+      active++;
+
       if (n.role === 'rogue') {
         n.mesh.position.y = 0.05 + Math.sin(cityTime * Math.PI * 2 * 4 + n.phase) * 0.05;
         continue;
@@ -1445,32 +1645,31 @@ export function buildSkyCity(): SkyCityBuilt {
       else target = n.home;
 
       if (n.role === 'flyer') {
-        const dest = target.clone();
-        dest.y = 5 + Math.sin(cityTime * Math.PI * 2 + n.phase) * 2;
+        scratchDest.copy(target);
+        scratchDest.y = 5 + Math.sin(cityTime * Math.PI * 2 + n.phase) * 2;
         const pos = n.mesh.position;
-        const dir = dest.clone().sub(pos);
-        const dist = dir.length();
-        if (dist > 0.5) {
-          dir.normalize();
-          pos.addScaledVector(dir, Math.min(n.speed * dt, dist));
-          n.mesh.rotation.y = Math.atan2(dir.x, dir.z);
+        scratchDir.copy(scratchDest).sub(pos);
+        const dlen = scratchDir.length();
+        if (dlen > 0.5) {
+          scratchDir.multiplyScalar(1 / dlen);
+          pos.addScaledVector(scratchDir, Math.min(n.speed * dt, dlen));
+          n.mesh.rotation.y = Math.atan2(scratchDir.x, scratchDir.z);
         }
       } else {
-        const dest = target.clone();
-        dest.y = 0;
         const pos = n.mesh.position;
-        const dx = dest.x - pos.x;
-        const dz = dest.z - pos.z;
-        const dist = Math.hypot(dx, dz);
-        if (dist > 0.4) {
-          const step = Math.min(n.speed * dt, dist);
-          pos.x += (dx / dist) * step;
-          pos.z += (dz / dist) * step;
+        const dx = target.x - pos.x;
+        const dz = target.z - pos.z;
+        const dlen = Math.hypot(dx, dz);
+        if (dlen > 0.4) {
+          const step = Math.min(n.speed * dt, dlen);
+          pos.x += (dx / dlen) * step;
+          pos.z += (dz / dlen) * step;
           pos.y = 0;
           n.mesh.rotation.y = Math.atan2(dx, dz);
         }
       }
     }
+    animState.npcActive = active;
   };
 
   const built: SkyCityBuilt = {
@@ -1486,12 +1685,20 @@ export function buildSkyCity(): SkyCityBuilt {
     stallGroup,
     districtStallGroups,
     districts,
+    streamChunks,
     harvestSpot,
     residentialPlaza,
     grandMarket,
     industrial,
     mapSnapshot: null as unknown as MapSnapshot,
+    setLodFocus,
     animate,
+    get lastNpcActive() {
+      return animState.npcActive;
+    },
+    set lastNpcActive(v: number) {
+      animState.npcActive = v;
+    },
     lowestY: lowestY - 2,
   };
   built.mapSnapshot = buildMapSnapshot(built);
