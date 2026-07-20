@@ -5,6 +5,7 @@
 
 import './styles.css';
 import { ForgeHeartGame } from './forgeheart/game';
+import { isMobileBrowser } from './forgeheart/mobileInput';
 import {
   listSlots,
   getLastSlotIndex,
@@ -265,6 +266,7 @@ btnTitle?.addEventListener('click', () => {
     'maker-palette',
     'maker-hud',
     'nav-compass',
+    'mobile-controls',
   ]) {
     const el = document.getElementById(id);
     el?.classList.add('hidden');
@@ -277,6 +279,13 @@ btnTitle?.addEventListener('click', () => {
 });
 
 refreshSlots();
+
+// Title-screen tip when phone / touch browser is detected
+const mobileHint = document.getElementById('mobile-title-hint');
+if (mobileHint && isMobileBrowser()) {
+  mobileHint.classList.remove('hidden');
+  mobileHint.setAttribute('aria-hidden', 'false');
+}
 
 console.info(
   '%cForgeHeart',

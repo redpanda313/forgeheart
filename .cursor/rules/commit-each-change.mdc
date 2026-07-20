@@ -1,0 +1,21 @@
+---
+description: Commit after every meaningful code change
+alwaysApply: true
+---
+
+# Commit each change
+
+After finishing a coherent unit of work (a feature slice, bugfix, or rule/docs update):
+
+1. Stage the relevant files with `git add`
+2. Create a commit with a clear, descriptive message
+3. Push the branch (`git push -u origin <branch>` when needed)
+
+Do this **as you go** — do not batch unrelated edits into one late commit. Prefer small commits that each stand alone.
+
+## Exceptions
+
+- Do not commit secrets, credentials, or generated junk
+- Do not amend pushed commits unless explicitly asked
+- Pure exploration / read-only investigation needs no commit
+- If the working tree is already clean after your edits, skip a no-op commit
