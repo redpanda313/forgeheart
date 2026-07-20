@@ -64,6 +64,7 @@ import {
   panMapCamera,
   focusMapOn,
   resolveMapTarget,
+  routeToTarget,
   clientToMapSvg,
   mapToWorld,
   mapWorldScale,
@@ -3573,8 +3574,8 @@ export class ForgeHeartGame {
     this.skyCity.animate(this.cityTime, dt);
     // Refresh colliders if workshop toggled
     this.colliders = [...this.skyCity.colliders];
-    this.updateNavCompass();
     this.clearCityMapRouteIfArrived();
+    this.updateNavCompass();
     if (this.cityMapOpen) this.refreshCityMap();
 
     if (this.harvestOpen) {
@@ -3889,7 +3890,7 @@ export class ForgeHeartGame {
   }
 
   /**
-   * Compass: apartment (HOME) + industrial workshop (WORK).
+   * Compass: apartment (HOME) + industrial workshop (WORK) + active map-route arrow.
    * Top of ring = facing direction; pips rotate with bearing; legend shows range.
    * Element lives under #app (not bottom #hud) so top-right placement is visible.
    */
@@ -3923,6 +3924,7 @@ export class ForgeHeartGame {
 
     this.placeCompassMark('nav-mark-home', 'nav-home-dist', 'nav-home-line', pos, home, faceYaw);
     this.placeCompassMark('nav-mark-work', 'nav-work-dist', 'nav-work-line', pos, work, faceYaw);
+    this.updateCompassRouteMark(pos, faceYaw);
   }
 
   private placeCompassMark(
@@ -3951,6 +3953,55 @@ export class ForgeHeartGame {
     const near = dist < 28;
     mark.classList.toggle('near', near);
     line?.classList.toggle('near', near);
+  }
+
+  /** Gold rim arrow toward the next hop on the active map route (hidden when none). */
+  private updateCompassRouteMark(from: THREE.Vector3, faceYaw: number) {
+    const mark = document.getElementById('nav-mark-route');
+    if (!mark || !this.skyCity) return;
+
+    const id = this.cityMapSelectedId;
+    const dest =
+      id && id !== 'player'
+        ? resolveMapTarget(this.skyCity.mapSnapshot, this.cityMapLive, id)
+        : null;
+    if (!dest) {
+      mark.classList.add('hidden');
+      mark.setAttribute('aria-hidden', 'true');
+      return;
+    }
+
+    const route = routeToTarget(this.skyCity.mapSnapshot, { x: from.x, z: from.z }, dest);
+    const steer = this.routeSteerPoint({ x: from.x, z: from.z }, route) ?? dest;
+    const dx = steer.x - from.x;
+    const dz = steer.z - from.z;
+    const dist = Math.hypot(dx, dz);
+    const bearing = Math.atan2(dx, dz) - faceYaw;
+    const deg = (bearing * 180) / Math.PI;
+    mark.style.transform = `translate(-50%, -50%) rotate(${deg}deg)`;
+    mark.classList.toggle('near', dist < 28);
+    mark.classList.remove('hidden');
+    mark.setAttribute('aria-hidden', 'false');
+    mark.title = `Route · ${dest.label}`;
+  }
+
+  /** Look-ahead point on the map route polyline for compass steering. */
+  private routeSteerPoint(
+    from: { x: number; z: number },
+    route: { x: number; z: number }[],
+  ): { x: number; z: number } | null {
+    if (route.length < 2) return null;
+    const lookAhead = 40;
+    let steer = route[route.length - 1]!;
+    for (let i = 1; i < route.length; i++) {
+      const p = route[i]!;
+      if (Math.hypot(p.x - from.x, p.z - from.z) >= lookAhead) {
+        steer = p;
+        break;
+      }
+      steer = p;
+    }
+    return steer;
   }
 
   private hideNavCompass() {
