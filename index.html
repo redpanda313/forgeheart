@@ -14,6 +14,36 @@
       <canvas id="game-canvas"></canvas>
       <div id="hurt-vignette" class="hurt-vignette hidden" aria-hidden="true"></div>
       <div id="speed-blur" class="speed-blur hidden" aria-hidden="true"></div>
+      <!-- Mobile / coarse-pointer on-screen controls (shown when detected) -->
+      <div id="mobile-controls" class="mobile-controls hidden" aria-hidden="true">
+        <div id="mobile-look" class="mobile-look" aria-label="Look"></div>
+        <div class="mobile-left">
+          <div id="mobile-stick" class="mobile-stick" aria-label="Move">
+            <div class="mobile-stick-base"></div>
+            <div id="mobile-stick-knob" class="mobile-stick-knob"></div>
+          </div>
+        </div>
+        <div class="mobile-right">
+          <div class="mobile-util">
+            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="pause" title="Pause">☰</button>
+            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="map" title="Map">M</button>
+            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="bay" title="Bay">I</button>
+            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="camera" title="Camera">Tab</button>
+          </div>
+          <div class="mobile-weapons">
+            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="hand" title="Hand">1</button>
+            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="wrench" title="Wrench">2</button>
+            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="weapon-board" title="Board weapon">3</button>
+          </div>
+          <div class="mobile-actions">
+            <button type="button" class="mobile-btn mobile-btn-attack" data-mobile-action="attack" title="Attack">ATK</button>
+            <button type="button" class="mobile-btn mobile-btn-jump" data-mobile-action="jump" title="Jump">JMP</button>
+            <button type="button" class="mobile-btn mobile-btn-interact" data-mobile-action="interact" title="Interact">E</button>
+            <button type="button" class="mobile-btn mobile-btn-slide" data-mobile-action="slide" title="Slide">SLD</button>
+            <button type="button" class="mobile-btn mobile-btn-board" data-mobile-action="board" title="Mount board">Q</button>
+          </div>
+        </div>
+      </div>
       <div id="hud" class="hud hidden">
         <div class="hud-top">
           <div id="location-line" class="location-line">Voss Workshop</div>

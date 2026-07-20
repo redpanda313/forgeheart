@@ -26,6 +26,7 @@ import { ForgeAudio } from './audio';
 import { nearestOnPath, type RacewayBuilt } from './raceway';
 import { Surfboard, BOARD } from './surfboard';
 import { EliasCompanion } from './eliasCompanion';
+import { MobileControls, isMobileBrowser } from './mobileInput';
 import {
   writeSlot,
   emptySave,
@@ -335,6 +336,8 @@ export class ForgeHeartGame {
   private pendingLoad: ForgeSaveData | null = null;
   private autosaveT = 0;
   private disposed = false;
+  /** On-screen touch controls when a mobile browser is detected. */
+  private mobile = new MobileControls();
   /** Abort all window/canvas/DOM listeners for this session (title exit / new game). */
   private sessionAbort = new AbortController();
   private craftDoWired = false;
@@ -394,6 +397,12 @@ export class ForgeHeartGame {
 
     this.camera = new THREE.PerspectiveCamera(70, canvas.clientWidth / canvas.clientHeight, 0.08, 120);
     this.controls = new PointerLockControls(this.camera, canvas);
+    // Mobile browsers lack reliable pointer lock — no-op lock so touch look can drive the camera.
+    if (isMobileBrowser()) {
+      this.controls.lock = () => {
+        /* mobile: use on-screen look pad */
+      };
+    }
     this.loadLookSensitivity();
     this.wireLookSensitivityUi();
 
@@ -462,7 +471,20 @@ export class ForgeHeartGame {
 
     this.bindInput();
     window.addEventListener('resize', () => this.onResize(), { signal: this.sessionAbort.signal });
-    this.setHelp('WASD look · E read / interact · 1 Hand reprogram · Space jump');
+    if (this.mobile.enabled) {
+      this.mobile.attach({
+        applyTouchLook: (dx, dy) => this.applyTouchLook(dx, dy),
+        setFireHeld: (v) => this.setFireHeld(v),
+        setPaused: (p) => this.setPaused(p),
+        isPaused: () => this.isPaused(),
+        injectKey: (code, down) => this.injectKey(code, down),
+        isDisposed: () => this.disposed,
+      });
+      this.mobile.setGameplayActive(true);
+      this.setHelp('Stick move · drag look · E interact · JMP jump · ATK attack · ☰ pause');
+    } else {
+      this.setHelp('WASD look · E read / interact · 1 Hand reprogram · Space jump');
+    }
   }
 
   private bindInput() {
@@ -1673,6 +1695,53 @@ export class ForgeHeartGame {
   }
   setAltHeld(_v: boolean) {}
 
+  isDisposed() {
+    return this.disposed;
+  }
+
+  /**
+   * Touch look — same YXZ yaw/pitch model as PointerLockControls, without requiring lock.
+   * dx/dy are CSS pixels (positive dx looks right, positive dy looks down).
+   */
+  applyTouchLook(dx: number, dy: number) {
+    if (this.disposed || this.paused) return;
+    if (this.isEconomyUiOpen() && !this.gameMakerActive) return;
+    const sens = 0.0028 * this.lookSensitivity;
+    this.camera.rotation.order = 'YXZ';
+    this.camera.rotation.y -= dx * sens;
+    this.camera.rotation.x -= dy * sens;
+    const lim = Math.PI / 2 - 0.02;
+    this.camera.rotation.x = Math.max(-lim, Math.min(lim, this.camera.rotation.x));
+  }
+
+  /**
+   * Inject a keyboard code from on-screen controls so existing keydown/keyup handlers run.
+   */
+  injectKey(code: string, down: boolean) {
+    if (this.disposed) return;
+    const type = down ? 'keydown' : 'keyup';
+    const key =
+      code === 'Space'
+        ? ' '
+        : code === 'ShiftLeft' || code === 'ShiftRight'
+          ? 'Shift'
+          : code === 'Tab'
+            ? 'Tab'
+            : code.startsWith('Key')
+              ? code.slice(3).toLowerCase()
+              : code.startsWith('Digit')
+                ? code.slice(5)
+                : code;
+    window.dispatchEvent(
+      new KeyboardEvent(type, {
+        code,
+        key,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  }
+
   isPaused() {
     return this.paused;
   }
@@ -1701,9 +1770,13 @@ export class ForgeHeartGame {
       this.controls.unlock();
       menu?.classList.remove('hidden');
       this.syncLookSensitivityUi();
+      this.mobile.setGameplayActive(false);
     } else {
       menu?.classList.add('hidden');
-      if (!this.disposed && !this.makerPaletteOpen) this.canvas.requestPointerLock();
+      this.mobile.setGameplayActive(true);
+      if (!this.disposed && !this.makerPaletteOpen && !this.mobile.enabled) {
+        this.canvas.requestPointerLock();
+      }
     }
   }
 
@@ -1853,6 +1926,7 @@ export class ForgeHeartGame {
     this.economyActive = false;
     this.raceActive = false;
     this.keys.clear();
+    this.mobile.detach();
     this.hubInteractPrompt = null;
     this.cityInteractPrompt = null;
     this.activeVendor = null;

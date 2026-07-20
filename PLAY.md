@@ -39,6 +39,18 @@ On macOS you can also double-click `tools/launch/Launch ForgeHeart.command`.
 | Pause / save | Esc |
 | City map | M (in mega-city) |
 
+### Mobile browser
+
+On phones and tablets, ForgeHeart shows on-screen controls automatically:
+
+| Action | Control |
+|--------|---------|
+| Move | Left virtual stick |
+| Look | Drag anywhere on the screen |
+| Jump / interact / attack | JMP · E · ATK |
+| Slide / board mount | SLD · Q |
+| Weapons / map / bay / pause | 1–3 · M · I · ☰ |
+
 ---
 
 ## Share a ZIP (offline / no GitHub Pages)
