@@ -53,7 +53,7 @@ import {
 } from './citySection';
 import type { FloatingCityBuilt } from './floatingCity';
 import { buildMarketHub, type MarketHubBuilt, type HubInteract } from './marketHub';
-import { buildSkyCity, type SkyCityBuilt, type CityInteract } from './skyCity';
+import { buildSkyCity, syncBrokerFrameDisplays, type SkyCityBuilt, type CityInteract } from './skyCity';
 import { SpatialColliderGrid } from './spatialGrid';
 import { CityStreamer } from './cityStreamer';
 import { perfStats } from './perfStats';
@@ -141,8 +141,16 @@ import {
   buyApartment,
   leaseCityWorkshop,
   repairRogueRobot,
+  harvestRogueRobot,
+  buyRobotWorker,
+  ensureEliasRobotWorker,
+  ensureTutorialMarketCrew,
+  assignMedallion,
+  quotePlacement,
+  giftRomanceNpc,
+  onMedallionHostLost,
   districtById,
-  upgradeStorage,
+  type PlacementRecord,
   storageUpgradeCost,
   getStorageLevel,
   storageCapAtLevel,
@@ -227,6 +235,14 @@ export class ForgeHeartGame {
   private cityMapAcc = 0;
   private aoiAcc = 0;
   private aoiSubsCount = 0;
+  /** Guided purchase→Game Maker placement */
+  private placementSession: {
+    kind: PlacementRecord['kind'];
+    districtId: string;
+    baseCost: number;
+    scale: number;
+    decorCount: number;
+  } | null = null;
   private velocity = new THREE.Vector3();
   private onGround = false;
   private keys = new Set<string>();
@@ -1243,6 +1259,54 @@ export class ForgeHeartGame {
   /** Returns true if key was consumed by maker edit tools */
   private handleMakerKey(code: string): boolean {
     if (!this.cityEditor || this.makerPaletteOpen) return false;
+
+    // Purchase placement session overrides normal maker tools
+    if (this.placementSession) {
+      const s = this.placementSession;
+      if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+        this.confirmPlacementSession();
+        return true;
+      }
+      if (code === 'KeyG') {
+        s.decorCount = Math.min(12, s.decorCount + 1);
+        const q = quotePlacement({
+          baseCost: s.baseCost,
+          scale: s.scale,
+          districtId: s.districtId,
+          decorCount: s.decorCount,
+        });
+        this.setHelp(`PLACE · décor ${s.decorCount} · quote ${q.total}b · Enter confirm`);
+        return true;
+      }
+      if (code === 'BracketRight' || code === 'Equal' || code === 'NumpadAdd') {
+        s.scale = Math.min(2.2, s.scale * 1.1);
+        const q = quotePlacement({
+          baseCost: s.baseCost,
+          scale: s.scale,
+          districtId: s.districtId,
+          decorCount: s.decorCount,
+        });
+        this.setHelp(`PLACE · scale ${s.scale.toFixed(2)} · quote ${q.total}b · Enter confirm`);
+        return true;
+      }
+      if (code === 'BracketLeft' || code === 'Minus' || code === 'NumpadSubtract') {
+        s.scale = Math.max(0.7, s.scale / 1.1);
+        const q = quotePlacement({
+          baseCost: s.baseCost,
+          scale: s.scale,
+          districtId: s.districtId,
+          decorCount: s.decorCount,
+        });
+        this.setHelp(`PLACE · scale ${s.scale.toFixed(2)} · quote ${q.total}b · Enter confirm`);
+        return true;
+      }
+      if (code === 'Escape') {
+        this.placementSession = null;
+        this.exitGameMaker();
+        this.toast('Placement cancelled.', 2);
+        return true;
+      }
+    }
 
     // Tool modes (X not S — S is fly-back in WASD)
     if (code === 'KeyP') {
@@ -3061,6 +3125,12 @@ export class ForgeHeartGame {
     r.mode = 'chase';
     r.returning = false;
     r.fuseT = 0;
+    if (r.isBrother) {
+      onMedallionHostLost(this.inv, 'bot_elias');
+      const elias = this.inv.workers.find((w) => w.id === 'bot_elias');
+      if (elias) elias.hasMedallion = false;
+      this.toast("Elias went rogue — medallion returned. Reassign it to a robot you own.", 4);
+    }
     const left = this.countPoweredAllies();
     const eq = this.plasmaEquilibrium(left);
     this.flash(`LINK SEVERED — rogue! Grid ${left}/${ROBOT.maxAllies} · settles ~${eq}%`);
@@ -3362,6 +3432,10 @@ export class ForgeHeartGame {
       }
       this.audio.playBang(0.3);
     } else {
+      if (wasBrother) {
+        onMedallionHostLost(this.inv, 'bot_elias');
+        this.toast("Medallion recovered from the lost frame — assign it in Bay → Workers.", 4);
+      }
       this.flash(`Scrapped — +${b} brass, +${g} gears`);
     }
   }
@@ -3494,6 +3568,11 @@ export class ForgeHeartGame {
     this.syncStallVisual();
     this.buildMarketBoardPath();
     this.rebuildHubNav();
+    // Elias + 3 humans when brother was woken / continued from tutorial
+    if (this.bringEliasToRace || this.hadAllyOnce || fromSave?.bringElias) {
+      ensureTutorialMarketCrew(this.inv);
+      this.brass = this.inv.brass;
+    }
     this.rebuildWorkerAgents();
     this.ensureMarketBoard();
     this.upkeepAcc = 0;
@@ -4195,16 +4274,24 @@ export class ForgeHeartGame {
         );
         return true;
       }
-      // leaseParcel routes to expandBay when already owned
-      const r = this.inv.parcelLeased ? expandBay(this.inv) : leaseParcel(this.inv);
-      this.toast(r.msg, 4);
-      if (r.ok) {
-        this.brass = this.inv.brass;
-        this.syncCityWorkshopVisuals();
-        this.audio.playPickup();
-        writeSlot(this.activeSlot, this.buildSaveData());
+      if (!this.inv.parcelLeased) {
+        const r = leaseParcel(this.inv);
+        this.toast(r.msg, 4);
+        if (r.ok) {
+          this.brass = this.inv.brass;
+          this.syncCityWorkshopVisuals();
+          this.audio.playPickup();
+          writeSlot(this.activeSlot, this.buildSaveData());
+        }
+        this.syncEconomyHud();
+        return true;
       }
-      this.syncEconomyHud();
+      // Expand → place wing in Game Maker with live quote
+      this.beginPlacementSession({
+        kind: 'bay_wing',
+        districtId: 'sky_foundry',
+        baseCost: expandBayCost(this.inv.bayLevel),
+      });
       return true;
     }
     if (it.kind === 'invent_desk') {
@@ -4240,6 +4327,20 @@ export class ForgeHeartGame {
       if (r.ok) {
         this.brass = this.inv.brass;
         this.audio.playPickup();
+        if (this.skyCity) syncBrokerFrameDisplays(this.skyCity, this.inv.brokerFrameStock);
+        writeSlot(this.activeSlot, this.buildSaveData());
+      }
+      this.syncEconomyHud();
+      return true;
+    }
+    if (it.kind === 'buy_robot') {
+      const r = buyRobotWorker(this.inv);
+      this.toast(r.msg, 4);
+      if (r.ok) {
+        this.brass = this.inv.brass;
+        if (this.skyCity) syncBrokerFrameDisplays(this.skyCity, this.inv.brokerFrameStock);
+        this.rebuildWorkerAgents();
+        this.audio.playPickup();
         writeSlot(this.activeSlot, this.buildSaveData());
       }
       this.syncEconomyHud();
@@ -4248,18 +4349,53 @@ export class ForgeHeartGame {
     if (it.kind === 'city_stall') {
       const did = it.districtId ?? 'grand_market';
       this.activeStallKey = did;
+      // New lease → Game Maker placement session
+      const existing = this.inv.cityStalls[did];
+      if (!existing?.owned) {
+        this.beginPlacementSession({
+          kind: 'stall',
+          districtId: did,
+          baseCost: districtById(did)?.stallCost ?? 100,
+        });
+        return true;
+      }
       this.openStall();
       this.syncCityStallVisuals();
       return true;
     }
     if (it.kind === 'rogue_robot') {
-      const r = repairRogueRobot(this.inv);
-      this.toast(r.msg, 3);
+      const harvest = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
+      if (harvest) {
+        const wasHost = false;
+        const r = harvestRogueRobot(this.inv, { wasMedallionHost: wasHost });
+        this.toast(r.msg + ' (Shift+interact = harvest)', 4);
+      } else {
+        const r = repairRogueRobot(this.inv);
+        this.toast(r.msg + ' · Shift+interact to harvest parts', 4);
+      }
       this.brass = this.inv.brass;
       it.mesh.visible = false;
       this.audio.playPickup();
       writeSlot(this.activeSlot, this.buildSaveData());
       this.syncEconomyHud();
+      return true;
+    }
+    if (it.kind === 'romance_npc') {
+      this.handleRomanceInteract(it);
+      return true;
+    }
+    if (it.kind === 'npc_home') {
+      this.toast('You step inside. Soft lamps · lived-in clutter.', 2.5);
+      this.audio.playPickup();
+      return true;
+    }
+    if (it.kind === 'circuit_start') {
+      this.toast('Board Circuit — Q mount and ride the gold airways & rails!', 3.5);
+      if (this.boardOwned && !this.board?.mounted) this.mountBoardHere(false);
+      return true;
+    }
+    if (it.kind === 'assign_medallion') {
+      this.openMedallionAssign();
       return true;
     }
     if (it.kind === 'ferry_training') {
@@ -4274,6 +4410,176 @@ export class ForgeHeartGame {
       return true;
     }
     return false;
+  }
+
+  private beginPlacementSession(opts: {
+    kind: PlacementRecord['kind'];
+    districtId: string;
+    baseCost: number;
+  }) {
+    this.placementSession = {
+      kind: opts.kind,
+      districtId: opts.districtId,
+      baseCost: opts.baseCost,
+      scale: 1,
+      decorCount: 0,
+    };
+    const q = quotePlacement({
+      baseCost: opts.baseCost,
+      scale: 1,
+      districtId: opts.districtId,
+      decorCount: 0,
+    });
+    this.toast(
+      `Place ${opts.kind.replace('_', ' ')} · quote ${q.total}b (scale/spot/décor change price). Enter confirms · Esc cancels.`,
+      5,
+    );
+    this.enterGameMaker();
+    this.setHelp(
+      `PLACE ${opts.kind.toUpperCase()} · [/] scale · G décor+ · Enter confirm (${q.total}b) · Esc cancel`,
+    );
+  }
+
+  private confirmPlacementSession(): boolean {
+    const s = this.placementSession;
+    if (!s) return false;
+    const q = quotePlacement({
+      baseCost: s.baseCost,
+      scale: s.scale,
+      districtId: s.districtId,
+      decorCount: s.decorCount,
+    });
+    if (this.inv.brass < q.total) {
+      this.toast(`Need ${q.total} brass (have ${this.inv.brass}).`, 3);
+      return true;
+    }
+    // Apply underlying purchase
+    if (s.kind === 'stall') {
+      const r = leaseCityStall(this.inv, s.districtId);
+      if (!r.ok) {
+        this.toast(r.msg, 3);
+        return true;
+      }
+      const extra = Math.max(0, q.total - s.baseCost);
+      if (extra > 0) {
+        if (this.inv.brass < extra) {
+          this.toast(`Need ${extra} more brass for scale/location/décor.`, 3);
+          return true;
+        }
+        this.inv.brass -= extra;
+      }
+    } else if (s.kind === 'bay_wing') {
+      const r = expandBay(this.inv);
+      if (!r.ok) {
+        this.toast(r.msg, 3);
+        return true;
+      }
+      const extra = Math.max(0, q.total - s.baseCost);
+      if (extra > 0) {
+        if (this.inv.brass < extra) {
+          this.toast(`Need ${extra} more brass for scale/location/décor.`, 3);
+          return true;
+        }
+        this.inv.brass -= extra;
+      }
+    } else if (s.kind === 'storage') {
+      const track: StorageTrack =
+        s.districtId === 'north_observatory'
+          ? 'resources'
+          : s.districtId === 'clocktower'
+            ? 'crafted'
+            : 'inventions';
+      // Charge full quote once, then bump storage level without second fee
+      if (this.inv.brass < q.total) {
+        this.toast(`Need ${q.total} brass (have ${this.inv.brass}).`, 3);
+        return true;
+      }
+      this.inv.brass -= q.total;
+      const from = getStorageLevel(this.inv, track);
+      if (from >= STORAGE_MAX_LEVEL) {
+        this.inv.brass += q.total;
+        this.toast('Storage already maxed.', 2);
+        return true;
+      }
+      const next = from + 1;
+      if (track === 'resources') this.inv.storageResourcesLevel = next;
+      else if (track === 'crafted') this.inv.storageCraftedLevel = next;
+      else this.inv.storageInventionsLevel = next;
+    }
+    const pos = this.camera.position;
+    const rec: PlacementRecord = {
+      id: `place_${Date.now()}`,
+      kind: s.kind,
+      districtId: s.districtId,
+      x: pos.x,
+      z: pos.z,
+      yaw: this.camera.rotation.y,
+      scale: s.scale,
+      variant: 0,
+      decorCount: s.decorCount,
+      paid: q.total,
+      trafficMul: q.trafficMul,
+      attractMul: 1 + s.decorCount * 0.04,
+      capacityMul: 0.9 + s.scale * 0.25,
+    };
+    this.inv.placements.push(rec);
+    this.brass = this.inv.brass;
+    this.placementSession = null;
+    this.exitGameMaker();
+    this.syncCityWorkshopVisuals();
+    this.syncCityStallVisuals();
+    this.toast(`Placed · paid ${q.total}b · traffic ×${q.trafficMul.toFixed(2)}`, 4);
+    writeSlot(this.activeSlot, this.buildSaveData());
+    this.syncEconomyHud();
+    return true;
+  }
+
+  private handleRomanceInteract(it: CityInteract) {
+    const lines = it.lines ?? ['She watches you with a knowing smile.'];
+    const rel = this.inv.relationships.find((r) => r.npcId === it.id);
+    const stage = rel?.stage ?? 0;
+    // Gift if carrying romance gifts
+    const gifts = ['silk_scarf', 'brass_charm', 'flower_gift'] as const;
+    const held = gifts.find((g) => (this.inv.items[g] ?? 0) > 0);
+    if (held && it.id) {
+      const r = giftRomanceNpc(this.inv, it.id, held);
+      this.toast(r.msg, 4);
+      this.brass = this.inv.brass;
+      this.audio.playPickup();
+      writeSlot(this.activeSlot, this.buildSaveData());
+      return;
+    }
+    const flirt =
+      stage >= 3
+        ? lines[1] ?? lines[0]!
+        : stage >= 1
+          ? lines[0]!
+          : `${it.label?.replace('Talk · ', '') ?? 'She'}: ${lines[0]}`;
+    this.toast(
+      `${flirt} (Bring Cloud Blooms / Brass Charm / Spore-Silk Scarf to gift.)`,
+      this.mobile.enabled ? 9 : 5.5,
+    );
+    this.audio.playPickup();
+  }
+
+  private openMedallionAssign() {
+    const bots = this.inv.workers.filter((w) => w.kind === 'robot');
+    if (!bots.length) {
+      this.toast('No owned robots. Buy one at a broker display.', 3);
+      return;
+    }
+    if (!this.inv.medallionLoose && !(this.inv.items.elias_medallion ?? 0) && !this.inv.medallionHostId) {
+      this.toast('No medallion — recover it when Elias is lost.', 3);
+      return;
+    }
+    // Cycle to next robot
+    const cur = this.inv.medallionHostId;
+    const idx = Math.max(0, bots.findIndex((b) => b.id === cur));
+    const next = bots[(idx + 1) % bots.length]!;
+    const r = assignMedallion(this.inv, next.id);
+    this.toast(r.msg, 4);
+    this.rebuildWorkerAgents();
+    writeSlot(this.activeSlot, this.buildSaveData());
   }
 
   /** Show/hide empire workshop + expand yards based on lease + bay level */
@@ -4902,17 +5208,38 @@ export class ForgeHeartGame {
     // Shift only — Ctrl can conflict with browser shortcuts
     const slide = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
 
+    // Prefer theme-park circuit path when near a plaza track
+    let path = this.marketBoardPath;
+    let pathDist = this.marketBoardPathDist;
+    let rails: { points: THREE.Vector3[] }[] = [];
+    if (this.skyCity?.circuits?.length) {
+      let best: (typeof this.skyCity.circuits)[0] | null = null;
+      let bestD = 55;
+      for (const c of this.skyCity.circuits) {
+        const d = Math.hypot(this.board.position.x - c.start.x, this.board.position.z - c.start.z);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
+      }
+      if (best) {
+        path = best.path;
+        pathDist = best.pathDist;
+        rails = best.rails;
+      }
+    }
+
     // Free-roam: island decks + board-only skyways (no solid roads between islands)
     const floorY = this.sampleBoardFloorY(this.board.position.x, this.board.position.z);
     this.board.tick(
       dt,
       accel,
       steer,
-      this.marketBoardPath,
-      this.marketBoardPathDist,
+      path,
+      pathDist,
       slide,
       [],
-      [],
+      rails,
       [],
       true,
       floorY,
@@ -5592,11 +5919,30 @@ export class ForgeHeartGame {
         ]
           .filter(Boolean)
           .join(' · ');
-        card.innerHTML = `<strong>${w.name}</strong> · pay grade ${pg}
+        const kindTag =
+          w.kind === 'robot' ? (w.hasMedallion ? ' · ★ Elias host' : ' · ⚙ robot') : '';
+        card.innerHTML = `<strong>${w.name}</strong>${kindTag} · pay grade ${pg}
           <span class="bay-worker-status">Doing: ${assignment}</span>
           <span class="bay-worker-meta">Gear: ${gear || 'none'} · jobs done ${w.jobsDone ?? 0}</span>`;
         const actions = document.createElement('div');
         actions.className = 'bay-worker-actions';
+        if (w.kind === 'robot') {
+          const medalBtn = document.createElement('button');
+          medalBtn.type = 'button';
+          medalBtn.textContent = w.hasMedallion ? 'Medallion host' : 'Assign Elias medallion';
+          medalBtn.disabled = !!w.hasMedallion;
+          medalBtn.addEventListener('click', () => {
+            const r = assignMedallion(this.inv, w.id);
+            this.bayLog(r.msg);
+            this.toast(r.msg, 3.5);
+            if (r.ok) {
+              this.rebuildWorkerAgents();
+              writeSlot(this.activeSlot, this.buildSaveData());
+            }
+            this.fillBayPanel();
+          });
+          actions.appendChild(medalBtn);
+        }
         const raise = document.createElement('button');
         raise.type = 'button';
         raise.textContent = `Raise pay (${PAY_RAISE_COST + pg * 25}b)`;
@@ -5818,7 +6164,6 @@ export class ForgeHeartGame {
     const wallet = document.getElementById('storage-wallet');
     const info = document.getElementById('storage-info');
     const actions = document.getElementById('storage-actions');
-    const log = document.getElementById('storage-log');
     if (wallet) wallet.textContent = `Brass ${this.inv.brass}`;
     const level = getStorageLevel(this.inv, track);
     const base = track === 'inventions' ? STORAGE_INVENTION_BASE_CAP : 99;
@@ -5845,16 +6190,18 @@ export class ForgeHeartGame {
       btn.className = 'craft-do-btn';
       btn.textContent = `Expand to L${next} · hold ${nextCap.toLocaleString()} · ${cost}b`;
       btn.addEventListener('click', () => {
-        const r = upgradeStorage(this.inv, track);
-        if (log) log.textContent = r.msg;
-        this.toast(r.msg, r.ok ? 3.5 : 2.5);
-        if (r.ok) {
-          this.brass = this.inv.brass;
-          this.audio.playPickup();
-          writeSlot(this.activeSlot, this.buildSaveData());
-          this.syncEconomyHud();
-        }
-        this.fillStorageOffice();
+        this.closeStorageOffice();
+        const did =
+          track === 'resources'
+            ? 'north_observatory'
+            : track === 'crafted'
+              ? 'clocktower'
+              : 'aether_spire';
+        this.beginPlacementSession({
+          kind: 'storage',
+          districtId: did,
+          baseCost: cost,
+        });
       });
       actions.appendChild(btn);
     }
@@ -6394,14 +6741,26 @@ export class ForgeHeartGame {
       return true;
     }
     if (it.kind === 'robot_broker') {
-      const r = sellFrameToBroker(this.inv);
-      this.toast(r.msg, 3.5);
-      if (r.ok) {
-        this.brass = this.inv.brass;
-        this.objective = this.skyCityObjective();
-        writeSlot(this.activeSlot, this.buildSaveData());
-        this.audio.playPickup();
-        this.flash(`+${FRAME_BROKER_PRICE} BRASS`);
+      // Shift = buy work robot from stock; else sell frame
+      if (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) {
+        const r = buyRobotWorker(this.inv);
+        this.toast(r.msg, 4);
+        if (r.ok) {
+          this.brass = this.inv.brass;
+          this.rebuildWorkerAgents();
+          this.audio.playPickup();
+          writeSlot(this.activeSlot, this.buildSaveData());
+        }
+      } else {
+        const r = sellFrameToBroker(this.inv);
+        this.toast(r.msg + ' · Shift+E buy robot', 3.5);
+        if (r.ok) {
+          this.brass = this.inv.brass;
+          this.objective = this.skyCityObjective();
+          writeSlot(this.activeSlot, this.buildSaveData());
+          this.audio.playPickup();
+          this.flash(`+${FRAME_BROKER_PRICE} BRASS`);
+        }
       }
       this.syncEconomyHud();
       return true;
@@ -6550,6 +6909,10 @@ export class ForgeHeartGame {
     this.syncCityStallVisuals();
     this.cityWorkerAcc = 0;
     this.skyCity.stallGroup.visible = this.inv.stall.owned;
+    syncBrokerFrameDisplays(this.skyCity, this.inv.brokerFrameStock ?? 0);
+    if (this.bringEliasToRace || this.hadAllyOnce || fromSave?.bringElias) {
+      ensureEliasRobotWorker(this.inv);
+    }
 
     this.scene.background = new THREE.Color(0x5a7a9a);
     // Fog / far plane match stream ring so unloaded content isn't drawn far away

@@ -19,8 +19,12 @@ import {
   vendorWaypointKey,
 } from './economy';
 import type { NavGrid } from './navGrid';
+import { makeKitNpc } from './npcKit';
+import { makeMaterials } from './materials';
 
 export type HubWaypointKey = string;
+
+const _workerMats = makeMaterials();
 
 export type HubWaypoints = Record<string, THREE.Vector3>;
 
@@ -86,20 +90,28 @@ export class WorkerAgent {
     this.mesh.position.copy(start);
     this.mesh.position.y = 0;
 
-    const body = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.32, 0.7, 4, 8),
-      new THREE.MeshStandardMaterial({ color: 0x8a7060, roughness: 0.85, metalness: 0.15 }),
-    );
-    body.position.y = 1.0;
-    body.castShadow = true;
-    this.mesh.add(body);
+    if (worker.kind === 'robot') {
+      const kit = makeKitNpc('robot_helper', _workerMats, {
+        medallion: !!worker.hasMedallion,
+        variant: worker.name.length,
+      });
+      this.mesh.add(kit.root);
+    } else {
+      const body = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.32, 0.7, 4, 8),
+        new THREE.MeshStandardMaterial({ color: 0x8a7060, roughness: 0.85, metalness: 0.15 }),
+      );
+      body.position.y = 1.0;
+      body.castShadow = true;
+      this.mesh.add(body);
 
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.22, 8, 8),
-      new THREE.MeshStandardMaterial({ color: 0xc4a882, roughness: 0.7 }),
-    );
-    head.position.y = 1.65;
-    this.mesh.add(head);
+      const head = new THREE.Mesh(
+        new THREE.SphereGeometry(0.22, 8, 8),
+        new THREE.MeshStandardMaterial({ color: 0xc4a882, roughness: 0.7 }),
+      );
+      head.position.y = 1.65;
+      this.mesh.add(head);
+    }
 
     this.boardMesh = new THREE.Mesh(
       new THREE.BoxGeometry(0.45, 0.08, 1.1),
@@ -123,7 +135,9 @@ export class WorkerAgent {
     this.toolMesh.visible = worker.hasSpeedTool;
     this.mesh.add(this.toolMesh);
 
-    this.label = makeLabel(worker.name);
+    const labelName =
+      worker.hasMedallion ? `${worker.name} ★` : worker.kind === 'robot' ? `${worker.name} ⚙` : worker.name;
+    this.label = makeLabel(labelName);
     this.label.position.set(0, 2.15, 0);
     this.mesh.add(this.label);
   }
@@ -144,7 +158,8 @@ export class WorkerAgent {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     let tag = jobShort(worker.job);
     if (worker.job === 'program') tag = 'PROG';
-    drawLabel(ctx, canvas.width, canvas.height, `${worker.name} · ${tag}`);
+    const prefix = worker.hasMedallion ? '★ ' : worker.kind === 'robot' ? '⚙ ' : '';
+    drawLabel(ctx, canvas.width, canvas.height, `${prefix}${worker.name} · ${tag}`);
     (this.label.material as THREE.SpriteMaterial).map!.needsUpdate = true;
   }
 

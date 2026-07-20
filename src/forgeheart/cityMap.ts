@@ -709,11 +709,25 @@ export function buildLiveMarkers(
     out.push({
       id: `worker_${w.id}`,
       kind: 'worker',
-      label: w.name,
+      label: w.hasMedallion ? `★ ${w.name}` : w.kind === 'robot' ? `⚙ ${w.name}` : w.name,
       x: pos.x,
       z: pos.z,
       detail: describeWorkerAssignment(inv, w),
-      attention: w.job === 'idle',
+      attention: w.job === 'idle' || !!w.hasMedallion,
+    });
+  }
+
+  // Theme-park circuits
+  for (const d of CITY_DISTRICTS) {
+    if (!d.themePark) continue;
+    out.push({
+      id: `circuit_${d.id}`,
+      kind: 'attention',
+      label: `Circuit · ${d.name}`,
+      x: d.x + d.size * 0.35,
+      z: d.z,
+      detail: 'Board theme-park track',
+      attention: false,
     });
   }
 

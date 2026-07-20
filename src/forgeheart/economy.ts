@@ -21,7 +21,11 @@ export type CommodityId =
   | 'speed_tool'
   | 'haul_pack'
   | 'polished_wire'
-  | 'fine_frame';
+  | 'fine_frame'
+  | 'elias_medallion'
+  | 'flower_gift'
+  | 'brass_charm'
+  | 'silk_scarf';
 
 export interface CommodityDef {
   id: CommodityId;
@@ -96,6 +100,34 @@ export const COMMODITIES: Record<CommodityId, CommodityDef> = {
     baseBuy: 10,
     baseSell: 24,
     stack: 5,
+  },
+  elias_medallion: {
+    id: 'elias_medallion',
+    name: "Elias's Medallion",
+    baseBuy: 0,
+    baseSell: 0,
+    stack: 1,
+  },
+  flower_gift: {
+    id: 'flower_gift',
+    name: 'Cloud Blooms',
+    baseBuy: 18,
+    baseSell: 8,
+    stack: 20,
+  },
+  brass_charm: {
+    id: 'brass_charm',
+    name: 'Brass Charm',
+    baseBuy: 35,
+    baseSell: 12,
+    stack: 10,
+  },
+  silk_scarf: {
+    id: 'silk_scarf',
+    name: 'Spore-Silk Scarf',
+    baseBuy: 55,
+    baseSell: 22,
+    stack: 10,
   },
   polished_wire: {
     id: 'polished_wire',
@@ -486,6 +518,40 @@ export interface WorkerState {
    * Used for job=harvest and program nodes that harvest.
    */
   harvestSiteId: string | null;
+  /** Human laborer vs owned robot chassis */
+  kind?: 'human' | 'robot';
+  /** Elias spirit host — human-parity stats + map marker */
+  hasMedallion?: boolean;
+  /** Rare rogue chance accumulator for robots */
+  rogueAcc?: number;
+}
+
+/** Player-placed commercial / cosmetic props from purchase→Game Maker */
+export interface PlacementRecord {
+  id: string;
+  kind: 'stall' | 'bay_wing' | 'storage' | 'shop' | 'home_decor';
+  districtId: string;
+  x: number;
+  z: number;
+  yaw: number;
+  scale: number;
+  variant: number;
+  decorCount: number;
+  /** Brass paid at confirm */
+  paid: number;
+  /** Income multipliers (shops only) */
+  trafficMul: number;
+  attractMul: number;
+  capacityMul: number;
+}
+
+export type RelationshipStage = 0 | 1 | 2 | 3 | 4;
+
+export interface RomanceState {
+  npcId: string;
+  stage: RelationshipStage;
+  affinity: number;
+  giftsGiven: number;
 }
 
 export interface PlayerBoardState {
@@ -555,6 +621,8 @@ export interface CityDistrictDef {
   color: number;
   /** District role for layout */
   role: 'home' | 'market' | 'industrial' | 'harbor' | 'premium' | 'mixed';
+  /** Board theme-park circuit on this plaza */
+  themePark?: boolean;
 }
 
 /**
@@ -585,6 +653,7 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
     inventBonus: 1.25,
     color: 0x6a5a48,
     role: 'market',
+    themePark: true,
   },
   {
     id: 'industrial',
@@ -657,6 +726,7 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
     inventBonus: 1.5,
     color: 0x6a5a40,
     role: 'premium',
+    themePark: true,
   },
   {
     id: 'sky_foundry',
@@ -717,6 +787,7 @@ export const CITY_DISTRICTS: CityDistrictDef[] = [
     inventBonus: 0.9,
     color: 0x4a5058,
     role: 'harbor',
+    themePark: true,
   },
   {
     id: 'north_observatory',
@@ -992,6 +1063,16 @@ export interface InventoryState {
   storageCraftedLevel: number;
   /** Bonded storage — inventions (Aether Spire) */
   storageInventionsLevel: number;
+  /** Frames displayed at broker stalls (visual stock) */
+  brokerFrameStock: number;
+  /** Medallion in bag (not currently hosting a robot) */
+  medallionLoose: boolean;
+  /** Worker id currently hosting Elias spirit */
+  medallionHostId: string | null;
+  /** Purchase→Game Maker placements */
+  placements: PlacementRecord[];
+  /** Romance progress with girl NPCs */
+  relationships: RomanceState[];
 }
 
 const WORKER_NAMES = [
@@ -1065,6 +1146,11 @@ export function emptyInventory(starterBrass = 40): InventoryState {
     storageResourcesLevel: 0,
     storageCraftedLevel: 0,
     storageInventionsLevel: 0,
+    brokerFrameStock: 0,
+    medallionLoose: false,
+    medallionHostId: null,
+    placements: [],
+    relationships: [],
   };
 }
 
@@ -1101,8 +1187,165 @@ export function repairRogueRobot(inv: InventoryState): { ok: boolean; msg: strin
   notePeakBrass(inv);
   return {
     ok: true,
-    msg: `Robot reprogrammed · +${ROGUE_REPAIR_PAY} brass. City service pays.`,
+    msg: `Robot restored to its owner's work · +${ROGUE_REPAIR_PAY} brass. (Not your ally.)`,
   };
+}
+
+/** Harvest / scrap a rogue — parts + chance to recover Elias medallion if it was the host. */
+export function harvestRogueRobot(
+  inv: InventoryState,
+  opts?: { wasMedallionHost?: boolean },
+): { ok: boolean; msg: string } {
+  addItem(inv, 'scrap_brass', 2 + Math.floor(Math.random() * 3));
+  addItem(inv, 'gear_blank', Math.random() < 0.45 ? 1 : 0);
+  inv.brass += 8;
+  notePeakBrass(inv);
+  let msg = 'Frame harvested · scrap + gear. Robot is gone.';
+  if (opts?.wasMedallionHost || inv.medallionHostId) {
+    inv.medallionLoose = true;
+    inv.medallionHostId = null;
+    addItem(inv, 'elias_medallion', 1);
+    msg += " Elias's medallion returned to your pack — assign it to another robot.";
+  }
+  return { ok: true, msg };
+}
+
+export const ROBOT_BUY_COST = 120;
+/** Robots cost less upkeep than humans */
+export const ROBOT_WAGE_MUL = 0.35;
+
+export function buyRobotWorker(inv: InventoryState): { ok: boolean; msg: string; worker?: WorkerState } {
+  if (!inv.parcelLeased || inv.bayLevel < 1) {
+    return { ok: false, msg: 'Lease a bay first — robots need a dock to report.' };
+  }
+  const max = maxWorkersForBay(inv.bayLevel);
+  if (inv.workers.length >= max) {
+    return { ok: false, msg: `Bay full (${inv.workers.length}/${max}). Expand for more slots.` };
+  }
+  if (inv.brokerFrameStock < 1 && getQty(inv, 'basic_frame') < 1) {
+    return { ok: false, msg: 'Broker has no frames in stock. Sell frames first, or craft one.' };
+  }
+  if (inv.brass < ROBOT_BUY_COST) {
+    return { ok: false, msg: `Need ${ROBOT_BUY_COST} brass to buy a work robot.` };
+  }
+  inv.brass -= ROBOT_BUY_COST;
+  if (inv.brokerFrameStock > 0) inv.brokerFrameStock -= 1;
+  else removeItem(inv, 'basic_frame', 1);
+  const w = makeRobotWorker(`R-${inv.workers.length + 1}`);
+  inv.workers.push(w);
+  inv.laborerHired = true;
+  return {
+    ok: true,
+    worker: w,
+    msg: `Bought work robot ${w.name} (−${ROBOT_BUY_COST}). Slower than humans unless hosting Elias's medallion.`,
+  };
+}
+
+export function makeRobotWorker(name: string, id?: string): WorkerState {
+  return {
+    id: id ?? `bot_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    name,
+    job: 'harvest',
+    programId: null,
+    hasBoard: false,
+    hasSpeedTool: false,
+    hasHaulPack: false,
+    jobsDone: 0,
+    payGrade: 0,
+    harvestSiteId: null,
+    kind: 'robot',
+    hasMedallion: false,
+    rogueAcc: 0,
+  };
+}
+
+/** Ensure Elias exists as a robot worker (tutorial market crew of 4 with him). */
+export function ensureEliasRobotWorker(inv: InventoryState): WorkerState {
+  let elias = inv.workers.find((w) => w.id === 'bot_elias' || w.name === 'Elias');
+  if (elias) {
+    elias.kind = 'robot';
+    if (!inv.medallionLoose && !inv.medallionHostId) {
+      elias.hasMedallion = true;
+      inv.medallionHostId = elias.id;
+    }
+    return elias;
+  }
+  elias = makeRobotWorker('Elias', 'bot_elias');
+  elias.hasMedallion = true;
+  elias.payGrade = 1;
+  inv.workers.unshift(elias);
+  inv.medallionHostId = elias.id;
+  inv.medallionLoose = false;
+  inv.laborerHired = true;
+  return elias;
+}
+
+/**
+ * Market tutorial crew: Elias (medallion robot) + 3 human laborers = 4 assignable agents.
+ * Humans are granted once when Elias arrives (no brass charge).
+ */
+export function ensureTutorialMarketCrew(inv: InventoryState): void {
+  if (!inv.parcelLeased) {
+    inv.parcelLeased = true;
+    inv.bayLevel = Math.max(inv.bayLevel, 1);
+  }
+  ensureEliasRobotWorker(inv);
+  const humanNames = ['Rook', 'Pip', 'Nessa'];
+  let humans = inv.workers.filter((w) => w.kind !== 'robot');
+  for (const name of humanNames) {
+    if (humans.length >= 3) break;
+    if (humans.some((h) => h.name === name)) continue;
+    const w: WorkerState = {
+      id: `w_tut_${name.toLowerCase()}`,
+      name,
+      job: 'harvest',
+      programId: null,
+      hasBoard: false,
+      hasSpeedTool: false,
+      hasHaulPack: false,
+      jobsDone: 0,
+      payGrade: 0,
+      harvestSiteId: null,
+      kind: 'human',
+    };
+    inv.workers.push(w);
+    humans.push(w);
+  }
+  inv.laborerHired = inv.workers.length > 0;
+}
+
+export function assignMedallion(inv: InventoryState, workerId: string): { ok: boolean; msg: string } {
+  const bot = inv.workers.find((w) => w.id === workerId);
+  if (!bot || bot.kind !== 'robot') {
+    return { ok: false, msg: 'Medallion can only host in a robot you own.' };
+  }
+  if (!inv.medallionLoose && getQty(inv, 'elias_medallion') < 1 && inv.medallionHostId !== workerId) {
+    // Allow reassign from current host
+    if (!inv.medallionHostId) {
+      return { ok: false, msg: 'No medallion in pack. Recover it when Elias is lost.' };
+    }
+  }
+  // Clear previous host
+  for (const w of inv.workers) {
+    if (w.hasMedallion) w.hasMedallion = false;
+  }
+  if (getQty(inv, 'elias_medallion') > 0) removeItem(inv, 'elias_medallion', 1);
+  inv.medallionLoose = false;
+  bot.hasMedallion = true;
+  inv.medallionHostId = bot.id;
+  return {
+    ok: true,
+    msg: `${bot.name} now hosts Elias's spirit — human pace, medallion on the map.`,
+  };
+}
+
+export function onMedallionHostLost(inv: InventoryState, workerId: string): void {
+  if (inv.medallionHostId !== workerId) return;
+  inv.medallionHostId = null;
+  inv.medallionLoose = true;
+  addItem(inv, 'elias_medallion', 1);
+  const w = inv.workers.find((x) => x.id === workerId);
+  if (w) w.hasMedallion = false;
 }
 
 export function buyApartment(inv: InventoryState): { ok: boolean; msg: string } {
@@ -1318,7 +1561,79 @@ export function workerWagePerTick(inv: InventoryState, w: WorkerState): number {
     const p = inv.programs.find((x) => x.id === w.programId);
     if (p) wage = Math.max(wage, programNodeWage(p.nodes.length) + w.payGrade);
   }
+  if (isRobotWorker(w)) wage = Math.max(1, Math.round(wage * ROBOT_WAGE_MUL));
   return wage;
+}
+
+/** Live quote for purchase→Game Maker placement. */
+export function quotePlacement(opts: {
+  baseCost: number;
+  scale: number;
+  districtId: string;
+  decorCount: number;
+  decorUnitCost?: number;
+}): { total: number; scaleFee: number; locationFee: number; decorFee: number; trafficMul: number } {
+  const d = CITY_DISTRICTS.find((x) => x.id === opts.districtId);
+  const demand = d?.demandMul ?? 1;
+  const stallHeat = (d?.stallCost ?? 100) / 200;
+  const scaleFee = Math.round(Math.max(0, opts.scale - 1) * 420 + (opts.scale > 1.4 ? 280 : 0));
+  const locationFee = Math.round(stallHeat * demand * 380);
+  const decorFee = opts.decorCount * (opts.decorUnitCost ?? 45);
+  const total = opts.baseCost + scaleFee + locationFee + decorFee;
+  const trafficMul = 0.85 + demand * 0.2 + Math.min(0.35, locationFee / 2000) + Math.min(0.25, opts.scale - 1);
+  return {
+    total: Math.min(1000 + opts.baseCost, Math.max(opts.baseCost, total)),
+    scaleFee,
+    locationFee,
+    decorFee,
+    trafficMul: Math.max(0.75, Math.min(1.85, trafficMul)),
+  };
+}
+
+export function stallPlacementMul(inv: InventoryState, districtId: string): number {
+  const list = inv.placements.filter(
+    (p) => p.districtId === districtId && (p.kind === 'stall' || p.kind === 'shop'),
+  );
+  if (!list.length) return 1;
+  let m = 1;
+  for (const p of list) {
+    m *= (p.trafficMul || 1) * (p.attractMul || 1) * Math.sqrt(p.capacityMul || 1);
+  }
+  return Math.max(0.8, Math.min(2.2, m));
+}
+
+export function giftRomanceNpc(
+  inv: InventoryState,
+  npcId: string,
+  gift: 'flower_gift' | 'brass_charm' | 'silk_scarf',
+): { ok: boolean; msg: string; stage: RelationshipStage } {
+  if (getQty(inv, gift) < 1) {
+    return { ok: false, msg: `No ${COMMODITIES[gift].name} in pack.`, stage: 0 };
+  }
+  removeItem(inv, gift, 1);
+  let rel = inv.relationships.find((r) => r.npcId === npcId);
+  if (!rel) {
+    rel = { npcId, stage: 0, affinity: 0, giftsGiven: 0 };
+    inv.relationships.push(rel);
+  }
+  const boost = gift === 'silk_scarf' ? 28 : gift === 'brass_charm' ? 18 : 12;
+  rel.affinity += boost;
+  rel.giftsGiven += 1;
+  const prev = rel.stage;
+  if (rel.affinity >= 100) rel.stage = 4;
+  else if (rel.affinity >= 70) rel.stage = 3;
+  else if (rel.affinity >= 40) rel.stage = 2;
+  else if (rel.affinity >= 15) rel.stage = 1;
+  else rel.stage = 0;
+  const stageNames = ['stranger', 'acquaintance', 'friendly', 'close', 'sweetheart'];
+  return {
+    ok: true,
+    stage: rel.stage,
+    msg:
+      rel.stage > prev
+        ? `She smiles brighter — now ${stageNames[rel.stage]}.`
+        : `Gift accepted (+${boost} affinity). ${stageNames[rel.stage]}.`,
+  };
 }
 
 export function totalWagesPerTick(inv: InventoryState): number {
@@ -1569,6 +1884,13 @@ export function assignWorkerProgram(
     return {
       ok: false,
       msg: `${w.name} refuses “${p.name}” (${p.nodes.length} steps) — need pay grade ${need} (has ${w.payGrade}). Raise pay first.`,
+    };
+  }
+  const maxNodes = workerMaxProgramNodes(w);
+  if (p.nodes.length > maxNodes) {
+    return {
+      ok: false,
+      msg: `${w.name} is a bare robot — max ${maxNodes} tasks (has ${p.nodes.length}). Equip Elias's medallion for human capacity.`,
     };
   }
   w.job = 'program';
@@ -2379,9 +2701,10 @@ export function tickAllStalls(inv: InventoryState): {
     for (const [did, stall] of Object.entries(inv.cityStalls)) {
       if (!stall.owned || !stall.open) continue;
       const dist = districtById(did);
+      const placeMul = stallPlacementMul(inv, did);
       const r = tickStallState(inv, stall, {
-        demandMul: dist?.demandMul ?? 1,
-        inventBonus: dist?.inventBonus ?? 1,
+        demandMul: (dist?.demandMul ?? 1) * placeMul,
+        inventBonus: (dist?.inventBonus ?? 1) * Math.sqrt(placeMul),
         label: dist?.name ?? did,
       });
       if (r.ok) sales++;
@@ -2436,18 +2759,35 @@ export function equipWorkerTool(
   return { ok: true, msg: `${w.name} equipped Haul Pack — bigger reef yields.` };
 }
 
+export function isRobotWorker(w: WorkerState): boolean {
+  return w.kind === 'robot';
+}
+
+/** Robots slower unless medallion; humans baseline. */
 export function workerMoveSpeed(w: WorkerState): number {
   let s = 3.2;
   if (w.hasBoard) s += 2.4;
+  if (isRobotWorker(w) && !w.hasMedallion) s *= 0.65;
   return s;
 }
 
 export function workerWorkMul(w: WorkerState): number {
-  return w.hasSpeedTool ? 0.55 : 1;
+  let mul = w.hasSpeedTool ? 0.55 : 1;
+  // Higher mul = slower work timer in agents
+  if (isRobotWorker(w) && !w.hasMedallion) mul *= 1.55;
+  return mul;
 }
 
 export function workerHarvestQty(w: WorkerState): number {
-  return w.hasHaulPack ? 2 + Math.floor(Math.random() * 2) : 1;
+  let n = w.hasHaulPack ? 2 + Math.floor(Math.random() * 2) : 1;
+  if (isRobotWorker(w) && !w.hasMedallion) n = Math.max(1, Math.floor(n * 0.65));
+  return n;
+}
+
+/** Max useful program nodes — robots capped unless medallion. */
+export function workerMaxProgramNodes(w: WorkerState): number {
+  if (!isRobotWorker(w) || w.hasMedallion) return 8;
+  return 3;
 }
 
 /** Apply result when agent completes a work node */
@@ -2612,10 +2952,11 @@ export function sellFrameToBroker(inv: InventoryState): {
   removeItem(inv, 'basic_frame', 1);
   inv.brass += FRAME_BROKER_PRICE;
   inv.framesSold += 1;
+  inv.brokerFrameStock = Math.min(12, (inv.brokerFrameStock ?? 0) + 1);
   return {
     ok: true,
     gained: FRAME_BROKER_PRICE,
-    msg: `Sold Basic Robot Frame for ${FRAME_BROKER_PRICE} brass. Frames sold: ${inv.framesSold}`,
+    msg: `Sold Basic Robot Frame for ${FRAME_BROKER_PRICE} brass. On display at broker (${inv.brokerFrameStock}). Buy as a work robot anytime.`,
   };
 }
 
@@ -2862,8 +3203,8 @@ export const VENDORS: VendorDef[] = [
     title: 'General Goods',
     buyMul: 1.0,
     sellMul: 1.0,
-    stock: ['cloud_iron', 'scrap_brass', 'sky_salt', 'wire', 'glass_pane'],
-    greeting: 'Cloud iron’s steady today. Don’t let the mills underpay you.',
+    stock: ['cloud_iron', 'scrap_brass', 'sky_salt', 'wire', 'glass_pane', 'brass_charm', 'flower_gift'],
+    greeting: 'Cloud iron’s steady today. Charms and blooms for the Arcade girls.',
   },
   {
     id: 'hark',
@@ -2890,8 +3231,8 @@ export const VENDORS: VendorDef[] = [
     title: 'Silk & Soft Goods',
     buyMul: 1.1,
     sellMul: 1.05,
-    stock: ['spore_silk', 'sky_salt', 'glass_pane', 'haul_pack'],
-    greeting: 'Spore silk from the reefs? I’ll take every spool.',
+    stock: ['spore_silk', 'sky_salt', 'glass_pane', 'haul_pack', 'flower_gift', 'silk_scarf'],
+    greeting: 'Spore silk from the reefs? I’ll take every spool. Gifts for someone special?',
   },
   {
     id: 'dock',
@@ -3035,6 +3376,11 @@ export function invToSave(inv: InventoryState) {
     storageResourcesLevel: inv.storageResourcesLevel ?? 0,
     storageCraftedLevel: inv.storageCraftedLevel ?? 0,
     storageInventionsLevel: inv.storageInventionsLevel ?? 0,
+    brokerFrameStock: inv.brokerFrameStock ?? 0,
+    medallionLoose: !!inv.medallionLoose,
+    medallionHostId: inv.medallionHostId ?? null,
+    placements: inv.placements.map((p) => ({ ...p })),
+    relationships: inv.relationships.map((r) => ({ ...r })),
   };
 }
 
@@ -3073,6 +3419,9 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
         typeof w.harvestSiteId === 'string' && w.harvestSiteId
           ? String(w.harvestSiteId)
           : null,
+      kind: w.kind === 'robot' ? 'robot' : 'human',
+      hasMedallion: !!w.hasMedallion,
+      rogueAcc: typeof w.rogueAcc === 'number' ? w.rogueAcc : 0,
     }));
   } else if (o.laborerHired) {
     // Migrate Phase 1 single laborer
@@ -3155,5 +3504,17 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
       nodes: Array.isArray(p.nodes) ? [...p.nodes] : ['harvest', 'return_bay'],
     }));
   }
+  inv.brokerFrameStock = typeof o.brokerFrameStock === 'number' ? o.brokerFrameStock : 0;
+  inv.medallionLoose = !!o.medallionLoose;
+  inv.medallionHostId = typeof o.medallionHostId === 'string' ? o.medallionHostId : null;
+  inv.placements = Array.isArray(o.placements) ? (o.placements as PlacementRecord[]).map((p) => ({ ...p })) : [];
+  inv.relationships = Array.isArray(o.relationships)
+    ? (o.relationships as RomanceState[]).map((r) => ({
+        npcId: String(r.npcId),
+        stage: (Math.max(0, Math.min(4, Number(r.stage) || 0)) as RelationshipStage),
+        affinity: Number(r.affinity) || 0,
+        giftsGiven: Number(r.giftsGiven) || 0,
+      }))
+    : [];
   return inv;
 }
