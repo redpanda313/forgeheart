@@ -45,12 +45,14 @@ On phones and tablets, ForgeHeart shows on-screen controls automatically in **ev
 
 | Action | Control |
 |--------|---------|
-| Move / board ride | Left virtual stick |
+| Move / board ride | Left virtual stick (bottom-left) |
 | Look | Drag anywhere on the screen |
-| Jump / interact / attack | JMP · E · ATK |
+| Jump / interact / attack | JMP · E · ATK (bottom-right) |
 | Slide / board mount | SLD · Q |
 | Weapons / map / bay / pause | 1–3 · M · I · ☰ |
 | Reef harvest | EXTRACT / CANCEL on the harvest card |
+
+**Note:** Touch controls ship after this change is merged to `main` (GitHub Pages). Until then, open a build of the PR branch, or append `?mobile=1` once the build includes this feature.
 
 ---
 

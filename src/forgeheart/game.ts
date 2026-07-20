@@ -26,7 +26,7 @@ import { ForgeAudio } from './audio';
 import { nearestOnPath, type RacewayBuilt } from './raceway';
 import { Surfboard, BOARD } from './surfboard';
 import { EliasCompanion } from './eliasCompanion';
-import { MobileControls, isMobileBrowser } from './mobileInput';
+import { MobileControls } from './mobileInput';
 import {
   writeSlot,
   emptySave,
@@ -397,12 +397,12 @@ export class ForgeHeartGame {
 
     this.camera = new THREE.PerspectiveCamera(70, canvas.clientWidth / canvas.clientHeight, 0.08, 120);
     this.controls = new PointerLockControls(this.camera, canvas);
-    // Mobile browsers lack reliable pointer lock — no-op lock so touch look can drive the camera.
-    if (isMobileBrowser()) {
-      this.controls.lock = () => {
-        /* mobile: use on-screen look pad */
-      };
-    }
+    // Mobile / touch: pointer lock is unreliable — no-op when touch UI is active.
+    const origLock = this.controls.lock.bind(this.controls);
+    this.controls.lock = () => {
+      if (this.mobile.enabled) return;
+      return origLock();
+    };
     this.loadLookSensitivity();
     this.wireLookSensitivityUi();
 
@@ -472,15 +472,21 @@ export class ForgeHeartGame {
     this.bindInput();
     this.wireHarvestTouchUi();
     window.addEventListener('resize', () => this.onResize(), { signal: this.sessionAbort.signal });
+    // Always attach: shows immediately on phones, or arms first-touch enable on other devices
+    this.mobile.attach({
+      applyTouchLook: (dx, dy) => this.applyTouchLook(dx, dy),
+      setFireHeld: (v) => this.setFireHeld(v),
+      setPaused: (p) => this.setPaused(p),
+      isPaused: () => this.isPaused(),
+      injectKey: (code, down) => this.injectKey(code, down),
+      isDisposed: () => this.disposed,
+      onMobileControlsEnabled: () => {
+        this.syncMobileGameplay();
+        this.setHelp('Stick move · drag look · E · JMP · ATK · ☰');
+        this.toast('Touch controls on — stick left, buttons right, drag to look', 4);
+      },
+    });
     if (this.mobile.enabled) {
-      this.mobile.attach({
-        applyTouchLook: (dx, dy) => this.applyTouchLook(dx, dy),
-        setFireHeld: (v) => this.setFireHeld(v),
-        setPaused: (p) => this.setPaused(p),
-        isPaused: () => this.isPaused(),
-        injectKey: (code, down) => this.injectKey(code, down),
-        isDisposed: () => this.disposed,
-      });
       this.syncMobileGameplay();
       this.setHelp('Stick move · drag look · E interact · JMP jump · ATK attack · ☰ pause');
     } else {

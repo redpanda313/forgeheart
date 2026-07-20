@@ -1,20 +1,48 @@
 /**
- * ForgeHeart — on-screen touch controls for mobile browsers.
- * Shown only when a mobile / coarse-pointer browser is detected.
+ * ForgeHeart — on-screen touch controls for mobile / touch browsers.
+ *
+ * Shown when:
+ * - UA / coarse pointer / narrow touch screen detects mobile, or
+ * - URL has ?mobile=1 / ?touch=1, or
+ * - localStorage forgeheart-force-mobile=1, or
+ * - the player touches the screen during play (auto-enable)
  */
+
+const FORCE_KEY = 'forgeheart-force-mobile';
 
 export function isMobileBrowser(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+
+  // Explicit opt-in (debug / stubborn devices)
+  try {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('mobile') === '1' || q.get('touch') === '1') return true;
+    if (localStorage.getItem(FORCE_KEY) === '1') return true;
+  } catch {
+    /* ignore */
+  }
+
   const ua = navigator.userAgent || '';
   const mobileUa =
-    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua);
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|SamsungBrowser/i.test(
+      ua,
+    );
   // iPadOS 13+ can report as MacIntel with touch
   const iPadOs = navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1;
+  const touchPoints = navigator.maxTouchPoints ?? 0;
+  const hasTouch = touchPoints > 0 || 'ontouchstart' in window;
   const coarse =
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(pointer: coarse)').matches;
-  const touch = (navigator.maxTouchPoints ?? 0) > 0 || 'ontouchstart' in window;
-  return mobileUa || iPadOs || (coarse && touch);
+  const noHover =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(hover: none)').matches;
+  // Phones in landscape still need controls; treat narrow + touch as mobile
+  const narrowTouch =
+    hasTouch &&
+    Math.min(window.innerWidth || 0, window.innerHeight || 0) <= 920;
+
+  return mobileUa || iPadOs || (coarse && hasTouch) || (noHover && hasTouch) || narrowTouch;
 }
 
 export type MobileInputHost = {
@@ -26,6 +54,8 @@ export type MobileInputHost = {
   /** Inject a key code as if pressed on a keyboard (edge + hold). */
   injectKey(code: string, down: boolean): void;
   isDisposed(): boolean;
+  /** Called when touch controls newly activate mid-session. */
+  onMobileControlsEnabled?(): void;
 };
 
 type StickAxes = { x: number; y: number };
@@ -43,8 +73,10 @@ export class MobileControls {
   private lookPad: HTMLElement | null;
   private host: MobileInputHost | null = null;
   private abort: AbortController | null = null;
+  private touchArmAbort: AbortController | null = null;
   private active = false;
   private visible = false;
+  private attached = false;
 
   private stickPointerId: number | null = null;
   private stickOrigin = { x: 0, y: 0 };
@@ -55,25 +87,75 @@ export class MobileControls {
   private lookLast = { x: 0, y: 0 };
 
   private fireHeld = false;
-  readonly enabled: boolean;
+  private _enabled: boolean;
 
   constructor() {
-    this.enabled = isMobileBrowser();
     this.root = document.getElementById('mobile-controls');
     this.stick = document.getElementById('mobile-stick');
     this.stickKnob = document.getElementById('mobile-stick-knob');
     this.lookPad = document.getElementById('mobile-look');
-    if (!this.enabled) {
+    this._enabled = isMobileBrowser();
+    if (!this._enabled) {
       this.root?.classList.add('hidden');
       this.root?.setAttribute('aria-hidden', 'true');
-      return;
     }
   }
 
+  get enabled() {
+    return this._enabled;
+  }
+
+  /** Persist + enable touch UI (also used by ?mobile=1 and first-touch arming). */
+  forceEnable(persist = true) {
+    this._enabled = true;
+    if (persist) {
+      try {
+        localStorage.setItem(FORCE_KEY, '1');
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * Bind host callbacks. If not yet detected as mobile, arm a one-shot touch
+   * listener so the first finger contact enables the on-screen pad.
+   */
   attach(host: MobileInputHost) {
-    if (!this.enabled || !this.root) return;
-    this.detach();
     this.host = host;
+    this.touchArmAbort?.abort();
+    this.touchArmAbort = null;
+
+    if (this._enabled) {
+      this.mountUi();
+      return;
+    }
+
+    // Desktop browsers: wait for a real touch — then show controls
+    this.touchArmAbort = new AbortController();
+    const arm = (ev: Event) => {
+      if (this.host?.isDisposed()) return;
+      // Ignore synthetic mouse-as-touch from some desktops if no maxTouchPoints
+      if ((navigator.maxTouchPoints ?? 0) === 0 && !('ontouchstart' in window)) return;
+      ev.preventDefault?.();
+      this.forceEnable(true);
+      this.mountUi();
+      this.host?.onMobileControlsEnabled?.();
+    };
+    window.addEventListener('touchstart', arm, {
+      signal: this.touchArmAbort.signal,
+      passive: false,
+      once: true,
+      capture: true,
+    });
+  }
+
+  private mountUi() {
+    if (!this.root || !this.host || this.attached) {
+      this.setVisible(true);
+      return;
+    }
+    this.attached = true;
     document.documentElement.classList.add('forgeheart-mobile');
     document.body.classList.add('forgeheart-mobile');
     this.abort = new AbortController();
@@ -82,6 +164,7 @@ export class MobileControls {
     this.bindLook(sig);
     this.bindButtons(sig);
     this.setVisible(true);
+    this.setGameplayActive(true);
   }
 
   detach() {
@@ -91,15 +174,22 @@ export class MobileControls {
     } catch {
       /* ignore */
     }
+    try {
+      this.touchArmAbort?.abort();
+    } catch {
+      /* ignore */
+    }
     this.abort = null;
+    this.touchArmAbort = null;
     this.host = null;
+    this.attached = false;
     this.setVisible(false);
     document.documentElement.classList.remove('forgeheart-mobile');
     document.body.classList.remove('forgeheart-mobile');
   }
 
   setVisible(v: boolean) {
-    this.visible = v && this.enabled;
+    this.visible = v && this._enabled;
     if (!this.root) return;
     if (this.visible) {
       this.root.classList.remove('hidden');
@@ -111,13 +201,12 @@ export class MobileControls {
     }
   }
 
-  /** Hide joysticks while pause / modal UI owns the screen; keep root for resume if needed. */
+  /** Hide joysticks while pause / modal UI owns the screen; keep util for pause/map. */
   setGameplayActive(active: boolean) {
     const was = this.active;
     this.active = active;
     if (!this.root) return;
     this.root.classList.toggle('mobile-controls-dimmed', !active);
-    // Only release sticks/keys when transitioning to inactive (avoid per-frame clears)
     if (!active && was) this.releaseAll();
   }
 
@@ -207,7 +296,6 @@ export class MobileControls {
   private syncMoveKeys() {
     const next = new Set<string>();
     const { x, y } = this.stickAxes;
-    // Screen Y down → forward is negative y
     if (y < -0.2) next.add('KeyW');
     if (y > 0.2) next.add('KeyS');
     if (x < -0.2) next.add('KeyA');
@@ -241,9 +329,8 @@ export class MobileControls {
       if (!this.host || this.host.isDisposed() || !this.visible || !this.active) return;
       if (this.lookPointerId != null) return;
       if (ev.button !== 0 && ev.pointerType === 'mouse') return;
-      // Ignore if target is a button inside look pad (shouldn't happen)
       const t = ev.target as HTMLElement | null;
-      if (t?.closest?.('.mobile-btn')) return;
+      if (t?.closest?.('.mobile-btn, .mobile-stick, .mobile-left, .mobile-right')) return;
       ev.preventDefault();
       ev.stopPropagation();
       this.lookPointerId = ev.pointerId;
@@ -312,10 +399,14 @@ export class MobileControls {
       btn.addEventListener('pointerdown', press, { signal: sig });
       btn.addEventListener('pointerup', release, { signal: sig });
       btn.addEventListener('pointercancel', release, { signal: sig });
-      btn.addEventListener('lostpointercapture', () => {
-        btn.classList.remove('active');
-        this.onAction(action, false);
-      }, { signal: sig });
+      btn.addEventListener(
+        'lostpointercapture',
+        () => {
+          btn.classList.remove('active');
+          this.onAction(action, false);
+        },
+        { signal: sig },
+      );
     }
   }
 
@@ -328,7 +419,6 @@ export class MobileControls {
         host.injectKey('Space', down);
         break;
       case 'interact':
-        // Edge tap — inject press+release on down so E fires once
         if (down) {
           host.injectKey('KeyE', true);
           host.injectKey('KeyE', false);
