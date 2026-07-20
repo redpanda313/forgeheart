@@ -3574,6 +3574,7 @@ export class ForgeHeartGame {
     // Refresh colliders if workshop toggled
     this.colliders = [...this.skyCity.colliders];
     this.updateNavCompass();
+    this.clearCityMapRouteIfArrived();
     if (this.cityMapOpen) this.refreshCityMap();
 
     if (this.harvestOpen) {
@@ -4153,7 +4154,7 @@ export class ForgeHeartGame {
   private openCityMap() {
     if (this.disposed || !this.megaCityActive || !this.skyCity) return;
     this.cityMapOpen = true;
-    this.cityMapSelectedId = null;
+    // Keep cityMapSelectedId so the dotted route persists across open/close
     this.cityMapCam = defaultMapCamera(this.skyCity.mapSnapshot);
     this.cityMapDrag = null;
     const panel = document.getElementById('city-map-panel');
@@ -4170,7 +4171,7 @@ export class ForgeHeartGame {
 
   private closeCityMap() {
     this.cityMapOpen = false;
-    this.cityMapSelectedId = null;
+    // Keep cityMapSelectedId — route redraws when the map reopens
     this.cityMapCam = null;
     this.cityMapDrag = null;
     const panel = document.getElementById('city-map-panel');
@@ -4182,6 +4183,25 @@ export class ForgeHeartGame {
         ? 'Home · E · Q board · M map · wind skyways · I · Esc'
         : 'Home · E · M map · board shop · wind skyways',
     );
+  }
+
+  /** Clear map route when the player reaches the selected destination. */
+  private clearCityMapRouteIfArrived() {
+    const id = this.cityMapSelectedId;
+    if (!id || id === 'player' || !this.skyCity) return;
+    const pos = this.board?.mounted ? this.board.position : this.camera.position;
+    const snap = this.skyCity.mapSnapshot;
+    const target = resolveMapTarget(snap, this.cityMapLive, id);
+    if (!target) {
+      // Transient pin gone (e.g. attention marker) — drop the route
+      this.cityMapSelectedId = null;
+      return;
+    }
+    const pad = snap.pads.find((p) => p.id === id);
+    const radius = pad ? Math.max(28, pad.size * 0.45) : 18;
+    if (Math.hypot(target.x - pos.x, target.z - pos.z) <= radius) {
+      this.cityMapSelectedId = null;
+    }
   }
 
   private refreshCityMap() {
