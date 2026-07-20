@@ -2,7 +2,7 @@
  * ForgeHeart — on-screen touch controls for mobile / touch browsers.
  *
  * Shown when:
- * - UA / coarse pointer / narrow touch screen detects mobile, or
+ * - iPhone / iPad / Android / coarse-pointer / narrow touch screen, or
  * - URL has ?mobile=1 / ?touch=1, or
  * - localStorage forgeheart-force-mobile=1, or
  * - the player touches the screen during play (auto-enable)
@@ -22,27 +22,53 @@ export function isMobileBrowser(): boolean {
     /* ignore */
   }
 
-  const ua = navigator.userAgent || '';
-  const mobileUa =
-    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|SamsungBrowser/i.test(
-      ua,
-    );
-  // iPadOS 13+ can report as MacIntel with touch
-  const iPadOs = navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1;
-  const touchPoints = navigator.maxTouchPoints ?? 0;
+  const nav = navigator as Navigator & {
+    userAgentData?: { mobile?: boolean };
+    standalone?: boolean;
+  };
+  const ua = nav.userAgent || '';
+  const platform = nav.platform || '';
+  const touchPoints = nav.maxTouchPoints ?? 0;
   const hasTouch = touchPoints > 0 || 'ontouchstart' in window;
-  const coarse =
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(pointer: coarse)').matches;
-  const noHover =
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(hover: none)').matches;
-  // Phones in landscape still need controls; treat narrow + touch as mobile
-  const narrowTouch =
-    hasTouch &&
-    Math.min(window.innerWidth || 0, window.innerHeight || 0) <= 920;
 
-  return mobileUa || iPadOs || (coarse && hasTouch) || (noHover && hasTouch) || narrowTouch;
+  // Client Hints / PWA
+  if (nav.userAgentData?.mobile === true) return true;
+  if (nav.standalone === true) return true;
+
+  // Classic mobile UA (incl. iOS browsers that put CriOS/FxiOS in the string)
+  if (
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|SamsungBrowser|CriOS|FxiOS|EdgiOS/i.test(
+      ua,
+    )
+  ) {
+    return true;
+  }
+
+  // iPadOS 13+ desktop-class UA still has multi-touch
+  if (platform === 'MacIntel' && touchPoints > 1) return true;
+
+  // iOS Safari desktop-mode / WebKit tells
+  const webkitTouch =
+    typeof CSS !== 'undefined' &&
+    typeof CSS.supports === 'function' &&
+    CSS.supports('-webkit-touch-callout', 'none') &&
+    hasTouch &&
+    touchPoints > 0;
+  if (webkitTouch && /Macintosh|iPhone|iPad|iPod/i.test(ua + platform)) return true;
+
+  const mq = (q: string) =>
+    typeof window.matchMedia === 'function' && window.matchMedia(q).matches;
+
+  const coarse = mq('(pointer: coarse)') || mq('(any-pointer: coarse)');
+  const noHover = mq('(hover: none)') || mq('(any-hover: none)');
+  // Phones in landscape still need controls
+  const narrowTouch =
+    hasTouch && Math.min(window.innerWidth || 0, window.innerHeight || 0) <= 920;
+
+  // Orientation API is common on phones
+  const orientable = typeof window.orientation === 'number' && hasTouch;
+
+  return (coarse && hasTouch) || (noHover && hasTouch) || narrowTouch || orientable;
 }
 
 export type MobileInputHost = {
@@ -54,6 +80,14 @@ export type MobileInputHost = {
   /** Inject a key code as if pressed on a keyboard (edge + hold). */
   injectKey(code: string, down: boolean): void;
   isDisposed(): boolean;
+  /** Cycle Hand → Wrench (if unlocked) → Board (if owned). */
+  cycleWeapon(): void;
+  /** Proximity interact (same as E). */
+  tryInteract(): void;
+  /** Open / close empire map when available. */
+  toggleMap(): void;
+  /** True while surfing the market / city board. */
+  isBoardMounted(): boolean;
   /** Called when touch controls newly activate mid-session. */
   onMobileControlsEnabled?(): void;
 };
@@ -61,6 +95,8 @@ export type MobileInputHost = {
 type StickAxes = { x: number; y: number };
 
 const MOVE_CODES = ['KeyW', 'KeyA', 'KeyS', 'KeyD'] as const;
+const WEAPON_HOLD_MS = 420;
+const LOOK_TAP_MAX_MOVE = 14;
 
 /**
  * Virtual joystick + action buttons for mobile play.
@@ -71,6 +107,7 @@ export class MobileControls {
   private stick: HTMLElement | null;
   private stickKnob: HTMLElement | null;
   private lookPad: HTMLElement | null;
+  private tapAffordance: HTMLElement | null;
   private host: MobileInputHost | null = null;
   private abort: AbortController | null = null;
   private touchArmAbort: AbortController | null = null;
@@ -85,8 +122,11 @@ export class MobileControls {
 
   private lookPointerId: number | null = null;
   private lookLast = { x: 0, y: 0 };
+  private lookStart = { x: 0, y: 0 };
+  private lookMoved = false;
 
   private fireHeld = false;
+  private attackHoldTimer: number | null = null;
   private _enabled: boolean;
 
   constructor() {
@@ -94,10 +134,15 @@ export class MobileControls {
     this.stick = document.getElementById('mobile-stick');
     this.stickKnob = document.getElementById('mobile-stick-knob');
     this.lookPad = document.getElementById('mobile-look');
+    this.tapAffordance = document.getElementById('mobile-tap-affordance');
     this._enabled = isMobileBrowser();
     if (!this._enabled) {
       this.root?.classList.add('hidden');
       this.root?.setAttribute('aria-hidden', 'true');
+    } else {
+      // Eagerly mark the document so CSS (HUD layout) applies before first frame
+      document.documentElement.classList.add('forgeheart-mobile');
+      document.body.classList.add('forgeheart-mobile');
     }
   }
 
@@ -108,6 +153,8 @@ export class MobileControls {
   /** Persist + enable touch UI (also used by ?mobile=1 and first-touch arming). */
   forceEnable(persist = true) {
     this._enabled = true;
+    document.documentElement.classList.add('forgeheart-mobile');
+    document.body.classList.add('forgeheart-mobile');
     if (persist) {
       try {
         localStorage.setItem(FORCE_KEY, '1');
@@ -126,8 +173,14 @@ export class MobileControls {
     this.touchArmAbort?.abort();
     this.touchArmAbort = null;
 
+    // Re-check detection (UA can settle after first paint on some WebViews)
+    if (!this._enabled && isMobileBrowser()) {
+      this.forceEnable(true);
+    }
+
     if (this._enabled) {
       this.mountUi();
+      this.syncBoardButtons();
       return;
     }
 
@@ -135,11 +188,11 @@ export class MobileControls {
     this.touchArmAbort = new AbortController();
     const arm = (ev: Event) => {
       if (this.host?.isDisposed()) return;
-      // Ignore synthetic mouse-as-touch from some desktops if no maxTouchPoints
       if ((navigator.maxTouchPoints ?? 0) === 0 && !('ontouchstart' in window)) return;
       ev.preventDefault?.();
       this.forceEnable(true);
       this.mountUi();
+      this.syncBoardButtons();
       this.host?.onMobileControlsEnabled?.();
     };
     window.addEventListener('touchstart', arm, {
@@ -163,12 +216,15 @@ export class MobileControls {
     this.bindStick(sig);
     this.bindLook(sig);
     this.bindButtons(sig);
+    this.bindTapAffordance(sig);
     this.setVisible(true);
     this.setGameplayActive(true);
+    this.syncBoardButtons();
   }
 
   detach() {
     this.releaseAll();
+    this.clearAttackHold();
     try {
       this.abort?.abort();
     } catch {
@@ -184,6 +240,7 @@ export class MobileControls {
     this.host = null;
     this.attached = false;
     this.setVisible(false);
+    this.hideTapAffordance();
     document.documentElement.classList.remove('forgeheart-mobile');
     document.body.classList.remove('forgeheart-mobile');
   }
@@ -198,16 +255,52 @@ export class MobileControls {
       this.root.classList.add('hidden');
       this.root.setAttribute('aria-hidden', 'true');
       this.releaseAll();
+      this.hideTapAffordance();
     }
   }
 
-  /** Hide joysticks while pause / modal UI owns the screen; keep util for pause/map. */
+  /** Hide joysticks while pause / modal UI owns the screen; keep pause util. */
   setGameplayActive(active: boolean) {
     const was = this.active;
     this.active = active;
     if (!this.root) return;
     this.root.classList.toggle('mobile-controls-dimmed', !active);
     if (!active && was) this.releaseAll();
+    if (!active) this.hideTapAffordance();
+  }
+
+  /** Show Slide / Cam only while riding the board. */
+  syncBoardButtons() {
+    const riding = !!this.host?.isBoardMounted();
+    this.root?.querySelectorAll<HTMLElement>('.mobile-board-only').forEach((el) => {
+      el.classList.toggle('hidden', !riding);
+      el.setAttribute('aria-hidden', riding ? 'false' : 'true');
+    });
+  }
+
+  /**
+   * Position the floating Tap badge over a world interactable (CSS px in #app).
+   * Pass null to hide.
+   */
+  setTapAffordance(screen: { x: number; y: number; label?: string } | null) {
+    const el = this.tapAffordance;
+    if (!el) return;
+    if (!this.visible || !this.active || !screen) {
+      this.hideTapAffordance();
+      return;
+    }
+    el.textContent = screen.label ?? 'Tap';
+    el.style.left = `${screen.x}px`;
+    el.style.top = `${screen.y}px`;
+    el.classList.remove('hidden');
+    el.setAttribute('aria-hidden', 'false');
+  }
+
+  private hideTapAffordance() {
+    const el = this.tapAffordance;
+    if (!el) return;
+    el.classList.add('hidden');
+    el.setAttribute('aria-hidden', 'true');
   }
 
   private releaseAll() {
@@ -215,9 +308,17 @@ export class MobileControls {
     this.resetStickVisual();
     this.stickPointerId = null;
     this.lookPointerId = null;
+    this.clearAttackHold();
     if (this.fireHeld) {
       this.fireHeld = false;
       this.host?.setFireHeld(false);
+    }
+  }
+
+  private clearAttackHold() {
+    if (this.attackHoldTimer != null) {
+      window.clearTimeout(this.attackHoldTimer);
+      this.attackHoldTimer = null;
     }
   }
 
@@ -330,12 +431,21 @@ export class MobileControls {
       if (this.lookPointerId != null) return;
       if (ev.button !== 0 && ev.pointerType === 'mouse') return;
       const t = ev.target as HTMLElement | null;
-      if (t?.closest?.('.mobile-btn, .mobile-stick, .mobile-left, .mobile-right')) return;
+      if (
+        t?.closest?.(
+          '.mobile-btn, .mobile-stick, .mobile-left, .mobile-right, .mobile-pause, #mobile-tap-affordance, #nav-compass',
+        )
+      ) {
+        return;
+      }
       ev.preventDefault();
       ev.stopPropagation();
       this.lookPointerId = ev.pointerId;
       this.lookLast.x = ev.clientX;
       this.lookLast.y = ev.clientY;
+      this.lookStart.x = ev.clientX;
+      this.lookStart.y = ev.clientY;
+      this.lookMoved = false;
       el.setPointerCapture(ev.pointerId);
     };
 
@@ -346,16 +456,29 @@ export class MobileControls {
       const dy = ev.clientY - this.lookLast.y;
       this.lookLast.x = ev.clientX;
       this.lookLast.y = ev.clientY;
-      if (dx !== 0 || dy !== 0) this.host.applyTouchLook(dx, dy);
+      if (dx !== 0 || dy !== 0) {
+        if (
+          Math.hypot(ev.clientX - this.lookStart.x, ev.clientY - this.lookStart.y) >
+          LOOK_TAP_MAX_MOVE
+        ) {
+          this.lookMoved = true;
+        }
+        this.host.applyTouchLook(dx, dy);
+      }
     };
 
     const onUp = (ev: PointerEvent) => {
       if (ev.pointerId !== this.lookPointerId) return;
+      const wasTap = !this.lookMoved;
       this.lookPointerId = null;
       try {
         el.releasePointerCapture(ev.pointerId);
       } catch {
         /* ignore */
+      }
+      // Short tap on world (not a look-drag) → interact when in range
+      if (wasTap && this.active && this.host && !this.host.isDisposed()) {
+        this.host.tryInteract();
       }
     };
 
@@ -363,6 +486,19 @@ export class MobileControls {
     el.addEventListener('pointermove', onMove, { signal: sig });
     el.addEventListener('pointerup', onUp, { signal: sig });
     el.addEventListener('pointercancel', onUp, { signal: sig });
+  }
+
+  private bindTapAffordance(sig: AbortSignal) {
+    const el = this.tapAffordance;
+    if (!el) return;
+    const onTap = (ev: Event) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!this.host || this.host.isDisposed() || !this.visible || !this.active) return;
+      this.host.tryInteract();
+    };
+    el.addEventListener('pointerdown', onTap, { signal: sig });
+    el.addEventListener('click', onTap, { signal: sig });
   }
 
   private bindButtons(sig: AbortSignal) {
@@ -418,15 +554,25 @@ export class MobileControls {
       case 'jump':
         host.injectKey('Space', down);
         break;
-      case 'interact':
-        if (down) {
-          host.injectKey('KeyE', true);
-          host.injectKey('KeyE', false);
-        }
-        break;
       case 'attack':
-        this.fireHeld = down;
-        host.setFireHeld(down);
+        if (down) {
+          this.fireHeld = true;
+          host.setFireHeld(true);
+          this.clearAttackHold();
+          this.attackHoldTimer = window.setTimeout(() => {
+            this.attackHoldTimer = null;
+            if (!this.host || this.host.isDisposed()) return;
+            this.fireHeld = false;
+            this.host.setFireHeld(false);
+            this.host.cycleWeapon();
+          }, WEAPON_HOLD_MS);
+        } else {
+          this.clearAttackHold();
+          if (this.fireHeld) {
+            this.fireHeld = false;
+            host.setFireHeld(false);
+          }
+        }
         break;
       case 'slide':
         host.injectKey('ShiftLeft', down);
@@ -446,35 +592,14 @@ export class MobileControls {
           host.injectKey('KeyI', false);
         }
         break;
-      case 'map':
-        if (down) {
-          host.injectKey('KeyM', true);
-          host.injectKey('KeyM', false);
-        }
-        break;
-      case 'hand':
-        if (down) {
-          host.injectKey('Digit1', true);
-          host.injectKey('Digit1', false);
-        }
-        break;
-      case 'wrench':
-        if (down) {
-          host.injectKey('Digit2', true);
-          host.injectKey('Digit2', false);
-        }
-        break;
-      case 'weapon-board':
-        if (down) {
-          host.injectKey('Digit3', true);
-          host.injectKey('Digit3', false);
-        }
-        break;
       case 'camera':
         if (down) {
           host.injectKey('Tab', true);
           host.injectKey('Tab', false);
         }
+        break;
+      case 'map':
+        if (down) host.toggleMap();
         break;
       default:
         break;

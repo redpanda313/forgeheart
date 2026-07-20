@@ -17,6 +17,22 @@
       <!-- Mobile / coarse-pointer on-screen controls (shown when detected) -->
       <div id="mobile-controls" class="mobile-controls hidden" aria-hidden="true">
         <div id="mobile-look" class="mobile-look" aria-label="Look"></div>
+        <button
+          type="button"
+          class="mobile-btn mobile-btn-util mobile-pause"
+          data-mobile-action="pause"
+          title="Pause"
+        >
+          Pause
+        </button>
+        <button
+          type="button"
+          id="mobile-tap-affordance"
+          class="mobile-tap-affordance hidden"
+          aria-hidden="true"
+        >
+          Tap
+        </button>
         <div class="mobile-left">
           <div id="mobile-stick" class="mobile-stick" aria-label="Move">
             <div class="mobile-stick-base"></div>
@@ -25,22 +41,44 @@
         </div>
         <div class="mobile-right">
           <div class="mobile-util">
-            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="pause" title="Pause">☰</button>
-            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="map" title="Map">M</button>
-            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="bay" title="Bay">I</button>
-            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="camera" title="Camera">Tab</button>
-          </div>
-          <div class="mobile-weapons">
-            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="hand" title="Hand">1</button>
-            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="wrench" title="Wrench">2</button>
-            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="weapon-board" title="Board weapon">3</button>
+            <button type="button" class="mobile-btn mobile-btn-util" data-mobile-action="bay" title="Bay">
+              Bay
+            </button>
+            <button
+              type="button"
+              class="mobile-btn mobile-btn-util mobile-board-only hidden"
+              data-mobile-action="camera"
+              title="Camera"
+              aria-hidden="true"
+            >
+              Cam
+            </button>
           </div>
           <div class="mobile-actions">
-            <button type="button" class="mobile-btn mobile-btn-attack" data-mobile-action="attack" title="Attack">ATK</button>
-            <button type="button" class="mobile-btn mobile-btn-jump" data-mobile-action="jump" title="Jump">JMP</button>
-            <button type="button" class="mobile-btn mobile-btn-interact" data-mobile-action="interact" title="Interact">E</button>
-            <button type="button" class="mobile-btn mobile-btn-slide" data-mobile-action="slide" title="Slide">SLD</button>
-            <button type="button" class="mobile-btn mobile-btn-board" data-mobile-action="board" title="Mount board">Q</button>
+            <button
+              type="button"
+              class="mobile-btn mobile-btn-attack"
+              data-mobile-action="attack"
+              title="Attack · hold to swap weapon"
+            >
+              <span class="mobile-btn-main">Attack</span>
+              <span class="mobile-btn-sub">Hold to Swap</span>
+            </button>
+            <button type="button" class="mobile-btn mobile-btn-jump" data-mobile-action="jump" title="Jump">
+              Jump
+            </button>
+            <button type="button" class="mobile-btn mobile-btn-board" data-mobile-action="board" title="Board">
+              Board
+            </button>
+            <button
+              type="button"
+              class="mobile-btn mobile-btn-slide mobile-board-only hidden"
+              data-mobile-action="slide"
+              title="Slide"
+              aria-hidden="true"
+            >
+              Slide
+            </button>
           </div>
         </div>
       </div>
@@ -415,7 +453,7 @@
           </div>
           <p id="save-info" class="save-info">Select a slot · New Game overwrites that slot · Continue loads last used</p>
           <p id="mobile-title-hint" class="mobile-title-hint hidden" aria-hidden="true">
-            Phone detected · after New Game: stick bottom-left · buttons bottom-right · drag to look
+            Phone detected · after New Game: stick to move · drag to look · tap prompts to interact · Pause top-left
           </p>
           <p class="disclaimer">
             Branch feature/steampunk-vertical-slice · Three.js · Trump Doom stays on main

@@ -127,26 +127,44 @@ export function inflateCollider(c: Collider, skin = 0.02): Collider {
 /** Floating "E" marker above interactables */
 export function makePromptSprite(): THREE.Mesh {
   const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 64;
+  canvas.width = 96;
+  canvas.height = 96;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = 'rgba(20,14,8,0.75)';
-  ctx.fillRect(8, 8, 48, 48);
+  ctx.fillStyle = 'rgba(20,14,8,0.78)';
+  ctx.fillRect(8, 8, 80, 80);
   ctx.strokeStyle = '#c4a35a';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(10, 10, 44, 44);
+  ctx.lineWidth = 4;
+  ctx.strokeRect(12, 12, 72, 72);
   ctx.fillStyle = '#f0e0b0';
-  ctx.font = 'bold 32px serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('E', 32, 34);
+  // Prefer TAP on phones / touch browsers; E on desktop
+  let mobile = false;
+  try {
+    mobile =
+      typeof navigator !== 'undefined' &&
+      (/iPhone|iPad|iPod|Android|Mobile|CriOS|FxiOS/i.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1) ||
+        (typeof window !== 'undefined' &&
+          typeof window.matchMedia === 'function' &&
+          window.matchMedia('(pointer: coarse)').matches));
+  } catch {
+    /* ignore */
+  }
+  if (mobile) {
+    ctx.font = 'bold 28px system-ui,sans-serif';
+    ctx.fillText('TAP', 48, 52);
+  } else {
+    ctx.font = 'bold 42px serif';
+    ctx.fillText('E', 48, 52);
+  }
   const tex = new THREE.CanvasTexture(canvas);
   const mat = new THREE.MeshBasicMaterial({
     map: tex,
     transparent: true,
     depthWrite: false,
   });
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.45, 0.45), mat);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.5), mat);
   m.visible = false;
   return m;
 }

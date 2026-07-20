@@ -480,18 +480,27 @@ export class ForgeHeartGame {
       isPaused: () => this.isPaused(),
       injectKey: (code, down) => this.injectKey(code, down),
       isDisposed: () => this.disposed,
+      cycleWeapon: () => this.cycleMobileWeapon(),
+      tryInteract: () => {
+        if (this.currentInteractWorldPos()) this.tryInteract();
+      },
+      toggleMap: () => this.toggleCityMapFromMobile(),
+      isBoardMounted: () => !!this.board?.mounted,
       onMobileControlsEnabled: () => {
         this.syncMobileGameplay();
-        this.setHelp('Stick move · drag look · E · JMP · ATK · ☰');
-        this.toast('Touch controls on — stick left, buttons right, drag to look', 4);
+        // First-time mobile enable with no saved look pref → 3×
+        this.ensureMobileLookDefault();
+        this.setHelp('Stick move · drag look · tap to interact · Attack · Jump · Pause');
+        this.toast('Touch controls on — stick · look · tap prompts · Pause top-left', 4);
       },
     });
     if (this.mobile.enabled) {
       this.syncMobileGameplay();
-      this.setHelp('Stick move · drag look · E interact · JMP jump · ATK attack · ☰ pause');
+      this.setHelp('Stick move · drag look · tap to interact · Attack · Jump · Pause');
     } else {
       this.setHelp('WASD look · E read / interact · 1 Hand reprogram · Space jump');
     }
+    this.wireNavCompassTap();
   }
 
   private bindInput() {
@@ -1789,7 +1798,8 @@ export class ForgeHeartGame {
   private static readonly LOOK_SENS_KEY = 'forgeheart-look-sensitivity';
 
   private loadLookSensitivity() {
-    let v = 1;
+    // Mobile default 3× when the player has never set a preference
+    let v = this.mobile.enabled ? 3 : 1;
     try {
       const raw = localStorage.getItem(ForgeHeartGame.LOOK_SENS_KEY);
       if (raw != null) {
@@ -1799,16 +1809,28 @@ export class ForgeHeartGame {
     } catch {
       /* ignore */
     }
-    this.applyLookSensitivity(v);
+    this.applyLookSensitivity(v, false);
   }
 
-  private applyLookSensitivity(v: number) {
-    this.lookSensitivity = Math.max(0.5, Math.min(3, Math.round(v * 10) / 10));
-    this.controls.pointerSpeed = this.lookSensitivity;
+  /** If mobile just enabled and no saved sens, bump to 3× once. */
+  private ensureMobileLookDefault() {
     try {
-      localStorage.setItem(ForgeHeartGame.LOOK_SENS_KEY, String(this.lookSensitivity));
+      if (localStorage.getItem(ForgeHeartGame.LOOK_SENS_KEY) != null) return;
     } catch {
       /* ignore */
+    }
+    this.applyLookSensitivity(3, true);
+  }
+
+  private applyLookSensitivity(v: number, persist = true) {
+    this.lookSensitivity = Math.max(0.5, Math.min(3, Math.round(v * 10) / 10));
+    this.controls.pointerSpeed = this.lookSensitivity;
+    if (persist) {
+      try {
+        localStorage.setItem(ForgeHeartGame.LOOK_SENS_KEY, String(this.lookSensitivity));
+      } catch {
+        /* ignore */
+      }
     }
     this.syncLookSensitivityUi();
   }
@@ -1858,37 +1880,138 @@ export class ForgeHeartGame {
       this.makerPaletteOpen ||
       this.isEconomyUiOpen();
     this.mobile.setGameplayActive(!blocked);
+    this.mobile.syncBoardButtons();
   }
 
   /** Phase-aware help when touch controls are active. */
   private mobileHelpText(fallback: string): string {
-    // Keep proximity / map prompts readable
-    if (
-      fallback.startsWith('E ·') ||
-      fallback.startsWith('Map ·') ||
-      fallback.startsWith('Loading')
-    ) {
+    // Keep proximity / map prompts readable — rewrite E → Tap
+    if (fallback.startsWith('E ·')) {
+      return `Tap · ${fallback.slice(3)}`;
+    }
+    if (fallback.startsWith('Map ·') || fallback.startsWith('Loading')) {
       return fallback;
     }
     if (this.gameMakerActive) {
-      return 'Stick fly · drag look · E/Q height · pause ☰ · tools in pause';
+      return 'Stick fly · drag look · Pause · tools in pause menu';
     }
     if (this.board?.mounted) {
       return this.boardCamMode === 'first'
-        ? 'Stick ride · JMP jump · SLD slide · Q stow · Tab 3rd · ☰'
-        : 'Stick ride · JMP jump · SLD slide · Q stow · Tab 1st · ☰';
+        ? 'Stick ride · Jump · Slide · Board stow · Cam · Pause'
+        : 'Stick ride · Jump · Slide · Board stow · Cam · Pause';
     }
     if (this.megaCityActive) {
       return this.boardOwned || this.inv.playerBoard.owned
-        ? 'Stick · look · E · Q board · I · M map · JMP · ☰'
-        : 'Stick · look · E · M map · board shop · JMP · ☰';
+        ? 'Stick · look · tap · Board · Bay · compass map · Jump · Pause'
+        : 'Stick · look · tap · Bay · compass map · Jump · Pause';
     }
     if (this.economyActive) {
       return this.boardOwned || this.inv.playerBoard.owned
-        ? 'Stick · look · E · Q board · I bay · JMP · ☰'
-        : 'Stick · look · E · I bay · JMP · ☰';
+        ? 'Stick · look · tap · Board · Bay · Jump · Pause'
+        : 'Stick · look · tap · Bay · Jump · Pause';
     }
-    return 'Stick · look · E interact · JMP · ATK · 1 Hand · 2 Wrench · ☰';
+    return 'Stick · look · tap to interact · Attack (hold swap) · Jump · Pause';
+  }
+
+  /** Cycle unlocked weapons from the Attack long-press. */
+  cycleMobileWeapon() {
+    if (this.disposed || this.board?.mounted) return;
+    type W = 'hand' | 'wrench' | 'board';
+    const opts: W[] = ['hand'];
+    if (this.wrenchUnlocked) opts.push('wrench');
+    if (this.boardOwned || this.inv.playerBoard.owned) opts.push('board');
+    const cur = this.weapon as W;
+    const i = Math.max(0, opts.indexOf(cur));
+    const next = opts[(i + 1) % opts.length]!;
+    this.weapon = next;
+    this.syncWeaponHud();
+    const label = next === 'hand' ? 'Hand' : next === 'wrench' ? 'Arc Wrench' : 'Board';
+    this.toast(`Weapon · ${label}`, 1.4);
+  }
+
+  /** Empire map toggle from compass / mobile host. */
+  toggleCityMapFromMobile() {
+    if (this.disposed || !this.megaCityActive || this.gameMakerActive) return;
+    if (this.cityMapOpen) {
+      this.closeCityMap();
+      return;
+    }
+    if (
+      this.harvestOpen ||
+      this.craftOpen ||
+      this.bayOpen ||
+      this.boardShopOpen ||
+      this.programOpen ||
+      this.stallOpen ||
+      this.activeVendor
+    ) {
+      return;
+    }
+    this.openCityMap();
+  }
+
+  private wireNavCompassTap() {
+    const el = document.getElementById('nav-compass');
+    if (!el || this.disposed) return;
+    el.addEventListener(
+      'pointerdown',
+      (ev) => {
+        if (!this.mobile.enabled || this.disposed) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.toggleCityMapFromMobile();
+      },
+      { signal: this.sessionAbort.signal },
+    );
+  }
+
+  /** Floating Tap badge over the current proximity interactable. */
+  private syncMobileTapAffordance() {
+    if (!this.mobile.enabled) {
+      this.mobile.setTapAffordance(null);
+      return;
+    }
+    const target = this.currentInteractWorldPos();
+    if (!target) {
+      this.mobile.setTapAffordance(null);
+      return;
+    }
+    const ndc = target.clone().project(this.camera);
+    if (ndc.z > 1 || ndc.z < -1 || Math.abs(ndc.x) > 1.15 || Math.abs(ndc.y) > 1.15) {
+      this.mobile.setTapAffordance(null);
+      return;
+    }
+    const app = document.getElementById('app');
+    const w = app?.clientWidth ?? this.canvas.clientWidth;
+    const h = app?.clientHeight ?? this.canvas.clientHeight;
+    const x = (ndc.x * 0.5 + 0.5) * w;
+    const y = (-ndc.y * 0.5 + 0.5) * h;
+    this.mobile.setTapAffordance({ x, y, label: 'Tap' });
+  }
+
+  private currentInteractWorldPos(): THREE.Vector3 | null {
+    if (this.megaCityActive && this.cityInteractPrompt) {
+      return this.cityInteractPrompt.position.clone().add(new THREE.Vector3(0, 1.2, 0));
+    }
+    if (this.economyActive && this.hubInteractPrompt) {
+      return this.hubInteractPrompt.position.clone().add(new THREE.Vector3(0, 1.2, 0));
+    }
+    if (!this.megaCityActive && !this.economyActive && !this.raceActive) {
+      const pos = this.camera.position;
+      let best: { p: THREE.Vector3; d: number } | null = null;
+      for (const it of this.interactables) {
+        if (it.opened) continue;
+        if (it.type === 'tray' && (!this.brotherScrapped || !it.mesh.visible)) continue;
+        if (it.type === 'wrench_pickup' && (!it.mesh.visible || this.wrenchUnlocked)) continue;
+        if (it.type === 'boat' && this.tutorial !== 'escape' && this.tutorial !== 'breach') continue;
+        const d = it.position.distanceTo(pos);
+        if (d <= it.radius + 0.4 && (!best || d < best.d)) {
+          best = { p: it.position.clone().add(new THREE.Vector3(0, 0.9, 0)), d };
+        }
+      }
+      return best?.p ?? null;
+    }
+    return null;
   }
 
   private wireHarvestTouchUi() {
@@ -2297,6 +2420,7 @@ export class ForgeHeartGame {
       // drawn via toast element for plaques; on-canvas for short msgs in render
     }
 
+    this.syncMobileTapAffordance();
     this.renderer.render(this.scene, this.camera);
     // overlay messages
     this.drawOverlay();
@@ -3596,11 +3720,12 @@ export class ForgeHeartGame {
     this.board.onGround = true;
     this.velocity.set(0, 0, 0);
     this.syncBoardRiderVisibility();
+    this.mobile.syncBoardButtons();
     this.audio.playPickup();
     this.toast(
       this.boardCamMode === 'first'
-        ? 'Board · 1st person · Tab 3rd · Q stow · WASD ride'
-        : 'Board · 3rd person · Tab 1st · Q stow · WASD ride',
+        ? 'Board · 1st person · Cam · Board stow · stick ride'
+        : 'Board · 3rd person · Cam · Board stow · stick ride',
       2.5,
     );
     this.setHelp('WASD ride · Shift slide · Space jump · Tab camera · Q stow');
@@ -3629,6 +3754,7 @@ export class ForgeHeartGame {
     this.applySpeedFx(0, 0);
     // Kill bank/roll leftover from lookAt + tilted camera.up while riding
     this.resetWalkCameraAfterBoard(yaw);
+    this.mobile.syncBoardButtons();
     this.toast('Board stowed · Q to ride anytime', 2);
     this.setHelp(
       this.megaCityActive
@@ -3865,7 +3991,7 @@ export class ForgeHeartGame {
     if (it.kind === 'neighbor' && it.lines?.length) {
       const line = it.lines[this.neighborLineIdx % it.lines.length]!;
       this.neighborLineIdx++;
-      this.toast(line, 5);
+      this.toast(line, this.mobile.enabled ? 9.5 : 5);
       this.audio.playPickup();
       return true;
     }
@@ -7676,9 +7802,12 @@ export class ForgeHeartGame {
     window.setTimeout(() => this.toastEl.classList.add('hidden'), sec * 1000);
   }
   private plaque(t: string) {
+    const sec = this.mobile.enabled ? 9.5 : 5;
+    this.msg = t;
+    this.msgT = sec;
     this.toastEl.textContent = t;
     this.toastEl.classList.remove('hidden');
-    window.setTimeout(() => this.toastEl.classList.add('hidden'), 5000);
+    window.setTimeout(() => this.toastEl.classList.add('hidden'), sec * 1000);
   }
   private flash(t: string) {
     this.convertEl.textContent = t;

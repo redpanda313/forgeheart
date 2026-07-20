@@ -2113,13 +2113,14 @@ h1 {
 
 .mobile-controls.mobile-controls-dimmed .mobile-left,
 .mobile-controls.mobile-controls-dimmed .mobile-actions,
-.mobile-controls.mobile-controls-dimmed .mobile-weapons,
-.mobile-controls.mobile-controls-dimmed .mobile-look {
+.mobile-controls.mobile-controls-dimmed .mobile-look,
+.mobile-controls.mobile-controls-dimmed .mobile-util,
+.mobile-controls.mobile-controls-dimmed .mobile-tap-affordance {
   opacity: 0;
   pointer-events: none !important;
 }
 
-.mobile-controls.mobile-controls-dimmed .mobile-util {
+.mobile-controls.mobile-controls-dimmed .mobile-pause {
   opacity: 1;
   pointer-events: auto;
 }
@@ -2130,6 +2131,46 @@ h1 {
   pointer-events: auto;
   touch-action: none;
   z-index: 1;
+}
+
+.mobile-pause {
+  position: absolute;
+  top: max(0.55rem, env(safe-area-inset-top));
+  left: max(0.55rem, env(safe-area-inset-left));
+  z-index: 5;
+  pointer-events: auto;
+  min-width: 58px !important;
+  min-height: 40px !important;
+  border-radius: 10px !important;
+  font-size: 0.72rem !important;
+  letter-spacing: 0.06em;
+}
+
+.mobile-tap-affordance {
+  position: absolute;
+  z-index: 6;
+  transform: translate(-50%, -120%);
+  pointer-events: auto;
+  touch-action: manipulation;
+  min-width: 64px;
+  min-height: 40px;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  border: 2px solid rgba(240, 224, 176, 0.95);
+  background: rgba(18, 16, 14, 0.92);
+  color: #fff6d8;
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 4px 14px rgba(0, 0, 0, 0.5);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-tap-affordance.hidden {
+  display: none !important;
 }
 
 .mobile-left {
@@ -2187,7 +2228,6 @@ h1 {
 }
 
 .mobile-util,
-.mobile-weapons,
 .mobile-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2212,6 +2252,26 @@ h1 {
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.5),
     0 4px 12px rgba(0, 0, 0, 0.5);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.05;
+}
+
+.mobile-btn-main {
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.mobile-btn-sub {
+  margin-top: 0.12rem;
+  font-size: 0.48rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  opacity: 0.9;
+  text-transform: none;
+  white-space: nowrap;
 }
 
 .mobile-btn.active,
@@ -2222,50 +2282,99 @@ h1 {
 }
 
 .mobile-btn-util {
-  min-width: 44px;
+  min-width: 52px;
   min-height: 44px;
   border-radius: 10px;
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   background: rgba(24, 22, 18, 0.9);
 }
 
 .mobile-btn-jump {
-  min-width: 70px;
-  min-height: 70px;
+  min-width: 72px;
+  min-height: 72px;
   background: rgba(28, 70, 52, 0.92);
   border-color: rgba(120, 255, 180, 0.75);
 }
 
 .mobile-btn-attack {
-  min-width: 70px;
-  min-height: 70px;
+  min-width: 78px;
+  min-height: 78px;
+  padding: 0.4rem 0.5rem;
   background: rgba(90, 32, 24, 0.92);
   border-color: rgba(255, 140, 100, 0.75);
 }
 
-.mobile-btn-interact {
-  min-width: 64px;
-  min-height: 64px;
-  background: rgba(40, 48, 70, 0.92);
-}
-
 .mobile-btn-slide,
 .mobile-btn-board {
-  min-width: 52px;
-  min-height: 52px;
-  border-radius: 12px;
-  font-size: 0.7rem;
+  min-width: 58px;
+  min-height: 58px;
+  border-radius: 50%;
+  font-size: 0.72rem;
 }
 
-/* Lift HUD help / bars above thumb zones on mobile */
+.mobile-btn-board {
+  background: rgba(40, 55, 80, 0.92);
+  border-color: rgba(140, 190, 255, 0.7);
+}
+
+.mobile-board-only.hidden {
+  display: none !important;
+}
+
+/* Lift HUD help / bars above thumb zones on mobile; bars sit top-center */
 .forgeheart-mobile .hud {
-  padding-bottom: 10.5rem;
+  display: block;
+  padding: 0;
+  padding-bottom: 11.5rem;
+  background: linear-gradient(transparent 55%, rgba(0, 0, 0, 0.55));
+}
+
+.forgeheart-mobile .hud-top {
+  top: max(0.55rem, env(safe-area-inset-top));
+  padding: 0 4.5rem;
+}
+
+.forgeheart-mobile .resolve-panel {
+  position: absolute;
+  top: calc(max(0.55rem, env(safe-area-inset-top)) + 3.15rem);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(250px, 68vw);
+  max-width: none;
+  z-index: 11;
+}
+
+.forgeheart-mobile .weapon-name {
+  position: absolute;
+  top: calc(max(0.55rem, env(safe-area-inset-top)) + 5.35rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 11;
+}
+
+.forgeheart-mobile .hud > .hud-bar:not(.resolve-panel) {
+  position: absolute;
+  top: calc(max(0.55rem, env(safe-area-inset-top)) + 6.45rem);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(230px, 66vw);
+  max-width: none;
+  z-index: 11;
 }
 
 .forgeheart-mobile .help-line {
-  bottom: 9.4rem;
+  bottom: 10.4rem;
   font-size: 0.55rem;
-  padding: 0 0.5rem;
+  padding: 0 0.75rem;
+  z-index: 12;
+}
+
+.forgeheart-mobile .plaque-toast {
+  bottom: 12.2rem;
+  z-index: 32;
+  max-width: min(480px, 86vw);
+  padding: 0.85rem 1.1rem;
+  line-height: 1.45;
 }
 
 .forgeheart-mobile #game-canvas {
@@ -2273,10 +2382,17 @@ h1 {
 }
 
 .forgeheart-mobile .nav-compass {
-  top: 4.8rem;
-  right: 0.65rem;
-  transform: scale(0.88);
+  top: calc(max(0.55rem, env(safe-area-inset-top)) + 8.6rem);
+  right: max(0.55rem, env(safe-area-inset-right));
+  transform: scale(0.9);
   transform-origin: top right;
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 26;
+}
+
+.forgeheart-mobile .nav-compass:active {
+  filter: brightness(1.12);
 }
 
 .mobile-title-hint {
@@ -2298,8 +2414,11 @@ h1 {
   }
   .mobile-btn-jump,
   .mobile-btn-attack {
-    min-width: 60px;
-    min-height: 60px;
+    min-width: 66px;
+    min-height: 66px;
+  }
+  .forgeheart-mobile .nav-compass {
+    top: calc(max(0.55rem, env(safe-area-inset-top)) + 9.2rem);
+    transform: scale(0.82);
   }
 }
-
