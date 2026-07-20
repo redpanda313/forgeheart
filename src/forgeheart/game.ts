@@ -470,6 +470,7 @@ export class ForgeHeartGame {
     });
 
     this.bindInput();
+    this.wireHarvestTouchUi();
     window.addEventListener('resize', () => this.onResize(), { signal: this.sessionAbort.signal });
     if (this.mobile.enabled) {
       this.mobile.attach({
@@ -480,7 +481,7 @@ export class ForgeHeartGame {
         injectKey: (code, down) => this.injectKey(code, down),
         isDisposed: () => this.disposed,
       });
-      this.mobile.setGameplayActive(true);
+      this.syncMobileGameplay();
       this.setHelp('Stick move · drag look · E interact · JMP jump · ATK attack · ☰ pause');
     } else {
       this.setHelp('WASD look · E read / interact · 1 Hand reprogram · Space jump');
@@ -1770,14 +1771,13 @@ export class ForgeHeartGame {
       this.controls.unlock();
       menu?.classList.remove('hidden');
       this.syncLookSensitivityUi();
-      this.mobile.setGameplayActive(false);
     } else {
       menu?.classList.add('hidden');
-      this.mobile.setGameplayActive(true);
       if (!this.disposed && !this.makerPaletteOpen && !this.mobile.enabled) {
         this.canvas.requestPointerLock();
       }
     }
+    this.syncMobileGameplay();
   }
 
   private static readonly LOOK_SENS_KEY = 'forgeheart-look-sensitivity';
@@ -1833,7 +1833,81 @@ export class ForgeHeartGame {
   }
 
   private setHelp(t: string) {
-    if (this.helpEl) this.helpEl.textContent = t;
+    if (!this.helpEl) return;
+    this.helpEl.textContent = this.mobile.enabled ? this.mobileHelpText(t) : t;
+  }
+
+  /**
+   * Keep on-screen controls visible through workshop → market tutorial → empire.
+   * Dim stick/look/actions only while pause or a blocking panel owns the screen.
+   */
+  private syncMobileGameplay() {
+    if (!this.mobile.enabled) return;
+    this.mobile.setVisible(true);
+    const blocked =
+      this.paused ||
+      this.disposed ||
+      this.harvestOpen ||
+      this.cityMapOpen ||
+      this.makerPaletteOpen ||
+      this.isEconomyUiOpen();
+    this.mobile.setGameplayActive(!blocked);
+  }
+
+  /** Phase-aware help when touch controls are active. */
+  private mobileHelpText(fallback: string): string {
+    // Keep proximity / map prompts readable
+    if (
+      fallback.startsWith('E ·') ||
+      fallback.startsWith('Map ·') ||
+      fallback.startsWith('Loading')
+    ) {
+      return fallback;
+    }
+    if (this.gameMakerActive) {
+      return 'Stick fly · drag look · E/Q height · pause ☰ · tools in pause';
+    }
+    if (this.board?.mounted) {
+      return this.boardCamMode === 'first'
+        ? 'Stick ride · JMP jump · SLD slide · Q stow · Tab 3rd · ☰'
+        : 'Stick ride · JMP jump · SLD slide · Q stow · Tab 1st · ☰';
+    }
+    if (this.megaCityActive) {
+      return this.boardOwned || this.inv.playerBoard.owned
+        ? 'Stick · look · E · Q board · I · M map · JMP · ☰'
+        : 'Stick · look · E · M map · board shop · JMP · ☰';
+    }
+    if (this.economyActive) {
+      return this.boardOwned || this.inv.playerBoard.owned
+        ? 'Stick · look · E · Q board · I bay · JMP · ☰'
+        : 'Stick · look · E · I bay · JMP · ☰';
+    }
+    return 'Stick · look · E interact · JMP · ATK · 1 Hand · 2 Wrench · ☰';
+  }
+
+  private wireHarvestTouchUi() {
+    const sig = this.sessionAbort.signal;
+    const extract = document.getElementById('harvest-extract');
+    const cancel = document.getElementById('harvest-cancel');
+    extract?.addEventListener(
+      'click',
+      (e) => {
+        e.preventDefault();
+        if (this.disposed || !this.harvestOpen) return;
+        const inZone = this.harvestNeedle >= 55 && this.harvestNeedle <= 75;
+        this.closeHarvest(inZone);
+      },
+      { signal: sig },
+    );
+    cancel?.addEventListener(
+      'click',
+      (e) => {
+        e.preventDefault();
+        if (this.disposed || !this.harvestOpen) return;
+        this.closeHarvest(false);
+      },
+      { signal: sig },
+    );
   }
 
   private toggleBoardCamera() {
@@ -2077,6 +2151,8 @@ export class ForgeHeartGame {
 
   update(_dtExternal?: number) {
     if (this.disposed) return;
+    // Keep touch controls present in workshop, market tutorial, and empire
+    if (this.mobile.enabled) this.syncMobileGameplay();
     const dt = Math.min(0.05, this.clock.getDelta());
     if (this.paused) {
       this.renderer.render(this.scene, this.camera);
@@ -3283,6 +3359,7 @@ export class ForgeHeartGame {
     this.audio.setWind(0.3);
     this.syncEconomyHud();
     writeSlot(this.activeSlot, this.buildSaveData());
+    this.syncMobileGameplay();
     this.controls.lock();
   }
 
@@ -4292,6 +4369,7 @@ export class ForgeHeartGame {
       /* ignore */
     }
     this.setHelp('Map · scroll zoom · drag pan · click route · M/Esc close');
+    this.syncMobileGameplay();
   }
 
   private closeCityMap() {
@@ -4308,6 +4386,7 @@ export class ForgeHeartGame {
         ? 'Home · E · Q board · M map · wind skyways · I · Esc'
         : 'Home · E · M map · board shop · wind skyways',
     );
+    this.syncMobileGameplay();
   }
 
   /** Clear map route when the player reaches the selected destination. */
@@ -5870,8 +5949,11 @@ export class ForgeHeartGame {
     const hint = document.getElementById('harvest-hint');
     if (hint) {
       const mats = this.harvestPool.map((id) => COMMODITIES[id].name).join(', ');
-      hint.textContent = `${this.harvestLabel} · Space in green · yields: ${mats}`;
+      hint.textContent = this.mobile.enabled
+        ? `${this.harvestLabel} · tap EXTRACT in the green zone · yields: ${mats}`
+        : `${this.harvestLabel} · Space in green · yields: ${mats}`;
     }
+    this.syncMobileGameplay();
     try {
       this.controls.unlock();
     } catch {
@@ -5893,6 +5975,7 @@ export class ForgeHeartGame {
       this.toast('Extraction failed — try again.', 2);
     }
     this.syncEconomyHud();
+    this.syncMobileGameplay();
     if (!this.paused && !this.disposed) this.controls.lock();
   }
 
@@ -6164,6 +6247,7 @@ export class ForgeHeartGame {
     this.audio.setWind(0.35);
     this.syncEconomyHud();
     writeSlot(this.activeSlot, this.buildSaveData());
+    this.syncMobileGameplay();
     this.controls.lock();
   }
 

@@ -1238,6 +1238,40 @@ h1 {
   color: #7a8a9a;
 }
 
+.harvest-actions {
+  display: flex;
+  gap: 0.55rem;
+  margin: 0.75rem 0 0.45rem;
+}
+
+.harvest-extract-btn,
+.harvest-cancel-btn {
+  flex: 1;
+  min-height: 48px;
+  border-radius: 8px;
+  border: 1.5px solid rgba(102, 216, 255, 0.55);
+  background: rgba(20, 48, 68, 0.95);
+  color: #d8f6ff;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: 0.85rem;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.harvest-extract-btn {
+  border-color: rgba(94, 240, 160, 0.55);
+  background: rgba(24, 60, 48, 0.95);
+  color: #e0ffe8;
+}
+
+.harvest-cancel-btn {
+  border-color: rgba(180, 120, 100, 0.5);
+  background: rgba(48, 28, 24, 0.9);
+  color: #f0d8d0;
+}
+
 /* Shared filter chips (craft + programs) */
 .ui-chips {
   display: flex;
@@ -2066,7 +2100,7 @@ h1 {
 .mobile-controls {
   position: absolute;
   inset: 0;
-  z-index: 18;
+  z-index: 28;
   pointer-events: none;
   touch-action: none;
   user-select: none;

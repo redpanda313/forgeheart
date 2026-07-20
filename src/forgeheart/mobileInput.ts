@@ -113,10 +113,12 @@ export class MobileControls {
 
   /** Hide joysticks while pause / modal UI owns the screen; keep root for resume if needed. */
   setGameplayActive(active: boolean) {
+    const was = this.active;
     this.active = active;
     if (!this.root) return;
     this.root.classList.toggle('mobile-controls-dimmed', !active);
-    if (!active) this.releaseAll();
+    // Only release sticks/keys when transitioning to inactive (avoid per-frame clears)
+    if (!active && was) this.releaseAll();
   }
 
   private releaseAll() {

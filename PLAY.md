@@ -41,15 +41,16 @@ On macOS you can also double-click `tools/launch/Launch ForgeHeart.command`.
 
 ### Mobile browser
 
-On phones and tablets, ForgeHeart shows on-screen controls automatically:
+On phones and tablets, ForgeHeart shows on-screen controls automatically in **every phase** (workshop tutorial, sky market training, and empire sky city):
 
 | Action | Control |
 |--------|---------|
-| Move | Left virtual stick |
+| Move / board ride | Left virtual stick |
 | Look | Drag anywhere on the screen |
 | Jump / interact / attack | JMP · E · ATK |
 | Slide / board mount | SLD · Q |
 | Weapons / map / bay / pause | 1–3 · M · I · ☰ |
+| Reef harvest | EXTRACT / CANCEL on the harvest card |
 
 ---
 
