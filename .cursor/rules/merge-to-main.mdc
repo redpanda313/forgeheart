@@ -1,0 +1,22 @@
+---
+description: Merge finished work into main by default
+alwaysApply: true
+---
+
+# Merge into main by default
+
+When a unit of work is complete (feature, fix, or docs) and pushed on a PR branch:
+
+1. Open or update the pull request targeting **`main`**
+2. Mark the PR ready (not draft) when it is meant to ship
+3. **Merge into `main`** (merge commit is fine unless the repo standard differs)
+4. Delete the remote feature branch after merge when appropriate
+5. Fast-forward local `main` with `git checkout main && git pull origin main`
+
+Do this by default at the end of a completed task — do not leave finished work sitting only on a feature branch.
+
+## Exceptions
+
+- The user explicitly says not to merge, or to keep it as draft/review-only
+- CI is failing and the failure is real (fix or unblock first)
+- The change is exploratory and the user has not asked to ship it
