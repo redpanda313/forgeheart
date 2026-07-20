@@ -3468,6 +3468,9 @@ export class ForgeHeartGame {
       this.scene.remove(this.skyCity.group);
       this.skyCity = null;
     }
+    this.cityStreamer?.clear();
+    this.cityStreamer = null;
+    this.spatialGrid = null;
 
     // Economy state — keep live inv when re-entering without a save blob
     if (fromSave?.economy) {
