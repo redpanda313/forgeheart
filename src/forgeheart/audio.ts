@@ -1,7 +1,42 @@
 /**
- * Procedural 1920s parlor / ragtime-tinged score for the tutorial lab.
- * No external assets — Web Audio oscillators only.
+ * Continual generative parlor / ragtime-tinged score (Web Audio oscillators only).
+ * Fresh phrases, motifs, keys, and progressions evolve while you play — no fixed loop.
  */
+
+/** Scale intervals (semitones from root). */
+const SCALE_MAJOR = [0, 2, 4, 5, 7, 9, 11];
+const SCALE_MINOR = [0, 2, 3, 5, 7, 8, 10];
+const SCALE_MIXO = [0, 2, 4, 5, 7, 9, 10];
+
+/** Chord degree progressions (0=I … 6=VII) — rag / parlor cadences. */
+const PROGRESSIONS: number[][] = [
+  [0, 4, 5, 4], // I V vi V
+  [0, 5, 3, 4], // I vi IV V
+  [0, 3, 4, 0], // I IV V I
+  [0, 4, 0, 4], // I V I V
+  [5, 3, 0, 4], // vi IV I V
+  [0, 5, 1, 4], // I vi ii V
+  [3, 4, 0, 0], // IV V I I
+  [0, 2, 5, 4], // I iii vi V
+];
+
+type MusicMode = 'major' | 'minor' | 'mixo';
+
+function midiToHz(midi: number): number {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+/** Tiny seeded PRNG (mulberry32) — stable phrases within a session, different each resume. */
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 export class ForgeAudio {
   private ctx: AudioContext | null = null;
@@ -26,6 +61,19 @@ export class ForgeAudio {
   private windAmount = 0;
   private whooshCd = 0;
   enabled = false;
+
+  // ——— Generative music state ———
+  private rng: () => number = Math.random;
+  private phraseIndex = 0;
+  private keyRoot = 48; // C3
+  private mode: MusicMode = 'major';
+  private progression: number[] = PROGRESSIONS[0]!;
+  private motif: number[] = []; // scale degrees (−1 = rest), length 8
+  private phraseBass: number[] = new Array(16).fill(0);
+  private phraseMel: number[] = new Array(16).fill(0);
+  private phraseFill: number[] = new Array(16).fill(0);
+  private phraseHat: boolean[] = new Array(16).fill(false);
+  private sectionEnergy = 0.55;
 
   async resume() {
     if (!this.ctx) {
@@ -73,6 +121,9 @@ export class ForgeAudio {
     this.windAmount = 0;
     this.whooshCd = 0;
     this.step = 0;
+    this.phraseIndex = 0;
+    this.motif = [];
+    this.resetPhraseBuffers();
 
     if (this.musicTimer != null) {
       window.clearInterval(this.musicTimer);
@@ -334,36 +385,248 @@ export class ForgeAudio {
       window.clearInterval(this.musicTimer);
       this.musicTimer = null;
     }
+    // Fresh seed each session so the score never restarts the same way
+    this.rng = mulberry32((Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0);
+    this.step = 0;
+    this.phraseIndex = 0;
+    this.keyRoot = 48 + Math.floor(this.rng() * 5) * 2; // nearby bright keys
+    this.mode = this.tension > 0.35 ? 'minor' : this.rng() < 0.35 ? 'mixo' : 'major';
+    this.progression = PROGRESSIONS[Math.floor(this.rng() * PROGRESSIONS.length)]!;
+    this.sectionEnergy = 0.45 + this.rng() * 0.35;
+    this.motif = this.composeMotif();
+    this.composePhrase();
     // ~120 bpm, swung eighths — parlor ragtime feel
     const beatMs = 250;
     this.musicTimer = window.setInterval(() => this.tickMusic(), beatMs);
+  }
+
+  private resetPhraseBuffers() {
+    this.phraseBass = new Array(16).fill(0);
+    this.phraseMel = new Array(16).fill(0);
+    this.phraseFill = new Array(16).fill(0);
+    this.phraseHat = new Array(16).fill(false);
+  }
+
+  private scaleOf(mode: MusicMode): number[] {
+    if (mode === 'minor') return SCALE_MINOR;
+    if (mode === 'mixo') return SCALE_MIXO;
+    return SCALE_MAJOR;
+  }
+
+  private degreeToMidi(root: number, degree: number, octaveOffset = 0): number {
+    const scale = this.scaleOf(this.mode);
+    const n = scale.length;
+    let d = degree;
+    let oct = octaveOffset;
+    while (d < 0) {
+      d += n;
+      oct -= 1;
+    }
+    while (d >= n) {
+      d -= n;
+      oct += 1;
+    }
+    return root + scale[d]! + oct * 12;
+  }
+
+  private pick<T>(arr: T[]): T {
+    return arr[Math.floor(this.rng() * arr.length)]!;
+  }
+
+  private composeMotif(): number[] {
+    // 8-step motif in scale degrees (−1 rest). Contour prefers steps / small leaps.
+    const dens = 0.55 + this.sectionEnergy * 0.25 + this.tension * 0.1;
+    const out: number[] = [];
+    let cur = this.pick([0, 2, 4, 4, 5]);
+    for (let i = 0; i < 8; i++) {
+      const strong = i % 2 === 0;
+      if (this.rng() > dens && !strong) {
+        out.push(-1);
+        continue;
+      }
+      const leap = this.rng();
+      let delta = 0;
+      if (leap < 0.55) delta = this.rng() < 0.5 ? 1 : -1;
+      else if (leap < 0.82) delta = this.rng() < 0.5 ? 2 : -2;
+      else if (leap < 0.94) delta = this.rng() < 0.5 ? 3 : -3;
+      else delta = 0;
+      // Bias toward chord-ish degrees on strong beats
+      if (strong && this.rng() < 0.45) {
+        cur = this.pick([0, 2, 4, 4, 5]);
+      } else {
+        cur = Math.max(-2, Math.min(9, cur + delta));
+      }
+      out.push(cur);
+    }
+    // Ensure at least 3 sounding notes
+    if (out.filter((d) => d >= 0).length < 3) {
+      out[0] = 0;
+      out[2] = 2;
+      out[4] = 4;
+    }
+    return out;
+  }
+
+  private mutateMotif(src: number[]): number[] {
+    const out = src.slice();
+    const edits = 1 + Math.floor(this.rng() * 3);
+    for (let e = 0; e < edits; e++) {
+      const i = Math.floor(this.rng() * out.length);
+      const roll = this.rng();
+      if (roll < 0.3) out[i] = -1;
+      else if (roll < 0.55) out[i] = (out[i]! < 0 ? 0 : out[i]!) + (this.rng() < 0.5 ? 1 : -1);
+      else if (roll < 0.75) {
+        // rhythmic displacement
+        const j = (i + 1) % out.length;
+        const tmp = out[i]!;
+        out[i] = out[j]!;
+        out[j] = tmp;
+      } else {
+        out[i] = this.pick([0, 2, 4, 5, -1]);
+      }
+    }
+    return out;
+  }
+
+  private evolveSection() {
+    // Key / mode / progression / energy shift so the score keeps moving
+    if (this.phraseIndex > 0 && this.phraseIndex % 8 === 0) {
+      // Modulate to nearby key
+      const shifts = [0, 5, 7, -5, -7, 2, -2]; // fourths/fifths + neighbors
+      this.keyRoot = 48 + ((this.keyRoot - 48 + this.pick(shifts) + 12) % 12);
+      if (this.keyRoot < 46) this.keyRoot += 12;
+      if (this.keyRoot > 58) this.keyRoot -= 12;
+    }
+    if (this.phraseIndex % 4 === 0) {
+      this.progression = this.pick(PROGRESSIONS);
+      this.sectionEnergy = Math.max(
+        0.3,
+        Math.min(0.95, this.sectionEnergy + (this.rng() - 0.5) * 0.35),
+      );
+    }
+    // Tension pulls toward minor; calm wanders major/mixo
+    if (this.tension > 0.55) this.mode = 'minor';
+    else if (this.tension > 0.3) this.mode = this.rng() < 0.5 ? 'minor' : 'mixo';
+    else if (this.phraseIndex % 6 === 0) {
+      this.mode = this.pick(['major', 'major', 'mixo', 'minor'] as MusicMode[]);
+    }
+
+    if (this.motif.length === 0 || this.phraseIndex % 2 === 0) {
+      if (this.motif.length === 0 || this.rng() < 0.4) this.motif = this.composeMotif();
+      else this.motif = this.mutateMotif(this.motif);
+    } else if (this.rng() < 0.35) {
+      this.motif = this.mutateMotif(this.motif);
+    }
+  }
+
+  private composePhrase() {
+    this.evolveSection();
+    const prog = this.progression;
+    const bass: number[] = [];
+    const mel: number[] = [];
+    const fill: number[] = [];
+    const hat: boolean[] = [];
+
+    // Phrase form: A A' B A'' over 16 steps using motif halves
+    const form = this.phraseIndex % 4;
+    let line = this.motif.slice();
+    if (form === 1) line = this.mutateMotif(line);
+    else if (form === 2) {
+      // Answer phrase — invert contour-ish
+      line = line.map((d) => (d < 0 ? -1 : Math.max(0, 4 - (d % 7))));
+      if (this.rng() < 0.5) line = this.mutateMotif(line);
+    } else if (form === 3) {
+      line = this.mutateMotif(this.motif);
+    }
+
+    const dens = this.sectionEnergy * (0.75 + this.tension * 0.35);
+    for (let s = 0; s < 16; s++) {
+      const chordDeg = prog[Math.floor(s / 4) % prog.length]!;
+      const chordRoot = this.degreeToMidi(this.keyRoot, chordDeg, 0);
+      const third = this.degreeToMidi(this.keyRoot, chordDeg + 2, 0);
+      const fifth = this.degreeToMidi(this.keyRoot, chordDeg + 4, 0);
+
+      // Stride bass: roots / fifths on strong beats, occasional walk
+      let bHz = 0;
+      if (s % 4 === 0) {
+        bHz = midiToHz(chordRoot);
+      } else if (s % 4 === 2) {
+        bHz = midiToHz(this.rng() < 0.65 ? fifth : chordRoot + (this.rng() < 0.5 ? 7 : -5));
+      } else if (this.rng() < 0.18 + dens * 0.12) {
+        bHz = midiToHz(this.degreeToMidi(this.keyRoot, chordDeg + this.pick([0, 2, 4]), 0));
+      }
+
+      // Melody from motif (tiled) with octave lift; chord-tone snap on downbeats
+      let mHz = 0;
+      const md = line[s % 8]!;
+      if (md >= 0 && (s % 2 === 0 || this.rng() < dens)) {
+        let deg = md;
+        if (s % 4 === 0 && this.rng() < 0.5) {
+          deg = chordDeg + this.pick([0, 2, 4]);
+        }
+        const midi = this.degreeToMidi(this.keyRoot, deg, 1);
+        mHz = midiToHz(midi + (this.rng() < 0.12 ? 12 : 0));
+      } else if (md < 0 && s % 4 === 2 && this.rng() < dens * 0.45) {
+        // Syncopated fill on offbeat rests
+        mHz = midiToHz(this.degreeToMidi(this.keyRoot, chordDeg + this.pick([2, 4, 5]), 1));
+      }
+
+      // Soft chord stab / fill voice
+      let fHz = 0;
+      if (s % 4 === 1 && this.rng() < 0.4 + dens * 0.15) {
+        fHz = midiToHz(third + 12);
+      } else if (s % 4 === 3 && this.rng() < 0.28 + this.tension * 0.2) {
+        fHz = midiToHz(fifth + 12);
+      }
+
+      bass.push(bHz);
+      mel.push(mHz);
+      fill.push(fHz);
+      hat.push(s % 2 === 0 || (this.rng() < dens * 0.22 && s % 2 === 1));
+    }
+
+    // Cadence: last phrase beat prefers tonic melody
+    if (this.rng() < 0.7) {
+      mel[14] = midiToHz(this.degreeToMidi(this.keyRoot, 0, 1));
+      mel[15] = 0;
+      bass[14] = midiToHz(this.degreeToMidi(this.keyRoot, prog[prog.length - 1]!, 0));
+    }
+
+    this.phraseBass = bass;
+    this.phraseMel = mel;
+    this.phraseFill = fill;
+    this.phraseHat = hat;
   }
 
   private tickMusic() {
     if (!this.enabled || !this.ctx || !this.musicGain) return;
     const t = this.ctx.currentTime;
     const s = this.step % 16;
+    if (s === 0 && this.step > 0) {
+      this.phraseIndex++;
+      this.composePhrase();
+    }
     this.step++;
 
-    // C major rag stride-ish: bass on 1 & 3, chord stabs on offbeats
-    const bass = [130.81, 0, 164.81, 0, 174.61, 0, 164.81, 0, 130.81, 0, 146.83, 0, 174.61, 0, 196.0, 0];
-    const melody = [
-      523.25, 0, 587.33, 659.25, 0, 587.33, 523.25, 0, 493.88, 523.25, 0, 392.0, 440.0, 0, 493.88, 523.25,
-    ];
-    // Minor tension when demons bang
-    const darkBass = [110, 0, 130.81, 0, 146.83, 0, 130.81, 0, 110, 0, 123.47, 0, 146.83, 0, 164.81, 0];
-    const darkMel = [440, 0, 415.3, 392, 0, 349.23, 392, 0, 415.3, 440, 0, 329.63, 349.23, 0, 392, 415.3];
+    const b = this.phraseBass[s] ?? 0;
+    const m = this.phraseMel[s] ?? 0;
+    const f = this.phraseFill[s] ?? 0;
+    const swing = s % 2 === 1 ? 0.035 + this.sectionEnergy * 0.015 : 0;
+    const ten = this.tension;
 
-    const useDark = this.tension > 0.35;
-    const b = (useDark ? darkBass : bass)[s]!;
-    const m = (useDark ? darkMel : melody)[s]!;
-
-    if (b > 0) this.tone(b, t, 0.18, 0.055 + this.tension * 0.015, 'triangle', this.musicGain);
-    // swing: delay odd steps slightly
-    const swing = s % 2 === 1 ? 0.04 : 0;
-    if (m > 0) this.tone(m, t + swing, 0.12, 0.028, 'square', this.musicGain);
-    // soft hi-hat tick
-    if (s % 2 === 0) this.noise(t, 0.03, 0.008, this.musicGain);
+    if (b > 0) {
+      this.tone(b, t, 0.17 + ten * 0.04, 0.05 + ten * 0.018, 'triangle', this.musicGain);
+    }
+    if (m > 0) {
+      this.tone(m, t + swing, 0.11 + (s % 4 === 0 ? 0.04 : 0), 0.026 + this.sectionEnergy * 0.008, 'square', this.musicGain);
+    }
+    if (f > 0) {
+      this.tone(f, t + swing * 0.5, 0.09, 0.012 + ten * 0.006, 'triangle', this.musicGain);
+    }
+    if (this.phraseHat[s]) {
+      const hatGain = 0.0055 + this.sectionEnergy * 0.003 + ten * 0.002;
+      this.noise(t, 0.028, hatGain, this.musicGain);
+    }
   }
 
   private tone(
