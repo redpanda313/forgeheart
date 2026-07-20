@@ -1,12 +1,12 @@
 /**
- * Player stall build visuals + cost tables (plot → tier → décor → color).
+ * Shop/stall site builder — selection box, structure, placeable props.
  */
 
 import * as THREE from 'three';
 import type { Mats } from './materials';
 import { buildEnterableShell, offsetColliders } from './enterableBuilding';
 import type { Collider } from './level';
-import type { StallLayout, StallTier } from './economy';
+import type { SiteProp, StallLayout, StallTier } from './economy';
 
 export const STALL_TIERS: {
   id: StallTier;
@@ -19,15 +19,6 @@ export const STALL_TIERS: {
   { id: 'shop', name: 'Shop hut', blurb: 'Enterable · desk inside', extraCost: 200 },
   { id: 'large', name: 'Market hall', blurb: 'Large enterable shop', extraCost: 450 },
 ];
-
-export const STALL_DECOR_NAMES = [
-  'None',
-  'Crate stacks',
-  'Banner poles',
-  'Lanterns',
-  'Planters',
-  'Signboard',
-] as const;
 
 export const STALL_COLOR_NAMES = [
   'Weathered wood',
@@ -47,16 +38,28 @@ export const STALL_COLORS = [
   { wood: 0x3a3a50, accent: 0x8877cc, cloth: 0x4a4068 },
 ] as const;
 
-export const STALL_DECOR_UNIT = 40;
+/** Placeable shop improvements — each instance costs its fee */
+export const SHOP_PROP_CATALOG: {
+  id: string;
+  name: string;
+  blurb: string;
+  cost: number;
+}[] = [
+  { id: 'crates', name: 'Crate stacks', blurb: 'Stock piles beside the stand', cost: 40 },
+  { id: 'banners', name: 'Banner poles', blurb: 'Bright plaza flags', cost: 40 },
+  { id: 'lanterns', name: 'Lantern string', blurb: 'Warm evening light', cost: 45 },
+  { id: 'planters', name: 'Planters', blurb: 'Soft greenery', cost: 35 },
+  { id: 'signboard', name: 'Signboard', blurb: 'Name your shop', cost: 50 },
+  { id: 'display_case', name: 'Display case', blurb: 'Glass frontage', cost: 70 },
+  { id: 'flower_cart', name: 'Flower cart', blurb: 'Attract foot traffic', cost: 55 },
+  { id: 'extra_awning', name: 'Side awning', blurb: 'Shade for browsers', cost: 80 },
+];
+
 export const STALL_COLOR_BASE = 20;
 export const STALL_COLOR_STEP = 15;
 
 export function stallTierExtra(tier: StallTier): number {
   return STALL_TIERS.find((t) => t.id === tier)?.extraCost ?? 0;
-}
-
-export function stallDecorFee(decor: number): number {
-  return Math.max(0, Math.min(STALL_DECOR_NAMES.length - 1, decor)) * STALL_DECOR_UNIT;
 }
 
 export function stallColorFee(color: number): number {
@@ -65,16 +68,65 @@ export function stallColorFee(color: number): number {
   return STALL_COLOR_BASE + c * STALL_COLOR_STEP;
 }
 
+export function shopPropCost(id: string): number {
+  return SHOP_PROP_CATALOG.find((p) => p.id === id)?.cost ?? 40;
+}
+
+export function sumShopPropsCost(props: SiteProp[]): number {
+  let n = 0;
+  for (const p of props) n += shopPropCost(p.id);
+  return n;
+}
+
 export function defaultStallLayout(x = 0, z = 0): StallLayout {
   return {
     plotX: x,
     plotZ: z,
     yaw: 0,
     tier: 'bench',
-    decor: 0,
     color: 0,
+    props: [],
     built: false,
   };
+}
+
+/** Large empty selection footprint for Game Maker site step */
+export function makeSelectionBox(size = 14): THREE.Group {
+  const g = new THREE.Group();
+  g.name = 'SiteSelectionBox';
+  const fill = new THREE.Mesh(
+    new THREE.BoxGeometry(size, 0.06, size),
+    new THREE.MeshStandardMaterial({
+      color: 0x66cc88,
+      transparent: true,
+      opacity: 0.22,
+      depthWrite: false,
+    }),
+  );
+  fill.position.y = 0.04;
+  g.add(fill);
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(size, 0.2, size)),
+    new THREE.LineBasicMaterial({ color: 0xa8ffcc }),
+  );
+  edges.position.y = 0.12;
+  g.add(edges);
+  // Corner posts
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 1.4, 0.18),
+        new THREE.MeshStandardMaterial({
+          color: 0xc4a35a,
+          emissive: 0x665522,
+          emissiveIntensity: 0.35,
+        }),
+      );
+      post.position.set(sx * (size * 0.48), 0.7, sz * (size * 0.48));
+      g.add(post);
+    }
+  }
+  return g;
 }
 
 function box(
@@ -96,10 +148,104 @@ function box(
 export type StallVisualBuilt = {
   group: THREE.Group;
   colliders: Collider[];
-  /** World interact point for stall manage / desk */
   interactLocal: THREE.Vector3;
   enterable: boolean;
 };
+
+function addShopPropMesh(
+  g: THREE.Group,
+  id: string,
+  lx: number,
+  lz: number,
+  yaw: number,
+  woodM: THREE.Material,
+  accentM: THREE.Material,
+  clothM: THREE.Material,
+) {
+  const root = new THREE.Group();
+  root.position.set(lx, 0, lz);
+  root.rotation.y = yaw;
+  if (id === 'crates') {
+    root.add(box(woodM, 0.7, 0.55, 0.7, 0, 0.35, 0));
+    root.add(box(woodM, 0.55, 0.4, 0.55, 0.35, 0.28, 0.2));
+  } else if (id === 'banners') {
+    root.add(box(accentM, 0.1, 2.4, 0.1, 0, 1.3, 0));
+    root.add(box(clothM, 0.5, 0.7, 0.05, 0, 2.0, 0));
+  } else if (id === 'lanterns') {
+    const lamp = new THREE.Mesh(
+      new THREE.SphereGeometry(0.14, 6, 6),
+      new THREE.MeshStandardMaterial({
+        color: 0xffe8a0,
+        emissive: 0xffcc66,
+        emissiveIntensity: 0.7,
+      }),
+    );
+    lamp.position.set(0, 2.0, 0);
+    root.add(lamp);
+    root.add(box(accentM, 0.06, 1.6, 0.06, 0, 0.9, 0));
+  } else if (id === 'planters') {
+    root.add(box(new THREE.MeshStandardMaterial({ color: 0x4a6a40 }), 0.6, 0.35, 0.6, 0, 0.25, 0));
+  } else if (id === 'signboard') {
+    root.add(box(accentM, 1.6, 0.9, 0.08, 0, 1.8, 0));
+    root.add(box(woodM, 0.1, 1.6, 0.1, -0.7, 0.9, 0));
+    root.add(box(woodM, 0.1, 1.6, 0.1, 0.7, 0.9, 0));
+  } else if (id === 'display_case') {
+    root.add(box(accentM, 1.4, 1.1, 0.7, 0, 0.7, 0));
+    root.add(
+      box(
+        new THREE.MeshStandardMaterial({
+          color: 0xaaddff,
+          transparent: true,
+          opacity: 0.35,
+          roughness: 0.2,
+        }),
+        1.2,
+        0.7,
+        0.55,
+        0,
+        0.95,
+        0,
+      ),
+    );
+  } else if (id === 'flower_cart') {
+    root.add(box(woodM, 1.3, 0.5, 0.8, 0, 0.45, 0));
+    root.add(box(new THREE.MeshStandardMaterial({ color: 0xd47898 }), 1.1, 0.35, 0.6, 0, 0.85, 0));
+  } else if (id === 'extra_awning') {
+    root.add(box(clothM, 2.4, 0.08, 1.6, 0, 2.2, 0));
+    root.add(box(accentM, 0.1, 2.0, 0.1, -1.0, 1.1, -0.6));
+    root.add(box(accentM, 0.1, 2.0, 0.1, 1.0, 1.1, -0.6));
+  } else {
+    root.add(box(woodM, 0.5, 0.5, 0.5, 0, 0.3, 0));
+  }
+  g.add(root);
+}
+
+/** Tiny ghost for the active prop tool */
+export function makeShopPropGhost(id: string, mats: Mats): THREE.Group {
+  const pal = STALL_COLORS[0]!;
+  const woodM = new THREE.MeshStandardMaterial({
+    color: pal.wood,
+    transparent: true,
+    opacity: 0.65,
+    depthWrite: false,
+  });
+  const accentM = new THREE.MeshStandardMaterial({
+    color: pal.accent,
+    transparent: true,
+    opacity: 0.65,
+    depthWrite: false,
+  });
+  const clothM = new THREE.MeshStandardMaterial({
+    color: pal.cloth,
+    transparent: true,
+    opacity: 0.65,
+    depthWrite: false,
+  });
+  const g = new THREE.Group();
+  addShopPropMesh(g, id, 0, 0, 0, woodM, accentM, clothM);
+  void mats;
+  return g;
+}
 
 /** Build stall at local origin (plot center). Caller sets group position/yaw. */
 export function buildStallVisual(mats: Mats, layout: StallLayout): StallVisualBuilt {
@@ -125,7 +271,6 @@ export function buildStallVisual(mats: Mats, layout: StallLayout): StallVisualBu
     emissiveIntensity: 0.35,
   });
 
-  // Ground plot
   const plotW = layout.tier === 'large' ? 12 : layout.tier === 'shop' ? 9 : 6.5;
   const plotD = layout.tier === 'large' ? 10 : layout.tier === 'shop' ? 8 : 5.5;
   g.add(box(woodM, plotW, 0.16, plotD, 0, 0.08, 0));
@@ -151,62 +296,25 @@ export function buildStallVisual(mats: Mats, layout: StallLayout): StallVisualBu
     interactLocal = new THREE.Vector3(0, 1.2, 1.4);
   } else {
     enterable = true;
-    const kind = layout.tier === 'large' ? 'shop' : 'shop';
-    const shell = buildEnterableShell(kind, mats, {
+    const shell = buildEnterableShell('shop', mats, {
       floors: layout.tier === 'large' ? 2 : 1,
       color: pal.wood,
       label: layout.tier === 'large' ? 'YOUR HALL' : 'YOUR SHOP',
     });
     g.add(shell.group);
     cols.push(...shell.colliders);
-    // Counter / desk inside near door
-    const desk = box(woodM, 2.2, 0.85, 0.9, 0, 0.55, 1.6);
-    g.add(desk);
-    const deskTop = box(accentM, 2.3, 0.08, 1.0, 0, 1.0, 1.6);
-    g.add(deskTop);
+    g.add(box(woodM, 2.2, 0.85, 0.9, 0, 0.55, 1.6));
+    g.add(box(accentM, 2.3, 0.08, 1.0, 0, 1.0, 1.6));
     interactLocal = new THREE.Vector3(0, 1.15, 2.2);
   }
 
-  // Décor layers
-  if (layout.decor >= 1) {
-    g.add(box(woodM, 0.7, 0.55, 0.7, -plotW * 0.35, 0.4, -plotD * 0.3));
-    g.add(box(woodM, 0.55, 0.4, 0.55, -plotW * 0.28, 0.32, -plotD * 0.22));
-  }
-  if (layout.decor >= 2) {
-    for (const sx of [-1, 1]) {
-      const pole = box(accentM, 0.1, 2.4, 0.1, sx * plotW * 0.38, 1.3, -plotD * 0.35);
-      g.add(pole);
-      g.add(box(clothM, 0.5, 0.7, 0.05, sx * plotW * 0.38, 2.0, -plotD * 0.35));
-    }
-  }
-  if (layout.decor >= 3) {
-    for (let i = 0; i < 3; i++) {
-      const lx = (i - 1) * 1.4;
-      const lamp = new THREE.Mesh(
-        new THREE.SphereGeometry(0.14, 6, 6),
-        new THREE.MeshStandardMaterial({
-          color: 0xffe8a0,
-          emissive: 0xffcc66,
-          emissiveIntensity: 0.7,
-        }),
-      );
-      lamp.position.set(lx, 2.1, plotD * 0.2);
-      g.add(lamp);
-    }
-  }
-  if (layout.decor >= 4) {
-    for (const sx of [-1, 1]) {
-      g.add(box(new THREE.MeshStandardMaterial({ color: 0x4a6a40 }), 0.6, 0.35, 0.6, sx * 2.2, 0.3, plotD * 0.35));
-    }
-  }
-  if (layout.decor >= 5) {
-    g.add(box(accentM, 1.8, 0.9, 0.08, 0, 2.6, -plotD * 0.4));
+  for (const p of layout.props ?? []) {
+    addShopPropMesh(g, p.id, p.lx, p.lz, p.yaw, woodM, accentM, clothM);
   }
 
   return { group: g, colliders: cols, interactLocal, enterable };
 }
 
-/** Offset local colliders into world space after positioning the stall group. */
 export function worldStallColliders(
   built: StallVisualBuilt,
   wx: number,
@@ -250,5 +358,15 @@ export function rotateLocal(local: THREE.Vector3, yaw: number, wx: number, wz: n
   );
 }
 
-/** Re-export for callers that already import offset helpers */
 export { offsetColliders };
+
+/** Legacy décor index → prop list */
+export function decorIndexToProps(decor: number): SiteProp[] {
+  const ids = ['crates', 'banners', 'lanterns', 'planters', 'signboard'] as const;
+  const n = Math.max(0, Math.min(ids.length, decor | 0));
+  const out: SiteProp[] = [];
+  for (let i = 0; i < n; i++) {
+    out.push({ id: ids[i]!, lx: -2.2 + i * 1.1, lz: -2.4, yaw: 0 });
+  }
+  return out;
+}

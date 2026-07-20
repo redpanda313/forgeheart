@@ -125,6 +125,8 @@ export interface SkyCityBuilt {
   stallGroup: THREE.Group;
   /** Per-district stall visuals */
   districtStallGroups: Record<string, THREE.Group>;
+  /** Player factory visuals: storage_resources|crafted|inventions, bay_wing */
+  factoryGroups: Record<string, THREE.Group>;
   districts: DistrictBuilt[];
   /** Streaming chunks (districts + resident skyways/hub) */
   streamChunks: StreamChunk[];
@@ -379,6 +381,14 @@ export function buildSkyCity(): SkyCityBuilt {
   let stallGroup = new THREE.Group();
   stallGroup.name = 'CityStallLegacy';
   stallGroup.visible = false;
+  const factoryGroups: Record<string, THREE.Group> = {};
+  for (const key of ['storage_resources', 'storage_crafted', 'storage_inventions', 'bay_wing']) {
+    const fg = new THREE.Group();
+    fg.name = `Factory_${key}`;
+    fg.visible = false;
+    group.add(fg);
+    factoryGroups[key] = fg;
+  }
 
   /** Soft-edge wind texture (shared) — fades to transparent so planks don't look solid. */
   const windTex = (() => {
@@ -1848,6 +1858,7 @@ export function buildSkyCity(): SkyCityBuilt {
     expandYardGroup,
     stallGroup,
     districtStallGroups,
+    factoryGroups,
     districts,
     streamChunks,
     harvestSpot,

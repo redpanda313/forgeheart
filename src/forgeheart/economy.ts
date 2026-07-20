@@ -575,16 +575,39 @@ export interface CustomRecipe {
 /** Stall structure tier — rising build cost past the basic bench */
 export type StallTier = 'bench' | 'shade' | 'shop' | 'large';
 
-/** Saved stall plot + cosmetics (Game Maker wizard) */
+/** Factory shell form (storage / bay wings — not shop cosmetics) */
+export type FactoryForm = 'horizontal' | 'tall' | 'boiler_yard';
+
+/** Placed improvement on a site (local to plot center) */
+export interface SiteProp {
+  id: string;
+  lx: number;
+  lz: number;
+  yaw: number;
+}
+
+/** Saved stall plot + structure + placed props (Game Maker site builder) */
 export interface StallLayout {
   plotX: number;
   plotZ: number;
   yaw: number;
   tier: StallTier;
-  /** Décor index 0..n */
-  decor: number;
   /** Color palette index 0..n */
   color: number;
+  /** Placed decorations / improvements */
+  props: SiteProp[];
+  built: boolean;
+  /** @deprecated legacy single décor ladder — migrated to props */
+  decor?: number;
+}
+
+/** Factory / bonded-storage site layout */
+export interface FactoryLayout {
+  plotX: number;
+  plotZ: number;
+  yaw: number;
+  form: FactoryForm;
+  props: SiteProp[];
   built: boolean;
 }
 
@@ -620,6 +643,44 @@ export interface StallState {
   layout?: StallLayout | null;
   /** Brass already paid toward layout (redesign charges delta only) */
   layoutPaid?: number;
+}
+
+/** Cost tables mirrored in stallBuild / factoryBuild (kept here for quotes) */
+const STALL_TIER_EXTRA: Record<StallTier, number> = {
+  bench: 0,
+  shade: 75,
+  shop: 200,
+  large: 450,
+};
+const SHOP_PROP_COST: Record<string, number> = {
+  crates: 40,
+  banners: 40,
+  lanterns: 45,
+  planters: 35,
+  signboard: 50,
+  display_case: 70,
+  flower_cart: 55,
+  extra_awning: 80,
+};
+const FACTORY_FORM_EXTRA: Record<FactoryForm, number> = {
+  horizontal: 0,
+  tall: 110,
+  boiler_yard: 160,
+};
+const FACTORY_PROP_COST: Record<string, number> = {
+  pipe_run: 45,
+  gear_stack: 55,
+  cylinder_boiler: 120,
+  smokestack: 90,
+  valve_rack: 40,
+  conduit: 50,
+  crane_arm: 110,
+};
+
+function sumPropCosts(props: SiteProp[] | undefined, table: Record<string, number>): number {
+  let n = 0;
+  for (const p of props ?? []) n += table[p.id] ?? 40;
+  return n;
 }
 
 /** Retail districts in the mega-city (multi-plaza empire) */
@@ -1039,6 +1100,8 @@ export function tickAllPassiveWorkers(inv: InventoryState): {
 /** Soft city pressure on fair prices (1 = neutral; &lt;1 glut; &gt;1 scarce) */
 export type MarketPressure = Partial<Record<CommodityId, number>>;
 
+export type StorageTrack = 'resources' | 'crafted' | 'inventions';
+
 export interface InventoryState {
   brass: number;
   aether: number;
@@ -1093,6 +1156,13 @@ export interface InventoryState {
   placements: PlacementRecord[];
   /** Romance progress with girl NPCs */
   relationships: RomanceState[];
+  /** Bonded storage factory layouts by track */
+  storageLayouts: Partial<Record<StorageTrack, FactoryLayout>>;
+  /** Brass paid toward each storage factory layout */
+  storageLayoutPaid: Partial<Record<StorageTrack, number>>;
+  /** Sky Foundry bay-wing factory look */
+  bayWingLayout: FactoryLayout | null;
+  bayWingLayoutPaid: number;
 }
 
 const WORKER_NAMES = [
@@ -1171,6 +1241,10 @@ export function emptyInventory(starterBrass = 40): InventoryState {
     medallionHostId: null,
     placements: [],
     relationships: [],
+    storageLayouts: {},
+    storageLayoutPaid: {},
+    bayWingLayout: null,
+    bayWingLayoutPaid: 0,
   };
 }
 
@@ -1411,41 +1485,56 @@ export function emptyStall(): StallState {
   };
 }
 
-const STALL_TIER_EXTRA: Record<StallTier, number> = {
-  bench: 0,
-  shade: 75,
-  shop: 200,
-  large: 450,
-};
-
-/** Live quote for stall wizard (lease + tier + décor + color). */
+/** Live quote for stall site builder (lease + tier + props + color). */
 export function quoteStallBuild(opts: {
   districtId: string;
   tier: StallTier;
-  decor: number;
   color: number;
+  props?: SiteProp[];
+  /** @deprecated */
+  decor?: number;
   /** Include district lease (false when redesigning an owned stall) */
   includeLease?: boolean;
 }): {
   total: number;
   lease: number;
   tierFee: number;
-  decorFee: number;
+  propFee: number;
   colorFee: number;
 } {
   const d = districtById(opts.districtId);
   const lease = opts.includeLease === false ? 0 : (d?.stallCost ?? STALL_LEASE_COST);
   const tierFee = STALL_TIER_EXTRA[opts.tier] ?? 0;
-  const decorFee = Math.max(0, Math.min(5, opts.decor | 0)) * 40;
+  let props = opts.props;
+  if ((!props || !props.length) && opts.decor) {
+    const ids = ['crates', 'banners', 'lanterns', 'planters', 'signboard'];
+    props = [];
+    for (let i = 0; i < Math.min(5, opts.decor); i++) {
+      props.push({ id: ids[i]!, lx: 0, lz: 0, yaw: 0 });
+    }
+  }
+  const propFee = sumPropCosts(props, SHOP_PROP_COST);
   const c = Math.max(0, Math.min(5, opts.color | 0));
   const colorFee = c === 0 ? 0 : 20 + c * 15;
   return {
     lease,
     tierFee,
-    decorFee,
+    propFee,
     colorFee,
-    total: lease + tierFee + decorFee + colorFee,
+    total: lease + tierFee + propFee + colorFee,
   };
+}
+
+/** Factory site quote (upgrade base + form + props). */
+export function quoteFactoryBuild(opts: {
+  form: FactoryForm;
+  props?: SiteProp[];
+  baseCost?: number;
+}): { total: number; base: number; formFee: number; propFee: number } {
+  const base = opts.baseCost ?? 0;
+  const formFee = FACTORY_FORM_EXTRA[opts.form] ?? 0;
+  const propFee = sumPropCosts(opts.props, FACTORY_PROP_COST);
+  return { base, formFee, propFee, total: base + formFee + propFee };
 }
 
 /** Plot must sit on the plaza deck or just past the rim (NPC-reachable). */
@@ -1456,9 +1545,28 @@ export function isValidStallPlot(districtId: string, x: number, z: number): bool
   return dist <= d.size * 0.58;
 }
 
+function normalizeStallLayout(layout: StallLayout): StallLayout {
+  let props = Array.isArray(layout.props) ? layout.props.map((p) => ({ ...p })) : [];
+  if (!props.length && layout.decor) {
+    const ids = ['crates', 'banners', 'lanterns', 'planters', 'signboard'];
+    for (let i = 0; i < Math.min(5, layout.decor); i++) {
+      props.push({ id: ids[i]!, lx: -2.2 + i * 1.1, lz: -2.4, yaw: 0 });
+    }
+  }
+  return {
+    plotX: layout.plotX,
+    plotZ: layout.plotZ,
+    yaw: layout.yaw,
+    tier: layout.tier,
+    color: layout.color,
+    props,
+    built: layout.built,
+  };
+}
+
 /**
  * Finalize new lease or redesign. Charges full quote on first build;
- * redesigns charge only the positive delta vs layoutPaid.
+ * redesigns charge only the positive delta (more expensive items/location).
  */
 export function finalizeStallBuild(
   inv: InventoryState,
@@ -1468,10 +1576,11 @@ export function finalizeStallBuild(
 ): { ok: boolean; msg: string; charged: number } {
   const dist = districtById(districtId);
   if (!dist) return { ok: false, msg: 'Unknown district.', charged: 0 };
-  if (!isValidStallPlot(districtId, layout.plotX, layout.plotZ)) {
+  const next = normalizeStallLayout(layout);
+  if (!isValidStallPlot(districtId, next.plotX, next.plotZ)) {
     return {
       ok: false,
-      msg: 'Plot must be on the plaza or within NPC reach of the rim.',
+      msg: 'Site must be on the plaza or within NPC reach of the rim.',
       charged: 0,
     };
   }
@@ -1482,20 +1591,20 @@ export function finalizeStallBuild(
   }
   const buildQuote = quoteStallBuild({
     districtId,
-    tier: layout.tier,
-    decor: layout.decor,
-    color: layout.color,
+    tier: next.tier,
+    color: next.color,
+    props: next.props,
     includeLease: false,
   });
   let charge: number;
   if (redesign) {
-    const prev = stall.layout;
+    const prev = stall.layout ? normalizeStallLayout(stall.layout) : null;
     const prevBuild = prev
       ? quoteStallBuild({
           districtId,
           tier: prev.tier,
-          decor: prev.decor,
           color: prev.color,
+          props: prev.props,
           includeLease: false,
         }).total
       : 0;
@@ -1503,9 +1612,9 @@ export function finalizeStallBuild(
   } else {
     charge = quoteStallBuild({
       districtId,
-      tier: layout.tier,
-      decor: layout.decor,
-      color: layout.color,
+      tier: next.tier,
+      color: next.color,
+      props: next.props,
       includeLease: true,
     }).total;
   }
@@ -1519,15 +1628,140 @@ export function finalizeStallBuild(
   inv.brass -= charge;
   stall.owned = true;
   stall.open = true;
-  stall.layout = { ...layout, built: true };
+  stall.layout = { ...next, built: true };
   stall.layoutPaid = (stall.layoutPaid ?? 0) + charge;
   const n = ownedCityStallCount(inv);
   return {
     ok: true,
     charged: charge,
     msg: redesign
-      ? `Stall updated · ${dist.name} (−${charge}b).`
+      ? charge > 0
+        ? `Stall updated · ${dist.name} (−${charge}b).`
+        : `Stall updated · ${dist.name} (no extra charge).`
       : `Stall open · ${dist.name} (−${charge}b). Empire shops: ${n}.`,
+  };
+}
+
+/**
+ * Finalize factory site (storage expand / bay wing / edit).
+ * Only charges when the new quote exceeds the previous build (+ optional upgrade base).
+ */
+export function finalizeFactoryBuild(
+  inv: InventoryState,
+  layout: FactoryLayout,
+  opts: {
+    kind: 'storage' | 'bay_wing';
+    districtId: string;
+    storageTrack?: StorageTrack;
+    /** Storage expand / bay expand base (0 on redesign) */
+    baseCost?: number;
+    redesign?: boolean;
+    /** Bump storage level (storage) or bay level (bay_wing) */
+    applyUpgrade?: boolean;
+  },
+): { ok: boolean; msg: string; charged: number } {
+  if (!isValidStallPlot(opts.districtId, layout.plotX, layout.plotZ)) {
+    return {
+      ok: false,
+      msg: 'Site must be on the plaza or within NPC reach of the rim.',
+      charged: 0,
+    };
+  }
+  const next: FactoryLayout = {
+    ...layout,
+    props: (layout.props ?? []).map((p) => ({ ...p })),
+    built: true,
+  };
+  const redesign = !!opts.redesign;
+  let prevBuild = 0;
+  if (opts.kind === 'storage' && opts.storageTrack) {
+    const prev = inv.storageLayouts?.[opts.storageTrack];
+    if (prev?.built) {
+      prevBuild = quoteFactoryBuild({ form: prev.form, props: prev.props, baseCost: 0 }).total;
+    }
+  } else {
+    const prev = inv.bayWingLayout;
+    if (prev?.built) {
+      prevBuild = quoteFactoryBuild({ form: prev.form, props: prev.props, baseCost: 0 }).total;
+    }
+  }
+  const newBuild = quoteFactoryBuild({
+    form: next.form,
+    props: next.props,
+    baseCost: 0,
+  }).total;
+  const cosmeticsDelta = Math.max(0, newBuild - prevBuild);
+  const base = redesign || !opts.applyUpgrade ? 0 : (opts.baseCost ?? 0);
+  const charge = base + cosmeticsDelta;
+
+  if (opts.applyUpgrade && !redesign) {
+    if (opts.kind === 'storage' && opts.storageTrack) {
+      const from = getStorageLevel(inv, opts.storageTrack);
+      if (from >= STORAGE_MAX_LEVEL) {
+        return { ok: false, msg: 'Storage already maxed.', charged: 0 };
+      }
+    } else if (opts.kind === 'bay_wing') {
+      // expandBay deducts its own fee — we only charge cosmeticsDelta here
+    }
+  }
+
+  if (opts.kind === 'bay_wing' && opts.applyUpgrade && !redesign) {
+    if (inv.brass < cosmeticsDelta + (opts.baseCost ?? 0)) {
+      return {
+        ok: false,
+        msg: `Need ${(opts.baseCost ?? 0) + cosmeticsDelta} brass (have ${inv.brass}).`,
+        charged: 0,
+      };
+    }
+    const r = expandBay(inv);
+    if (!r.ok) return { ok: false, msg: r.msg, charged: 0 };
+    if (cosmeticsDelta > 0) inv.brass -= cosmeticsDelta;
+    inv.bayWingLayout = next;
+    inv.bayWingLayoutPaid = (inv.bayWingLayoutPaid ?? 0) + cosmeticsDelta;
+    return {
+      ok: true,
+      charged: (opts.baseCost ?? 0) + cosmeticsDelta,
+      msg: `Bay expanded · factory placed (−${(opts.baseCost ?? 0) + cosmeticsDelta}b).`,
+    };
+  }
+
+  if (inv.brass < charge) {
+    return { ok: false, msg: `Need ${charge} brass (have ${inv.brass}).`, charged: 0 };
+  }
+  inv.brass -= charge;
+
+  if (opts.kind === 'storage' && opts.storageTrack) {
+    if (opts.applyUpgrade && !redesign) {
+      const from = getStorageLevel(inv, opts.storageTrack);
+      const nextLv = from + 1;
+      if (opts.storageTrack === 'resources') inv.storageResourcesLevel = nextLv;
+      else if (opts.storageTrack === 'crafted') inv.storageCraftedLevel = nextLv;
+      else inv.storageInventionsLevel = nextLv;
+    }
+    if (!inv.storageLayouts) inv.storageLayouts = {};
+    if (!inv.storageLayoutPaid) inv.storageLayoutPaid = {};
+    inv.storageLayouts[opts.storageTrack] = next;
+    inv.storageLayoutPaid[opts.storageTrack] =
+      (inv.storageLayoutPaid[opts.storageTrack] ?? 0) + charge;
+    return {
+      ok: true,
+      charged: charge,
+      msg:
+        charge > 0
+          ? `Factory site set (−${charge}b).`
+          : 'Factory site updated (no extra charge).',
+    };
+  }
+
+  inv.bayWingLayout = next;
+  inv.bayWingLayoutPaid = (inv.bayWingLayoutPaid ?? 0) + charge;
+  return {
+    ok: true,
+    charged: charge,
+    msg:
+      charge > 0
+        ? `Bay factory updated (−${charge}b).`
+        : 'Bay factory updated (no extra charge).',
   };
 }
 
@@ -1572,8 +1806,6 @@ export function hireCost(inv: InventoryState): number {
 }
 
 // ——— Bonded storage (per-category stack caps) ———
-
-export type StorageTrack = 'resources' | 'crafted' | 'inventions';
 
 /** Raw / harvest mats */
 export const STORAGE_RESOURCE_IDS: readonly CommodityId[] = [
@@ -1745,8 +1977,8 @@ export function stallPlacementMul(inv: InventoryState, districtId: string): numb
   if (layout?.built) {
     const tierMul =
       layout.tier === 'large' ? 1.35 : layout.tier === 'shop' ? 1.22 : layout.tier === 'shade' ? 1.1 : 1;
-    const decorMul = 1 + layout.decor * 0.03;
-    m *= tierMul * decorMul;
+    const propMul = 1 + (layout.props?.length ?? layout.decor ?? 0) * 0.03;
+    m *= tierMul * propMul;
   }
   if (!list.length && !layout?.built) return 1;
   return Math.max(0.8, Math.min(2.2, m));
@@ -3453,7 +3685,12 @@ function stallToSave(s: StallState) {
     earned: s.earned,
     lastDemand: s.lastDemand,
     pendingHaggle: s.pendingHaggle ? { ...s.pendingHaggle } : null,
-    layout: s.layout ? { ...s.layout } : null,
+    layout: s.layout
+      ? {
+          ...s.layout,
+          props: (s.layout.props ?? []).map((p) => ({ ...p })),
+        }
+      : null,
     layoutPaid: s.layoutPaid ?? 0,
   };
 }
@@ -3490,19 +3727,68 @@ function stallFromSave(s: Partial<StallState> | undefined): StallState {
     const tier = (['bench', 'shade', 'shop', 'large'] as StallTier[]).includes(L.tier as StallTier)
       ? (L.tier as StallTier)
       : 'bench';
+    let props: SiteProp[] = Array.isArray(L.props)
+      ? L.props.map((p) => ({
+          id: String(p.id ?? 'crates'),
+          lx: Number(p.lx) || 0,
+          lz: Number(p.lz) || 0,
+          yaw: Number(p.yaw) || 0,
+        }))
+      : [];
+    if (!props.length && L.decor) {
+      const ids = ['crates', 'banners', 'lanterns', 'planters', 'signboard'];
+      for (let i = 0; i < Math.min(5, Number(L.decor) || 0); i++) {
+        props.push({ id: ids[i]!, lx: -2.2 + i * 1.1, lz: -2.4, yaw: 0 });
+      }
+    }
     base.layout = {
       plotX: Number(L.plotX) || 0,
       plotZ: Number(L.plotZ) || 0,
       yaw: Number(L.yaw) || 0,
       tier,
-      decor: Math.max(0, Math.min(5, Number(L.decor) || 0)),
       color: Math.max(0, Math.min(5, Number(L.color) || 0)),
+      props,
       built: !!L.built,
     };
   } else {
     base.layout = null;
   }
   return base;
+}
+
+function factoryLayoutToSave(L: FactoryLayout | null | undefined) {
+  if (!L) return null;
+  return {
+    plotX: L.plotX,
+    plotZ: L.plotZ,
+    yaw: L.yaw,
+    form: L.form,
+    props: (L.props ?? []).map((p) => ({ ...p })),
+    built: !!L.built,
+  };
+}
+
+function factoryLayoutFromSave(raw: unknown): FactoryLayout | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const L = raw as FactoryLayout;
+  const form = (['horizontal', 'tall', 'boiler_yard'] as FactoryForm[]).includes(L.form as FactoryForm)
+    ? (L.form as FactoryForm)
+    : 'horizontal';
+  return {
+    plotX: Number(L.plotX) || 0,
+    plotZ: Number(L.plotZ) || 0,
+    yaw: Number(L.yaw) || 0,
+    form,
+    props: Array.isArray(L.props)
+      ? L.props.map((p) => ({
+          id: String(p.id ?? 'pipe_run'),
+          lx: Number(p.lx) || 0,
+          lz: Number(p.lz) || 0,
+          yaw: Number(p.yaw) || 0,
+        }))
+      : [],
+    built: !!L.built,
+  };
 }
 
 export function invToSave(inv: InventoryState) {
@@ -3551,6 +3837,14 @@ export function invToSave(inv: InventoryState) {
     medallionHostId: inv.medallionHostId ?? null,
     placements: inv.placements.map((p) => ({ ...p })),
     relationships: inv.relationships.map((r) => ({ ...r })),
+    storageLayouts: {
+      resources: factoryLayoutToSave(inv.storageLayouts?.resources) ?? undefined,
+      crafted: factoryLayoutToSave(inv.storageLayouts?.crafted) ?? undefined,
+      inventions: factoryLayoutToSave(inv.storageLayouts?.inventions) ?? undefined,
+    },
+    storageLayoutPaid: { ...(inv.storageLayoutPaid ?? {}) },
+    bayWingLayout: factoryLayoutToSave(inv.bayWingLayout),
+    bayWingLayoutPaid: inv.bayWingLayoutPaid ?? 0,
   };
 }
 
@@ -3686,5 +3980,19 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
         giftsGiven: Number(r.giftsGiven) || 0,
       }))
     : [];
+  inv.storageLayouts = {};
+  inv.storageLayoutPaid = {};
+  if (o.storageLayouts && typeof o.storageLayouts === 'object') {
+    const sl = o.storageLayouts as Record<string, unknown>;
+    for (const track of ['resources', 'crafted', 'inventions'] as StorageTrack[]) {
+      const L = factoryLayoutFromSave(sl[track]);
+      if (L) inv.storageLayouts[track] = L;
+    }
+  }
+  if (o.storageLayoutPaid && typeof o.storageLayoutPaid === 'object') {
+    inv.storageLayoutPaid = { ...(o.storageLayoutPaid as InventoryState['storageLayoutPaid']) };
+  }
+  inv.bayWingLayout = factoryLayoutFromSave(o.bayWingLayout);
+  inv.bayWingLayoutPaid = typeof o.bayWingLayoutPaid === 'number' ? o.bayWingLayoutPaid : 0;
   return inv;
 }
