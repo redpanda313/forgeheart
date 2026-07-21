@@ -103,10 +103,14 @@ export interface CityNpc {
   plazaCx: number;
   plazaCz: number;
   plazaRadius: number;
+  /** Standing height on plaza floor (never fall through deck) */
+  deckY: number;
   homeDistrictId?: string;
   /** Flyer skyway travel */
   skyRoute?: SkyRoute | null;
   routeIndex?: number;
+  /** Accumulators for helper → rogue conversion */
+  rogueAcc?: number;
 }
 
 export interface SkyRoute {
@@ -316,6 +320,11 @@ function clampToPlaza(
     pos.z = cz + (dz / dist) * maxR;
   }
   pos.y = y;
+}
+
+/** Top of a district plaza floor pad (matches floorPad collider max.y). */
+export function plazaDeckStandY(deckY = 0.2): number {
+  return deckY + FLOOR_THICK / 2 + FLOOR_COL_PAD;
 }
 
 /** Pick sky route whose ends are near from→to district centers. */
@@ -1624,6 +1633,7 @@ export function buildSkyCity(): SkyCityBuilt {
   }
 
   // Ambient NPCs — dense lived-in city (each walker stays on one plaza)
+  const DECK_STAND_NPC = plazaDeckStandY(DECK_Y);
   // Residents + flyers
   for (let i = 0; i < 48; i++) {
     const homeD = CITY_DISTRICTS[i % CITY_DISTRICTS.length]!;
@@ -1674,6 +1684,7 @@ export function buildSkyCity(): SkyCityBuilt {
       plazaCx: homeD.x,
       plazaCz: homeD.z,
       plazaRadius: homeD.size,
+      deckY: DECK_STAND_NPC,
       homeDistrictId: homeD.id,
       skyRoute: route,
       routeIndex: route ? 0 : undefined,
@@ -1732,59 +1743,73 @@ export function buildSkyCity(): SkyCityBuilt {
       plazaCx: d.x,
       plazaCz: d.z,
       plazaRadius: d.size,
+      deckY: DECK_STAND_NPC,
       homeDistrictId: d.id,
     });
   }
 
-  // Helper + rogue robots — same RobotUnit model/mechanics as tutorial
+  // Helper robots — all wander plazas; some start rogue, others can turn rogue over time
+  const DECK_STAND = DECK_STAND_NPC;
   for (let i = 0; i < 22; i++) {
     const d = CITY_DISTRICTS[i % CITY_DISTRICTS.length]!;
-    const rogue = i % 3 === 0;
+    const startRogue = Math.random() < 0.22;
     const spawn = plazaPoint(d, 0.4);
+    spawn.y = DECK_STAND;
     const robot = new RobotUnit(mats, spawn.clone());
-    robot.displayName = rogue ? `Rogue-${i}` : `Frame-${i}`;
-    if (rogue) {
+    robot.displayName = startRogue ? `Rogue-${i}` : `Frame-${i}`;
+    if (startRogue) {
       robot.setPhase('active');
       robot.aggro = false;
-    } else robot.setPhase('ally');
-    addMesh(robot.mesh);
-    if (rogue) {
-      const mark = new THREE.Mesh(
-        new THREE.SphereGeometry(0.2, 8, 8),
-        new THREE.MeshStandardMaterial({
-          color: 0xff6644,
-          emissive: 0xcc2200,
-          emissiveIntensity: 0.6,
-        }),
-      );
-      mark.position.set(spawn.x, 1.3, spawn.z + 1.2);
-      addMesh(mark);
-      interactables.push({
-        id: `rogue_${i}`,
-        kind: 'rogue_robot',
-        position: mark.position.clone(),
-        radius: 2.4,
-        mesh: mark,
-        label: 'Rogue robot — restore to owner / harvest parts',
-      });
+    } else {
+      robot.setPhase('ally');
     }
+    robot.onGround = true;
+    robot.vy = 0;
+    addMesh(robot.mesh);
+    const botId = `citybot_${i}`;
+    const mark = new THREE.Mesh(
+      new THREE.SphereGeometry(0.2, 8, 8),
+      new THREE.MeshStandardMaterial({
+        color: startRogue ? 0xff6644 : 0x66cc88,
+        emissive: startRogue ? 0xcc2200 : 0x228844,
+        emissiveIntensity: 0.55,
+      }),
+    );
+    mark.position.set(spawn.x, DECK_STAND + 1.25, spawn.z + 1.15);
+    mark.visible = startRogue;
+    addMesh(mark);
+    interactables.push({
+      id: botId,
+      kind: 'rogue_robot',
+      position: mark.position.clone(),
+      radius: 2.6,
+      mesh: mark,
+      label: startRogue
+        ? 'Rogue — wrench to scramble · Hand fix · E harvest'
+        : 'Work frame',
+    });
     npcs.push({
       mesh: robot.mesh,
       robot,
       home: spawn.clone(),
       work: plazaPoint(d, 0.36),
       market: plazaPoint(d, 0.34),
-      role: rogue ? 'rogue' : 'robot_helper',
-      visual: rogue ? 'rogue' : 'robot_helper',
+      role: startRogue ? 'rogue' : 'robot_helper',
+      visual: startRogue ? 'rogue' : 'robot_helper',
       phase: Math.random(),
-      speed: 2.2,
-      rogue,
+      speed: 2.35 + Math.random() * 0.6,
+      rogue: startRogue,
       plazaCx: d.x,
       plazaCz: d.z,
       plazaRadius: d.size,
+      deckY: DECK_STAND,
       homeDistrictId: d.id,
-      id: rogue ? `rogue_${i}` : `frame_${i}`,
+      id: botId,
+      rogueAcc: Math.random() * 40,
     });
+    npcs[npcs.length - 1]!.work.y = DECK_STAND;
+    npcs[npcs.length - 1]!.market.y = DECK_STAND;
+    npcs[npcs.length - 1]!.home.y = DECK_STAND;
   }
 
   // Broker frame display props (updated live from game)
@@ -1887,29 +1912,8 @@ export function buildSkyCity(): SkyCityBuilt {
       }
       active++;
 
-      // Rogues: combat AI driven by game.ts — skip ambient motion
-      if (n.robot && n.role === 'rogue') {
-        continue;
-      }
-
-      // Helper robots: gentle plaza patrol
+      // All city robots: motion/combat driven by game.ts (deck-locked wander)
       if (n.robot) {
-        const t = (cityTime + n.phase * 0.15) % 1;
-        const target = t < 0.35 ? n.home : t < 0.7 ? n.work : n.market;
-        const pos = n.mesh.position;
-        const dx = target.x - pos.x;
-        const dz = target.z - pos.z;
-        const dlen = Math.hypot(dx, dz);
-        let moving = false;
-        if (dlen > 0.5) {
-          const step = Math.min(n.speed * 0.75 * dt, dlen);
-          pos.x += (dx / dlen) * step;
-          pos.z += (dz / dlen) * step;
-          n.mesh.rotation.y = Math.atan2(dx, dz);
-          moving = true;
-        }
-        clampToPlaza(pos, n.plazaCx, n.plazaCz, n.plazaRadius, 0);
-        n.robot.tickAnim(dt, moving, 'ally');
         continue;
       }
 
@@ -2011,7 +2015,7 @@ export function buildSkyCity(): SkyCityBuilt {
             n.mesh.rotation.y = Math.atan2(dx, dz);
             moving = true;
           }
-          clampToPlaza(pos, n.plazaCx, n.plazaCz, n.plazaRadius, 0);
+          clampToPlaza(pos, n.plazaCx, n.plazaCz, n.plazaRadius, n.deckY ?? 0);
         }
       }
       tickNpcAnim(n.parts, n.visual, animT, moving, n.phase);
