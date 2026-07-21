@@ -53,7 +53,13 @@ import {
 } from './citySection';
 import type { FloatingCityBuilt } from './floatingCity';
 import { buildMarketHub, type MarketHubBuilt, type HubInteract } from './marketHub';
-import { buildSkyCity, syncBrokerFrameDisplays, type SkyCityBuilt, type CityInteract } from './skyCity';
+import {
+  buildSkyCity,
+  syncBrokerFrameDisplays,
+  type SkyCityBuilt,
+  type CityInteract,
+  type CityNpc,
+} from './skyCity';
 import { SpatialColliderGrid } from './spatialGrid';
 import { CityStreamer } from './cityStreamer';
 import { perfStats } from './perfStats';
@@ -345,13 +351,23 @@ export class ForgeHeartGame {
   /** Phase 3 true sky city */
   private megaCityActive = false;
   private skyCity: SkyCityBuilt | null = null;
-  /** Plaza leash for empire rogue robots (tutorial attack AI, nearby-only). */
+  /** Plaza leash for empire city robots (helpers + rogues). */
   private cityRogueLeash = new Map<
     RobotUnit,
-    { cx: number; cz: number; radius: number; homeX: number; homeZ: number }
+    {
+      cx: number;
+      cz: number;
+      radius: number;
+      homeX: number;
+      homeZ: number;
+      deckY: number;
+      npc: CityNpc;
+    }
   >();
   private static readonly CITY_ROGUE_AGGRO = 15;
   private static readonly CITY_ROGUE_LOSE = 22;
+  /** Helpers roll toward rogue over time */
+  private static readonly CITY_ROGUE_CHANCE_PER_SEC = 0.004;
   private cityTime = 0;
   private cityInteractPrompt: CityInteract | null = null;
   private neighborLineIdx = 0;
@@ -2897,13 +2913,41 @@ export class ForgeHeartGame {
         if (to.dot(dir) < 0.52) continue;
         const res = r.applyArc(ROBOT.arcDamage, ROBOT.scramblePerHit);
         if (res === 'disabled') {
-          this.flash('KNOCKED OUT — eyes dark. Hand reprogram or E scrap');
+          this.flash(
+            this.megaCityActive
+              ? 'KNOCKED OUT — Hand (1) to fix · E to harvest'
+              : 'KNOCKED OUT — eyes dark. Hand reprogram or E scrap',
+          );
         } else if (res === 'scrambled') {
-          this.flash('SCRAMBLE FULL — Hand (1) to rewrite while it still walks');
+          this.flash(
+            this.megaCityActive
+              ? 'SCRAMBLE FULL — Hand (1) fix · E harvest parts'
+              : 'SCRAMBLE FULL — Hand (1) to rewrite while it still walks',
+          );
         }
       }
+    } else if (this.megaCityActive) {
+      // Empire: Hand fixes a scrambled/KO rogue back to plaza helper (not your ally).
+      let best: RobotUnit | null = null;
+      let bestD = 2.8;
+      for (const r of this.robots) {
+        if (!r.reprogramReady) continue;
+        const leash = this.cityRogueLeash.get(r);
+        if (!leash?.npc.rogue) continue;
+        const d = r.position.distanceTo(this.camera.position);
+        if (d < bestD) {
+          best = r;
+          bestD = d;
+        }
+      }
+      this.atkCd = 0.4;
+      if (!best) {
+        this.toast('Stand by a scrambled or knocked-out rogue. Hand (1) fixes · E harvests.');
+        return;
+      }
+      this.fixCityRogue(best);
     } else {
-      // Reprogram: scrambled OR disabled
+      // Workshop: reprogram scrambled OR disabled into powered allies
       let best: RobotUnit | null = null;
       let bestD = 2.6;
       for (const r of this.robots) {
@@ -4169,10 +4213,10 @@ export class ForgeHeartGame {
     perfStats.npcsActive = this.skyCity.lastNpcActive;
     perfStats.npcsTotal = this.skyCity.npcs.length;
 
-    // Rogue robots: tutorial chase/fuse/bolt — nearby players only, plaza-bound
+    // City robots: deck-locked wander; rogues use tutorial attack when nearby
     if (!this.isEconomyUiOpen() && !this.harvestOpen) {
       if (this.fireHeld || this.keys.has('ControlLeft')) this.tryFire();
-      this.updateRobots(dt);
+      this.updateCityRobots(dt);
       this.updateBolts(dt);
       this.updateBlasts(dt);
       this.syncCityRogueInteractables();
@@ -4502,31 +4546,19 @@ export class ForgeHeartGame {
       return true;
     }
     if (it.kind === 'rogue_robot') {
-      const harvest = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
-      if (harvest) {
-        const wasHost = false;
-        const r = harvestRogueRobot(this.inv, { wasMedallionHost: wasHost });
-        this.toast(r.msg + ' (Shift+interact = harvest)', 4);
-      } else {
-        const r = repairRogueRobot(this.inv);
-        this.toast(r.msg + ' · Shift+interact to harvest parts', 4);
+      // E = harvest parts from a downed rogue. Hand (1) click fixes instead.
+      const n = this.skyCity?.npcs.find((x) => x.id === it.id && x.robot) ?? null;
+      const r = n?.robot ?? null;
+      if (!n || !r || r.phase === 'husk' || !n.rogue) {
+        this.toast(n?.rogue ? 'Frame already gone.' : 'Work frame — leave it to its rounds.', 2.5);
+        return true;
       }
-      this.brass = this.inv.brass;
-      it.mesh.visible = false;
-      // Disable the matching combat unit so it stops attacking
-      if (this.skyCity) {
-        for (const n of this.skyCity.npcs) {
-          if (!n.rogue || !n.robot) continue;
-          if (n.robot.position.distanceTo(it.position) < 5) {
-            n.robot.setPhase('husk');
-            n.mesh.visible = false;
-            this.cityRogueLeash.delete(n.robot);
-          }
-        }
+      const downed = r.phase === 'disabled' || r.reprogramReady;
+      if (!downed) {
+        this.toast('Arc wrench (2) to scramble · then Hand fix or E harvest.', 3);
+        return true;
       }
-      this.audio.playPickup();
-      writeSlot(this.activeSlot, this.buildSaveData());
-      this.syncEconomyHud();
+      this.harvestCityRogue(n, r, it);
       return true;
     }
     if (it.kind === 'romance_npc') {
@@ -7747,8 +7779,10 @@ export class ForgeHeartGame {
     this.camera.position.copy(this.skyCity.apartmentSpawn);
     this.safePos.copy(this.skyCity.apartmentSpawn);
 
-    // Register plaza-bound rogues for tutorial combat AI
-    this.registerCityRogueRobots();
+    // Register plaza-bound city robots (wander + chance to go rogue)
+    this.registerCityRobots();
+    // Empire combat uses arc wrench
+    if (!this.wrenchUnlocked) this.wrenchUnlocked = true;
 
     this.ensureMarketBoard();
     // Method side-effect assigns board; assert past CFA after explicit null above
@@ -7767,7 +7801,7 @@ export class ForgeHeartGame {
     );
     this.flash(fromSave ? 'HOME — EMPIRE SKY CITY' : 'YOUR SKY APARTMENT');
     this.toast(
-      'Empire loop: lease industrial workshop · harvest reefs · expand at Sky Foundry · invent → craft → stalls.',
+      'Plaza bots wander · any may go rogue. Wrench scramble · Hand fix · E harvest. No airways for rogues.',
       6.5,
     );
     window.setTimeout(() => {
@@ -8830,23 +8864,13 @@ export class ForgeHeartGame {
     const playerPos = this.camera.position.clone();
     const playerFeet = playerPos.clone();
     playerFeet.y -= 0.4;
-    const cityMode = this.megaCityActive;
 
     for (const r of this.robots) {
       if (r.phase === 'husk') continue;
       // Rescue frames that slipped into the void (path gaps / chase off edge)
       if (r.position.y < -0.8) {
-        if (cityMode) {
-          const leash = this.cityRogueLeash.get(r);
-          if (leash) {
-            r.position.set(leash.homeX, 0.08, leash.homeZ);
-          } else {
-            r.position.y = 0.08;
-          }
-        } else {
-          const rescue = this.level.anchors.doorSpot;
-          r.position.set(rescue.x + (Math.random() - 0.5) * 1.2, 0.08, rescue.z + 2.5);
-        }
+        const rescue = this.level.anchors.doorSpot;
+        r.position.set(rescue.x + (Math.random() - 0.5) * 1.2, 0.08, rescue.z + 2.5);
         r.vy = 0;
         r.onGround = true;
       }
@@ -8864,33 +8888,14 @@ export class ForgeHeartGame {
 
       if (r.phase === 'ally') {
         this.updateAlly(r, dt, playerFeet);
-        // snap only when grounded — airborne jump/fall handled inside moveRobot
         if (r.onGround) this.snapRobotToFloor(r);
         continue;
       }
 
-      // ——— Hostile AI ———
+      // ——— Hostile AI (workshop tutorial) ———
       const dist = r.position.distanceTo(playerFeet);
-      const leash = cityMode ? this.cityRogueLeash.get(r) : undefined;
-
-      // Empire: only attack nearby players; otherwise patrol home plaza
-      if (cityMode) {
-        if (dist <= ForgeHeartGame.CITY_ROGUE_AGGRO) r.aggro = true;
-        if (dist > ForgeHeartGame.CITY_ROGUE_LOSE) {
-          r.aggro = false;
-          r.mode = 'chase';
-          r.fuseT = 0;
-          r.windupT = 0;
-        }
-        if (!r.aggro) {
-          this.patrolCityRogue(r, leash, dt);
-          continue;
-        }
-      }
-
       r.mesh.lookAt(playerFeet.x, r.position.y, playerFeet.z);
 
-      // Self-destruct fuse when very close
       if (r.mode === 'fuse') {
         r.fuseT += dt;
         r.tickAnim(dt, false, 'fuse');
@@ -8902,11 +8907,9 @@ export class ForgeHeartGame {
           this.detonateRobot(r);
         }
         if (r.onGround) this.snapRobotToFloor(r);
-        if (leash) this.clampRobotToPlaza(r, leash);
         continue;
       }
 
-      // Bolt windup
       if (r.mode === 'windup_bolt') {
         r.windupT -= dt;
         r.tickAnim(dt, false, 'windup_bolt');
@@ -8916,32 +8919,26 @@ export class ForgeHeartGame {
           this.fireBolt(r, playerFeet);
         }
         if (r.onGround) this.snapRobotToFloor(r);
-        if (leash) this.clampRobotToPlaza(r, leash);
         continue;
       }
 
-      // Start fuse if in melee bubble
       if (dist < ROBOT.fuseTriggerRange && dist > 0.3) {
         r.mode = 'fuse';
         r.fuseT = 0;
         this.toast('⚠ SELF-DESTRUCT ARMED — back away!');
         r.tickAnim(dt, false, 'fuse');
         if (r.onGround) this.snapRobotToFloor(r);
-        if (leash) this.clampRobotToPlaza(r, leash);
         continue;
       }
 
-      // Start bolt windup on cooldown when mid range
       if (r.boltCd <= 0 && dist > 2.5 && dist < 14) {
         r.mode = 'windup_bolt';
         r.windupT = ROBOT.boltWindup;
         r.tickAnim(dt, false, 'windup_bolt');
         if (r.onGround) this.snapRobotToFloor(r);
-        if (leash) this.clampRobotToPlaza(r, leash);
         continue;
       }
 
-      // Chase (slow) + separation so hostiles don't stack + wall collision
       let moving = false;
       const wish = new THREE.Vector3();
       if (dist < 18 && dist > ROBOT.fuseTriggerRange + 0.15) {
@@ -8964,10 +8961,8 @@ export class ForgeHeartGame {
       r.mode = 'chase';
       r.tickAnim(dt, moving, 'chase');
       if (r.onGround) this.snapRobotToFloor(r);
-      if (leash) this.clampRobotToPlaza(r, leash);
     }
 
-    // Pickup orbs
     for (const it of this.interactables) {
       if (it.text !== 'pickup' || it.opened) continue;
       if (it.position.distanceTo(this.camera.position) < 1.4) {
@@ -8980,17 +8975,23 @@ export class ForgeHeartGame {
     }
   }
 
-  /** Wire sky-city rogues into the tutorial combat robot list. */
-  private registerCityRogueRobots() {
+  /** All plaza robots — wander on deck; helpers may go rogue; rogues attack nearby. */
+  private registerCityRobots() {
     this.robots = [];
     this.cityRogueLeash.clear();
     if (!this.skyCity) return;
     for (const n of this.skyCity.npcs) {
-      if (!n.robot || !n.rogue) continue;
+      if (!n.robot) continue;
       if (n.robot.phase === 'husk') continue;
-      n.robot.setPhase('active');
-      n.robot.aggro = false;
-      n.robot.mode = 'chase';
+      n.robot.vy = 0;
+      n.robot.onGround = true;
+      n.robot.position.y = n.deckY;
+      if (n.rogue) {
+        n.robot.setPhase('active');
+        n.robot.aggro = false;
+      } else {
+        n.robot.setPhase('ally');
+      }
       this.robots.push(n.robot);
       this.cityRogueLeash.set(n.robot, {
         cx: n.plazaCx,
@@ -8998,75 +8999,315 @@ export class ForgeHeartGame {
         radius: n.plazaRadius * 0.46,
         homeX: n.home.x,
         homeZ: n.home.z,
+        deckY: n.deckY,
+        npc: n,
       });
     }
   }
 
-  /** Keep E-prompt markers on moving rogue chassis. */
-  private syncCityRogueInteractables() {
-    if (!this.skyCity) return;
-    for (const n of this.skyCity.npcs) {
-      if (!n.rogue || !n.robot || !n.id) continue;
-      const it = this.skyCity.interactables.find((x) => x.id === n.id);
-      if (!it) continue;
-      if (n.robot.phase === 'husk' || !n.mesh.visible) {
-        it.mesh.visible = false;
-        continue;
-      }
-      it.mesh.visible = true;
-      it.mesh.position.set(n.robot.position.x, 1.3, n.robot.position.z + 1.1);
-      it.position.copy(it.mesh.position);
-    }
-  }
-
-  private clampRobotToPlaza(
+  private pinCityBotToDeck(
     r: RobotUnit,
-    leash: { cx: number; cz: number; radius: number; homeX: number; homeZ: number },
+    leash: { deckY: number; cx: number; cz: number; radius: number; homeX: number; homeZ: number },
   ) {
+    r.vy = 0;
+    r.onGround = true;
+    r.position.y = leash.deckY;
     const dx = r.position.x - leash.cx;
     const dz = r.position.z - leash.cz;
     const dist = Math.hypot(dx, dz);
     if (dist > leash.radius && dist > 1e-6) {
       r.position.x = leash.cx + (dx / dist) * leash.radius;
       r.position.z = leash.cz + (dz / dist) * leash.radius;
-      r.aggro = false;
-      r.mode = 'chase';
-      r.fuseT = 0;
     }
   }
 
-  /** Idle patrol on home plaza when player is far. */
-  private patrolCityRogue(
+  /** Kinematic XZ step on the plaza deck (no gravity — never falls through). */
+  private moveCityBotOnDeck(
     r: RobotUnit,
-    leash: { cx: number; cz: number; radius: number; homeX: number; homeZ: number } | undefined,
+    wish: THREE.Vector3,
+    speed: number,
     dt: number,
-  ) {
-    if (!leash) {
-      r.tickAnim(dt, false, 'chase');
-      return;
+    leash: { deckY: number; cx: number; cz: number; radius: number; homeX: number; homeZ: number },
+  ): THREE.Vector3 {
+    const applied = new THREE.Vector3();
+    this.pinCityBotToDeck(r, leash);
+    if (wish.lengthSq() < 1e-6) return applied;
+    const dir = wish.clone().setY(0);
+    if (dir.lengthSq() < 1e-6) return applied;
+    dir.normalize();
+    const tryAxis = (axis: 'x' | 'z', amount: number): number => {
+      if (Math.abs(amount) < 1e-8) return 0;
+      const prev = r.position[axis];
+      r.position[axis] += amount;
+      if (this.robotBodyHitsWall(r)) r.position[axis] = prev;
+      return r.position[axis] - prev;
+    };
+    applied.x = tryAxis('x', dir.x * speed * dt);
+    applied.z = tryAxis('z', dir.z * speed * dt);
+    this.pinCityBotToDeck(r, leash);
+    return applied;
+  }
+
+  private updateCityRobots(dt: number) {
+    if (!this.skyCity) return;
+    const playerFeet = this.camera.position.clone();
+    playerFeet.y -= 0.4;
+
+    for (const r of this.robots) {
+      if (r.phase === 'husk') continue;
+      const leash = this.cityRogueLeash.get(r);
+      if (!leash) continue;
+      const n = leash.npc;
+
+      r.attackCd = Math.max(0, r.attackCd - dt);
+      r.boltCd = Math.max(0, r.boltCd - dt);
+      r.repairCd = Math.max(0, r.repairCd - dt);
+
+      // Helpers may turn rogue over time (plaza only — never airways)
+      if (!n.rogue && r.phase === 'ally') {
+        n.rogueAcc = (n.rogueAcc ?? 0) + dt;
+        if (n.rogueAcc > 8 && Math.random() < ForgeHeartGame.CITY_ROGUE_CHANCE_PER_SEC * dt * 60) {
+          this.turnCityBotRogue(n, r);
+        }
+      }
+
+      // Downed / scrambled: idle on deck until Hand fix or E harvest
+      if (r.phase === 'disabled' || (r.phase === 'active' && r.scrambled && r.reprogramReady)) {
+        if (r.phase === 'disabled') r.mode = 'disabled';
+        r.tickAnim(dt, false, r.phase === 'disabled' ? 'disabled' : 'chase');
+        this.pinCityBotToDeck(r, leash);
+        continue;
+      }
+
+      const dist = r.position.distanceTo(playerFeet);
+      const isRogue = !!n.rogue && r.phase === 'active';
+
+      if (isRogue) {
+        if (dist <= ForgeHeartGame.CITY_ROGUE_AGGRO) r.aggro = true;
+        if (dist > ForgeHeartGame.CITY_ROGUE_LOSE) {
+          r.aggro = false;
+          r.mode = 'chase';
+          r.fuseT = 0;
+          r.windupT = 0;
+        }
+      }
+
+      if (isRogue && r.aggro) {
+        this.tickCityRogueCombat(r, leash, playerFeet, dt);
+        continue;
+      }
+
+      // Wander home plaza (helpers always; rogues when player is far)
+      this.wanderCityBot(r, leash, n, dt, isRogue ? 'chase' : 'ally');
     }
+  }
+
+  private turnCityBotRogue(n: CityNpc, r: RobotUnit) {
+    n.rogue = true;
+    n.role = 'rogue';
+    n.visual = 'rogue';
+    n.rogueAcc = 0;
+    r.setPhase('active');
+    r.aggro = false;
+    r.displayName = r.displayName.replace(/^Frame/, 'Rogue');
+    this.toast(`${r.displayName} went rogue!`, 2.5);
+  }
+
+  /** Hand fix: restore rogue to plaza helper (paid brass, not your ally). */
+  private fixCityRogue(r: RobotUnit) {
+    const leash = this.cityRogueLeash.get(r);
+    const n = leash?.npc;
+    if (!n) return;
+    const result = repairRogueRobot(this.inv);
+    this.brass = this.inv.brass;
+    n.rogue = false;
+    n.role = 'robot_helper';
+    n.visual = 'robot_helper';
+    n.rogueAcc = Math.random() * 25;
+    r.setPhase('ally');
+    r.aggro = false;
+    r.returning = false;
+    r.vy = 0;
+    r.onGround = true;
+    r.displayName = r.displayName.replace(/^Rogue/, 'Frame');
+    if (leash) this.pinCityBotToDeck(r, leash);
+    this.audio.playReprogram();
+    this.flash('FRAME RESTORED');
+    this.toast(result.msg, 4);
+    writeSlot(this.activeSlot, this.buildSaveData());
+    this.syncEconomyHud();
+    this.syncCityRogueInteractables();
+  }
+
+  /** E harvest: scrap a downed rogue for parts. */
+  private harvestCityRogue(n: CityNpc, r: RobotUnit, it: CityInteract) {
+    const result = harvestRogueRobot(this.inv, { wasMedallionHost: false });
+    this.brass = this.inv.brass;
+    r.setPhase('husk');
+    n.mesh.visible = false;
+    n.rogue = false;
+    it.mesh.visible = false;
+    this.cityRogueLeash.delete(r);
+    this.robots = this.robots.filter((x) => x !== r);
+    this.audio.playPickup();
+    this.flash('FRAME HARVESTED');
+    this.toast(result.msg, 4);
+    writeSlot(this.activeSlot, this.buildSaveData());
+    this.syncEconomyHud();
+  }
+
+  private wanderCityBot(
+    r: RobotUnit,
+    leash: {
+      deckY: number;
+      cx: number;
+      cz: number;
+      radius: number;
+      homeX: number;
+      homeZ: number;
+      npc: CityNpc;
+    },
+    n: CityNpc,
+    dt: number,
+    animMode: 'ally' | 'chase',
+  ) {
     r.wanderTimer -= dt;
     if (r.wanderTimer <= 0) {
-      r.wanderTimer = 1.6 + Math.random() * 2.4;
-      r.wanderAngle = Math.random() * Math.PI * 2;
+      r.wanderTimer = 1.2 + Math.random() * 2.2;
+      // Pick a plaza patrol point
+      const pick = Math.random();
+      const target = pick < 0.34 ? n.home : pick < 0.67 ? n.work : n.market;
+      r.wanderAngle = Math.atan2(target.x - r.position.x, target.z - r.position.z);
+      r.wanderAngle += (Math.random() - 0.5) * 0.8;
     }
     const wish = new THREE.Vector3(Math.sin(r.wanderAngle), 0, Math.cos(r.wanderAngle));
-    // Prefer drifting back toward home
     const homePull = new THREE.Vector3(leash.homeX - r.position.x, 0, leash.homeZ - r.position.z);
-    if (homePull.lengthSq() > 4) {
-      homePull.normalize().multiplyScalar(0.55);
+    if (homePull.lengthSq() > 36) {
+      homePull.normalize().multiplyScalar(0.65);
       wish.add(homePull);
     }
+    const sep = this.separation(r, 1.4, 0.9, 'all');
+    wish.add(sep);
     let moving = false;
     if (wish.lengthSq() > 0.01) {
-      const applied = this.moveRobot(r, wish, ROBOT.chaseSpeed * 0.45, dt);
+      const applied = this.moveCityBotOnDeck(r, wish, n.speed * 0.95, dt, leash);
+      moving = applied.lengthSq() > 1e-6;
+      if (moving) this.faceMoveDir(r, applied);
+    }
+    this.pinCityBotToDeck(r, leash);
+    r.tickAnim(dt, moving, animMode);
+  }
+
+  private tickCityRogueCombat(
+    r: RobotUnit,
+    leash: {
+      deckY: number;
+      cx: number;
+      cz: number;
+      radius: number;
+      homeX: number;
+      homeZ: number;
+      npc: CityNpc;
+    },
+    playerFeet: THREE.Vector3,
+    dt: number,
+  ) {
+    const dist = r.position.distanceTo(playerFeet);
+    r.mesh.lookAt(playerFeet.x, r.position.y, playerFeet.z);
+
+    if (r.mode === 'fuse') {
+      r.fuseT += dt;
+      r.tickAnim(dt, false, 'fuse');
+      if (dist > ROBOT.fuseCancelRange) {
+        r.mode = 'chase';
+        r.fuseT = 0;
+        this.toast('Self-destruct cancelled — frame resumes pursuit.');
+      } else if (r.fuseT >= ROBOT.fuseDuration) {
+        this.detonateRobot(r);
+      }
+      this.pinCityBotToDeck(r, leash);
+      return;
+    }
+
+    if (r.mode === 'windup_bolt') {
+      r.windupT -= dt;
+      r.tickAnim(dt, false, 'windup_bolt');
+      if (r.windupT <= 0) {
+        r.mode = 'chase';
+        r.boltCd = ROBOT.boltCd;
+        this.fireBolt(r, playerFeet);
+      }
+      this.pinCityBotToDeck(r, leash);
+      return;
+    }
+
+    if (dist < ROBOT.fuseTriggerRange && dist > 0.3) {
+      r.mode = 'fuse';
+      r.fuseT = 0;
+      this.toast('⚠ SELF-DESTRUCT ARMED — back away!');
+      r.tickAnim(dt, false, 'fuse');
+      this.pinCityBotToDeck(r, leash);
+      return;
+    }
+
+    if (r.boltCd <= 0 && dist > 2.5 && dist < 14) {
+      r.mode = 'windup_bolt';
+      r.windupT = ROBOT.boltWindup;
+      r.tickAnim(dt, false, 'windup_bolt');
+      this.pinCityBotToDeck(r, leash);
+      return;
+    }
+
+    let moving = false;
+    const wish = new THREE.Vector3();
+    if (dist < 18 && dist > ROBOT.fuseTriggerRange + 0.15) {
+      const dir = playerFeet.clone().sub(r.position);
+      dir.y = 0;
+      if (dir.lengthSq() > 0.01) {
+        dir.normalize();
+        wish.copy(dir).add(this.separation(r, ROBOT.enemySeparateRadius, ROBOT.enemySeparateStrength, 'hostile'));
+      }
+    }
+    if (wish.lengthSq() > 0.01) {
+      const applied = this.moveCityBotOnDeck(r, wish, ROBOT.chaseSpeed, dt, leash);
       moving = applied.lengthSq() > 1e-6;
       if (moving) this.faceMoveDir(r, applied);
     }
     r.mode = 'chase';
     r.tickAnim(dt, moving, 'chase');
-    if (r.onGround) this.snapRobotToFloor(r);
-    this.clampRobotToPlaza(r, leash);
+    this.pinCityBotToDeck(r, leash);
+  }
+
+  /** Prompt markers: visible on rogues; after scramble/KO show fix/harvest hint. */
+  private syncCityRogueInteractables() {
+    if (!this.skyCity) return;
+    for (const n of this.skyCity.npcs) {
+      if (!n.robot || !n.id) continue;
+      const it = this.skyCity.interactables.find((x) => x.id === n.id);
+      if (!it) continue;
+      const r = n.robot;
+      if (r.phase === 'husk' || !n.mesh.visible) {
+        it.mesh.visible = false;
+        continue;
+      }
+      const downed = r.phase === 'disabled' || r.reprogramReady;
+      const show = !!n.rogue;
+      it.mesh.visible = show;
+      it.mesh.position.set(r.position.x, n.deckY + 1.25, r.position.z + 1.05);
+      it.position.copy(it.mesh.position);
+      if (n.rogue) {
+        it.label = downed
+          ? 'Hand (1) fix · E harvest parts'
+          : 'Rogue — arc wrench (2) to scramble';
+        const mesh = it.mesh as THREE.Mesh;
+        const mat = mesh.material as THREE.MeshStandardMaterial | THREE.MeshStandardMaterial[];
+        const m = Array.isArray(mat) ? mat[0] : mat;
+        if (m?.color) {
+          m.color.setHex(downed ? 0xffcc44 : 0xff6644);
+          m.emissive?.setHex(downed ? 0xaa7700 : 0xcc2200);
+        }
+      }
+    }
   }
 
   /**
