@@ -3635,6 +3635,7 @@ export class ForgeHeartGame {
     for (const b of this.bolts) this.scene.remove(b.mesh);
     for (const bl of this.blasts) this.scene.remove(bl);
     this.robots = [];
+    this.cityRogueLeash.clear();
     this.husks = [];
     this.bolts = [];
     this.blasts = [];
