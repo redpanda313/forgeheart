@@ -54,6 +54,20 @@ export class ForgeAudio {
   private boardRushSource: AudioBufferSourceNode | null = null;
   private boardJetGain: GainNode | null = null;
   private boardJetOsc: OscillatorNode | null = null;
+  /** Per-plaza rogue alarm voices (proximity-ducked). */
+  private plazaSirens = new Map<
+    string,
+    {
+      gain: GainNode;
+      oscA: OscillatorNode;
+      oscB: OscillatorNode;
+      lfo: OscillatorNode;
+      lfoDepth: GainNode;
+      filter: BiquadFilterNode;
+    }
+  >();
+  private plazaSirenReleaseTimers = new Map<string, number>();
+  private lastPlazaSirenActive = new Set<string>();
   private musicTimer: number | null = null;
   private musicNextNoteTime = 0;
   private readonly musicBeatSec = 0.25; // 120 BPM eighths
@@ -168,6 +182,7 @@ export class ForgeAudio {
     this.safeStopNode(this.boardHumOsc);
     this.safeStopNode(this.boardHumOsc2);
     this.safeStopNode(this.boardJetOsc);
+    this.clearPlazaSirens();
     this.windSource = null;
     this.boardRushSource = null;
     this.boardHumOsc = null;
@@ -341,6 +356,142 @@ export class ForgeAudio {
 
   setTension(t: number) {
     this.tension = Math.max(0, Math.min(1, t));
+  }
+
+  /**
+   * Sweeter air-raid / bomb-siren wail per plaza while a robot is rogue there.
+   * Volume is proximity-based from the listener (player / board).
+   * Pass only plazas that currently have an unresolved rogue; empty list silences all.
+   */
+  syncPlazaRogueSirens(
+    plazas: { id: string; x: number; z: number; hearRadius: number }[],
+    listenerX: number,
+    listenerZ: number,
+  ) {
+    if (!this.enabled || !this.ctx || !this.master) {
+      this.clearPlazaSirens();
+      return;
+    }
+    const t = this.ctx.currentTime;
+    const active = new Set(plazas.map((p) => p.id));
+    this.lastPlazaSirenActive = active;
+
+    for (const p of plazas) {
+      const pending = this.plazaSirenReleaseTimers.get(p.id);
+      if (pending != null) {
+        window.clearTimeout(pending);
+        this.plazaSirenReleaseTimers.delete(p.id);
+      }
+      const voice = this.ensurePlazaSiren(p.id);
+      const dist = Math.hypot(listenerX - p.x, listenerZ - p.z);
+      const hear = Math.max(48, p.hearRadius);
+      const near = Math.max(0, 1 - dist / hear);
+      // Quadratic falloff — soft at range, present on the plaza
+      const vol = near * near * 0.085;
+      voice.gain.gain.setTargetAtTime(Math.max(0.0001, vol), t, 0.35);
+    }
+
+    for (const id of [...this.plazaSirens.keys()]) {
+      if (active.has(id)) continue;
+      const voice = this.plazaSirens.get(id);
+      if (!voice) continue;
+      // Problem fixed — fade out, then tear down the voice
+      voice.gain.gain.setTargetAtTime(0.0001, t, 0.28);
+      if (this.plazaSirenReleaseTimers.has(id)) continue;
+      const timer = window.setTimeout(() => {
+        this.plazaSirenReleaseTimers.delete(id);
+        if (this.lastPlazaSirenActive.has(id)) return;
+        this.releasePlazaSiren(id);
+      }, 750);
+      this.plazaSirenReleaseTimers.set(id, timer);
+    }
+  }
+
+  clearPlazaSirens() {
+    for (const timer of this.plazaSirenReleaseTimers.values()) window.clearTimeout(timer);
+    this.plazaSirenReleaseTimers.clear();
+    this.lastPlazaSirenActive.clear();
+    for (const id of [...this.plazaSirens.keys()]) this.releasePlazaSiren(id);
+  }
+
+  /**
+   * Rising/falling wail: sine fundamental + soft fifth, LFO pitch glide.
+   * Less harsh than a classic motor siren — warmer filter, no saw grind.
+   */
+  private ensurePlazaSiren(id: string) {
+    const existing = this.plazaSirens.get(id);
+    if (existing) return existing;
+    if (!this.ctx || !this.master) {
+      throw new Error('Audio context required for plaza siren');
+    }
+    const ctx = this.ctx;
+    const gain = ctx.createGain();
+    gain.gain.value = 0.0001;
+    gain.connect(this.master);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 1600;
+    filter.Q.value = 0.85;
+    filter.connect(gain);
+
+    // Center ~360 Hz, wails ±110 Hz — mournful but sweet
+    const oscA = ctx.createOscillator();
+    oscA.type = 'sine';
+    oscA.frequency.value = 360;
+
+    const oscB = ctx.createOscillator();
+    oscB.type = 'triangle';
+    oscB.frequency.value = 540; // perfect fifth — sweeter stack
+
+    const mixA = ctx.createGain();
+    mixA.gain.value = 0.7;
+    const mixB = ctx.createGain();
+    mixB.gain.value = 0.22;
+    oscA.connect(mixA);
+    oscB.connect(mixB);
+    mixA.connect(filter);
+    mixB.connect(filter);
+
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 0.2; // ~5s full rise/fall cycle
+    const lfoDepth = ctx.createGain();
+    lfoDepth.gain.value = 110;
+    lfo.connect(lfoDepth);
+    lfoDepth.connect(oscA.frequency);
+    // Keep the fifth locked to the fundamental glide
+    const lfoDepthB = ctx.createGain();
+    lfoDepthB.gain.value = 165;
+    lfo.connect(lfoDepthB);
+    lfoDepthB.connect(oscB.frequency);
+
+    oscA.start();
+    oscB.start();
+    lfo.start();
+
+    const voice = { gain, oscA, oscB, lfo, lfoDepth, filter };
+    this.plazaSirens.set(id, voice);
+    return voice;
+  }
+
+  private releasePlazaSiren(id: string) {
+    const voice = this.plazaSirens.get(id);
+    if (!voice) return;
+    this.plazaSirens.delete(id);
+    this.safeStopNode(voice.oscA);
+    this.safeStopNode(voice.oscB);
+    this.safeStopNode(voice.lfo);
+    try {
+      voice.gain.disconnect();
+    } catch {
+      /* ignore */
+    }
+    try {
+      voice.filter.disconnect();
+    } catch {
+      /* ignore */
+    }
   }
 
   /**
