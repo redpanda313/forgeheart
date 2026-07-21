@@ -3691,6 +3691,7 @@ export class ForgeHeartGame {
     for (const bl of this.blasts) this.scene.remove(bl);
     this.robots = [];
     this.cityRogueLeash.clear();
+    this.audio.clearPlazaSirens();
     this.husks = [];
     this.bolts = [];
     this.blasts = [];
@@ -4232,6 +4233,8 @@ export class ForgeHeartGame {
       this.updateBlasts(dt);
       this.syncCityRogueInteractables();
     }
+    // Proximity plaza sirens keep sounding even if a UI panel is open
+    this.syncCityRogueSirens();
 
     this.clearCityMapRouteIfArrived();
     this.cityHudAcc += dt;
@@ -7816,6 +7819,7 @@ export class ForgeHeartGame {
 
     // Register plaza work robots (NPC-owned + player crew) — slight rogue chance, no schedule
     this.registerCityRobots();
+    this.audio.clearPlazaSirens();
     // Empire combat uses arc wrench
     if (!this.wrenchUnlocked) this.wrenchUnlocked = true;
 
@@ -9186,6 +9190,36 @@ export class ForgeHeartGame {
     const owner = n.owner?.name ?? 'someone';
     const job = this.cityJobLabel(n);
     this.toast(`${r.displayName} went rogue — left ${owner}'s ${job}!`, 2.8);
+    this.syncCityRogueSirens();
+  }
+
+  /**
+   * Soft rising/falling plaza siren while any robot on that island is rogue.
+   * Volume falls off with distance; silence when the plaza is clear again.
+   */
+  private syncCityRogueSirens() {
+    if (!this.megaCityActive || !this.skyCity) {
+      this.audio.clearPlazaSirens();
+      return;
+    }
+    const byPlaza = new Map<string, { x: number; z: number; radius: number }>();
+    for (const n of this.skyCity.npcs) {
+      if (!n.robot || !n.rogue) continue;
+      if (n.robot.phase === 'husk' || !n.mesh.visible) continue;
+      const id = n.homeDistrictId ?? `plaza_${n.plazaCx}_${n.plazaCz}`;
+      if (!byPlaza.has(id)) {
+        byPlaza.set(id, { x: n.plazaCx, z: n.plazaCz, radius: n.plazaRadius });
+      }
+    }
+    const alarms = [...byPlaza.entries()].map(([id, p]) => ({
+      id,
+      x: p.x,
+      z: p.z,
+      // Hear from approaching skyways / neighboring pads
+      hearRadius: p.radius * 1.85 + 55,
+    }));
+    const focus = this.board?.mounted ? this.board.position : this.camera.position;
+    this.audio.syncPlazaRogueSirens(alarms, focus.x, focus.z);
   }
 
   /** Hand fix: restore rogue to its owner's job (not a player combat ally). */
@@ -9214,6 +9248,7 @@ export class ForgeHeartGame {
     writeSlot(this.activeSlot, this.buildSaveData());
     this.syncEconomyHud();
     this.syncCityRogueInteractables();
+    this.syncCityRogueSirens();
   }
 
   /** E harvest: scrap a downed rogue for parts (removes player crew entry if yours). */
@@ -9246,6 +9281,7 @@ export class ForgeHeartGame {
     this.toast(result.msg, 4);
     writeSlot(this.activeSlot, this.buildSaveData());
     this.syncEconomyHud();
+    this.syncCityRogueSirens();
   }
 
   private wanderCityBot(
@@ -9655,6 +9691,11 @@ export class ForgeHeartGame {
 
     // Detonation destroys the frame as husk with reduced scrap (no player scrap)
     r.setPhase('husk');
+    const leash = this.cityRogueLeash.get(r);
+    if (leash?.npc) {
+      leash.npc.rogue = false;
+      leash.npc.mesh.visible = false;
+    }
     this.cityRogueLeash.delete(r);
     const mats = this.skyCity?.mats ?? this.level.mats;
     const husk = createHusk(mats, pos);
@@ -9662,6 +9703,7 @@ export class ForgeHeartGame {
     this.husks.push(husk);
     this.scene.remove(r.mesh);
     this.flash('Frame detonated');
+    if (this.megaCityActive) this.syncCityRogueSirens();
   }
 
   private updateBlasts(dt: number) {
