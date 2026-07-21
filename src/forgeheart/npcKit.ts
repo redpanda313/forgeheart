@@ -238,18 +238,38 @@ export function tickNpcAnim(
   moving: boolean,
   phase: number,
 ) {
-  const swing = moving ? Math.sin(t * 9 + phase * 6) : Math.sin(t * 1.5 + phase) * 0.15;
-  const amp = moving ? 0.55 : 0.08;
-  parts.legL.rotation.x = swing * amp;
-  parts.legR.rotation.x = -swing * amp;
-  parts.armL.rotation.x = -swing * amp * 0.85;
-  parts.armR.rotation.x = swing * amp * 0.85;
-  parts.body.position.y = 1.15 + (moving ? Math.abs(Math.sin(t * 9 + phase)) * 0.04 : 0);
-  if (parts.board) {
-    parts.board.rotation.z = Math.sin(t * 2.5 + phase) * 0.1;
-    parts.board.rotation.x = moving ? -0.1 : Math.sin(t * 1.2 + phase) * 0.06;
+  // Consistent walk cycle — cadence scales slightly by role
+  const cadence = role === 'flyer' ? 11 : role === 'girl' ? 8.5 : 9.2;
+  const walk = Math.sin(t * cadence + phase * 6);
+  const idle = Math.sin(t * 1.7 + phase);
+  const breath = Math.sin(t * 2.2 + phase * 3) * 0.012;
+
+  if (moving) {
+    const amp = role === 'flyer' ? 0.28 : 0.62;
+    parts.legL.rotation.x = walk * amp;
+    parts.legR.rotation.x = -walk * amp;
+    parts.armL.rotation.x = -walk * amp * 0.9;
+    parts.armR.rotation.x = walk * amp * 0.9;
+    parts.body.position.y = 1.15 + Math.abs(walk) * 0.055 + breath;
+    parts.root.position.y += 0; // keep caller-owned height
+  } else {
+    parts.legL.rotation.x = idle * 0.06;
+    parts.legR.rotation.x = -idle * 0.05;
+    parts.armL.rotation.x = idle * 0.08;
+    parts.armR.rotation.x = -idle * 0.07;
+    parts.body.position.y = 1.15 + breath;
   }
+
+  if (parts.board) {
+    parts.board.rotation.z = Math.sin(t * 2.8 + phase) * (moving ? 0.14 : 0.08);
+    parts.board.rotation.x = moving ? -0.14 : Math.sin(t * 1.3 + phase) * 0.05;
+    parts.board.position.y = 0.14 + (moving ? Math.abs(walk) * 0.02 : 0);
+  }
+
   if (role === 'girl' && !moving) {
-    parts.root.rotation.y += Math.sin(t * 1.1 + phase) * 0.0015;
+    parts.root.rotation.y += Math.sin(t * 1.1 + phase) * 0.002;
+  }
+  if (role === 'vendor' && !moving) {
+    parts.armR.rotation.x = -0.35 + idle * 0.1;
   }
 }
