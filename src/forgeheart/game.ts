@@ -808,6 +808,10 @@ export class ForgeHeartGame {
             // Ignore clicks on the wizard panel
             const t = e.target as HTMLElement | null;
             if (t?.closest?.('#stall-wizard')) return;
+            const sb = this.siteBuilder;
+            // Only confirm when aiming a site box or a prop — not while browsing menus
+            if (sb.step === 'structure' || sb.step === 'finalize') return;
+            if (sb.step === 'props' && !sb.activePropId) return;
             this.siteBuilderConfirmAction();
             return;
           }
@@ -1305,6 +1309,14 @@ export class ForgeHeartGame {
     // Site builder (stall / factory / bay wing)
     if (this.siteBuilder) {
       if (code === 'Escape') {
+        // Esc while aiming a prop → back to catalog (don't cancel whole build)
+        if (this.siteBuilder.step === 'props' && this.siteBuilder.activePropId) {
+          this.siteBuilder.activePropId = null;
+          this.rebuildSiteGhost();
+          this.refreshSiteBuilderUi();
+          this.toast('Prop tool cleared — pick another or Done placing.', 2);
+          return true;
+        }
         this.cancelSiteBuilder();
         return true;
       }
@@ -1323,7 +1335,6 @@ export class ForgeHeartGame {
         return true;
       }
       if (code === 'KeyR' && this.siteBuilder.step === 'site') {
-        // Allow re-moving site while editing
         this.siteBuilder.sitePlaced = false;
         this.rebuildSiteGhost();
         this.refreshSiteBuilderUi();
@@ -1743,6 +1754,28 @@ export class ForgeHeartGame {
       this.camera.position.add(wish);
     }
     this.makerYaw = this.lookYaw();
+    // Site builder owns the ghost — hide default Game Maker prefab preview
+    if (this.siteBuilder) {
+      this.cityEditor.updateGhost(null, 0);
+      this.tickSiteBuilderGhost();
+      const sb = this.siteBuilder;
+      if (this.locEl) {
+        this.locEl.textContent =
+          sb.step === 'site'
+            ? 'Site builder · aim selection box'
+            : sb.step === 'props' && sb.activePropId
+              ? `Aiming · ${sb.activePropId.replace(/_/g, ' ')}`
+              : `Site builder · ${sb.step}`;
+      }
+      this.weaponEl.textContent =
+        sb.step === 'props' && sb.activePropId
+          ? 'AIM PROP'
+          : sb.step === 'site'
+            ? 'SITE'
+            : 'BUILD';
+      this.animateEditorFx(dt);
+      return;
+    }
     // City section ghost follows look on active layer
     if (this.makerTool === 'city' && this.cityGhost) {
       const p = this.rayPlacePoint();
@@ -4125,7 +4158,6 @@ export class ForgeHeartGame {
       perfStats.streamTotal = this.cityStreamer?.totalCount ?? 0;
     }
     this.skyCity.animate(this.cityTime, dt);
-    this.tickSiteBuilderGhost();
     perfStats.npcsActive = this.skyCity.lastNpcActive;
     perfStats.npcsTotal = this.skyCity.npcs.length;
 
@@ -4549,6 +4581,10 @@ export class ForgeHeartGame {
     this.siteBuilder.step = 'site';
     if (!opts.redesign) this.siteBuilder.sitePlaced = false;
     this.enterGameMaker();
+    // Suppress default Game Maker prefab ghost
+    this.makerTool = 'select';
+    this.cityEditor?.updateGhost(null, 0);
+    this.clearCityGhost();
     if (this.megaCityActive) {
       this.camera.position.set(dist.x, Math.max(this.camera.position.y, 16), dist.z + dist.size * 0.15);
     }
@@ -4558,12 +4594,12 @@ export class ForgeHeartGame {
       opts.kind === 'stall' ? 'shop' : opts.kind === 'bay_wing' ? 'bay factory' : 'factory';
     this.toast(
       opts.redesign
-        ? `Edit ${label} — move the selection box, then update structure & props. Only upgrades cost more.`
-        : `Place ${label} — large selection box on the plaza. Enter or click to set the site.`,
+        ? `Edit ${label} — look to move the selection box, Enter locks it. Only upgrades cost more.`
+        : `Place ${label} — look to aim the empty selection box, Enter/click to lock the site.`,
       5,
     );
     this.setHelp(
-      'SITE · fly selection box · Enter/click place · [/] rotate · Esc cancel',
+      'SITE · look aims box · WASD fly · Enter/click lock · [/] rotate · Esc cancel',
     );
   }
 
@@ -4615,6 +4651,53 @@ export class ForgeHeartGame {
     return this.inv.brass >= this.siteCharge() + extraPropCost;
   }
 
+  private siteLookPoint(): THREE.Vector3 {
+    this.makerRay.setFromCamera(this.makerNd, this.camera);
+    const origin = this.makerRay.ray.origin;
+    const dir = this.makerRay.ray.direction;
+    const planeY = 0.08;
+    if (Math.abs(dir.y) > 1e-4) {
+      const t = (planeY - origin.y) / dir.y;
+      if (t > 0.25 && t < 450) {
+        const p = origin.clone().addScaledVector(dir, t);
+        p.y = planeY;
+        return p;
+      }
+    }
+    const d = dir.clone();
+    d.y = 0;
+    if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
+    else d.normalize();
+    return new THREE.Vector3(
+      this.camera.position.x + d.x * 14,
+      planeY,
+      this.camera.position.z + d.z * 14,
+    );
+  }
+
+  private worldToSiteLocal(wx: number, wz: number): { lx: number; lz: number } {
+    const s = this.siteBuilder!;
+    const dx = wx - s.plotX;
+    const dz = wz - s.plotZ;
+    const cos = Math.cos(-s.yaw);
+    const sin = Math.sin(-s.yaw);
+    return { lx: dx * cos - dz * sin, lz: dx * sin + dz * cos };
+  }
+
+  /** Lock look when aiming site/prop; unlock for catalog / structure picks */
+  private syncSiteBuilderPointer() {
+    const s = this.siteBuilder;
+    if (!s) return;
+    const aiming =
+      (s.step === 'site' && !s.sitePlaced) || (s.step === 'props' && !!s.activePropId);
+    try {
+      if (aiming) this.controls.lock();
+      else this.controls.unlock();
+    } catch {
+      /* ignore */
+    }
+  }
+
   private rebuildSiteGhost() {
     const s = this.siteBuilder;
     if (!s || !this.skyCity) return;
@@ -4627,11 +4710,11 @@ export class ForgeHeartGame {
       this.sitePropGhost = null;
     }
 
+    // Pure selection box while choosing site location (no building preview)
     if (s.step === 'site' && !s.sitePlaced) {
       const box = makeSelectionBox(s.kind === 'stall' ? 12 : 16);
-      const x = this.camera.position.x;
-      const z = this.camera.position.z;
-      box.position.set(s.sitePlaced ? s.plotX : x, 0.05, s.sitePlaced ? s.plotZ : z);
+      const look = this.siteLookPoint();
+      box.position.set(look.x, 0.05, look.z);
       box.rotation.y = s.yaw;
       this.scene.add(box);
       this.siteGhost = box;
@@ -4661,22 +4744,20 @@ export class ForgeHeartGame {
         }
       }
     });
-    // Selection outline still visible while editing location
-    if (s.step === 'site') {
-      const box = makeSelectionBox(s.kind === 'stall' ? 12 : 16);
-      box.position.set(0, 0, 0);
-      root.add(box);
-    }
     root.position.set(s.plotX, 0, s.plotZ);
     root.rotation.y = s.yaw;
     this.scene.add(root);
     this.siteGhost = root;
 
+    // Aiming a decoration — floating ghost follows look ray
     if (s.step === 'props' && s.activePropId) {
       const pg =
         s.kind === 'stall'
           ? makeShopPropGhost(s.activePropId, this.skyCity.mats)
           : makeFactoryPropGhost(s.activePropId, this.skyCity.mats);
+      const look = this.siteLookPoint();
+      pg.position.copy(look);
+      pg.rotation.y = s.yaw;
       this.scene.add(pg);
       this.sitePropGhost = pg;
     }
@@ -4685,11 +4766,14 @@ export class ForgeHeartGame {
   private tickSiteBuilderGhost() {
     const s = this.siteBuilder;
     if (!s) return;
+    const look = this.siteLookPoint();
+
     if (s.step === 'site' && !s.sitePlaced && this.siteGhost) {
-      this.siteGhost.position.x = this.camera.position.x;
-      this.siteGhost.position.z = this.camera.position.z;
+      this.siteGhost.position.x = look.x;
+      this.siteGhost.position.z = look.z;
+      this.siteGhost.position.y = 0.05;
       this.siteGhost.rotation.y = s.yaw;
-      const ok = isValidStallPlot(s.districtId, this.siteGhost.position.x, this.siteGhost.position.z);
+      const ok = isValidStallPlot(s.districtId, look.x, look.z);
       this.siteGhost.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh && m.material && !Array.isArray(m.material)) {
@@ -4703,24 +4787,24 @@ export class ForgeHeartGame {
         }
       });
     }
+
     if (s.step === 'props' && s.activePropId && this.sitePropGhost) {
-      // Place relative to site from camera offset
-      const lx = this.camera.position.x - s.plotX;
-      const lz = this.camera.position.z - s.plotZ;
-      const cos = Math.cos(-s.yaw);
-      const sin = Math.sin(-s.yaw);
-      const localX = lx * cos - lz * sin;
-      const localZ = lx * sin + lz * cos;
-      const clampedX = Math.max(-7, Math.min(7, localX));
-      const clampedZ = Math.max(-6, Math.min(6, localZ));
-      const wx = s.plotX + clampedX * Math.cos(s.yaw) - clampedZ * Math.sin(s.yaw);
-      const wz = s.plotZ + clampedX * Math.sin(s.yaw) + clampedZ * Math.cos(s.yaw);
-      this.sitePropGhost.position.set(wx, 0, wz);
+      this.sitePropGhost.position.x = look.x;
+      this.sitePropGhost.position.z = look.z;
+      this.sitePropGhost.position.y = 0.05;
       this.sitePropGhost.rotation.y = s.yaw;
-      (this.sitePropGhost as THREE.Object3D & { userData: { lx?: number; lz?: number } }).userData.lx =
-        clampedX;
-      (this.sitePropGhost as THREE.Object3D & { userData: { lx?: number; lz?: number } }).userData.lz =
-        clampedZ;
+      const local = this.worldToSiteLocal(look.x, look.z);
+      this.sitePropGhost.userData.lx = local.lx;
+      this.sitePropGhost.userData.lz = local.lz;
+      // Tint red if too far from site footprint
+      const far = Math.hypot(local.lx, local.lz) > 9;
+      this.sitePropGhost.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh && m.material && !Array.isArray(m.material)) {
+          const mat = m.material as THREE.MeshStandardMaterial;
+          if (mat.opacity !== undefined) mat.opacity = far ? 0.35 : 0.7;
+        }
+      });
     }
   }
 
@@ -4728,38 +4812,67 @@ export class ForgeHeartGame {
   private siteBuilderConfirmAction() {
     const s = this.siteBuilder;
     if (!s) return;
+
     if (s.step === 'site') {
-      const px = !s.sitePlaced ? this.camera.position.x : s.plotX;
-      const pz = !s.sitePlaced ? this.camera.position.z : s.plotZ;
+      // Always take the selection box / look point — not camera feet
+      const look =
+        !s.sitePlaced && this.siteGhost
+          ? this.siteGhost.position.clone()
+          : this.siteLookPoint();
+      const px = look.x;
+      const pz = look.z;
       if (!isValidStallPlot(s.districtId, px, pz)) {
         this.toast('Site must be on the plaza or within NPC reach.', 3);
         return;
       }
       s.plotX = px;
       s.plotZ = pz;
-      s.yaw = this.camera.rotation.y;
+      s.yaw = this.lookYaw();
       s.sitePlaced = true;
       s.step = 'structure';
       this.rebuildSiteGhost();
       this.refreshSiteBuilderUi();
-      this.setHelp('STRUCTURE · pick shell · Enter next · Esc cancel');
+      this.setHelp('STRUCTURE · pick shell in panel · Next when ready');
       return;
     }
+
     if (s.step === 'props' && s.activePropId) {
       const cost = s.kind === 'stall' ? shopPropCost(s.activePropId) : factoryPropCost(s.activePropId);
       if (!this.canAffordSiteCharge(cost)) {
         this.toast(`Cannot afford this prop (${cost}b).`, 2.5);
         return;
       }
-      const ud = this.sitePropGhost?.userData as { lx?: number; lz?: number } | undefined;
-      const lx = ud?.lx ?? 2;
-      const lz = ud?.lz ?? 2;
+      // Prefer live ghost look position
+      let lx: number;
+      let lz: number;
+      if (this.sitePropGhost) {
+        const local = this.worldToSiteLocal(
+          this.sitePropGhost.position.x,
+          this.sitePropGhost.position.z,
+        );
+        lx = local.lx;
+        lz = local.lz;
+      } else {
+        const look = this.siteLookPoint();
+        const local = this.worldToSiteLocal(look.x, look.z);
+        lx = local.lx;
+        lz = local.lz;
+      }
+      if (Math.hypot(lx, lz) > 10) {
+        this.toast('Aim closer to your site footprint.', 2.5);
+        return;
+      }
+      const placedName = s.activePropId.replace(/_/g, ' ');
       s.props.push({ id: s.activePropId, lx, lz, yaw: 0 });
+      // Return to catalog so you can pick the next item (or Done)
+      s.activePropId = null;
       this.rebuildSiteGhost();
       this.refreshSiteBuilderUi();
-      this.toast(`Placed ${s.activePropId.replace('_', ' ')} · Backspace undoes`, 2);
+      this.toast(`Placed ${placedName} · pick another or Done placing`, 2.5);
+      this.setHelp('PROPS · pick from panel · look+Enter to place · Esc clears tool');
       return;
     }
+
     this.siteBuilderNext();
   }
 
@@ -4793,7 +4906,13 @@ export class ForgeHeartGame {
       }
       s.step = 'props';
       s.activePropId = null;
+      this.setHelp('PROPS · pick from panel to aim · Enter places · Done when finished');
     } else if (s.step === 'props') {
+      // If still aiming, place that prop first
+      if (s.activePropId) {
+        this.siteBuilderConfirmAction();
+        return;
+      }
       s.step = 'finalize';
       s.activePropId = null;
     } else if (s.step === 'finalize') {
@@ -4838,9 +4957,13 @@ export class ForgeHeartGame {
           : s.step === 'site'
             ? 'Place site'
             : s.step === 'props'
-              ? 'Done placing'
+              ? s.activePropId
+                ? 'Place aimed prop'
+                : 'Done placing'
               : 'Next';
       nextBtn.disabled = s.step === 'finalize' && !this.canAffordSiteCharge();
+      // When aiming, Next places; when browsing props, Next finishes prop step
+      nextBtn.onclick = null;
     }
 
     if (s.step === 'site') {
@@ -4928,40 +5051,74 @@ export class ForgeHeartGame {
         }
       }
     } else if (s.step === 'props') {
-      if (sub) {
-        sub.textContent =
-          'Select a prop, then Enter/click to place it near the site. Place as many as you can afford. Backspace removes last.';
-      }
-      const catalog = s.kind === 'stall' ? SHOP_PROP_CATALOG : FACTORY_PROP_CATALOG;
-      for (const p of catalog) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'stall-wizard-opt' + (s.activePropId === p.id ? ' selected' : '');
-        const ok = this.canAffordSiteCharge(p.cost);
-        if (!ok) {
-          btn.disabled = true;
-          btn.classList.add('unaffordable');
+      if (s.activePropId) {
+        if (sub) {
+          sub.textContent =
+            'AIMING — look to position the ghost, Enter/click places it, then you return to the list. Esc cancels this tool.';
         }
-        const count = s.props.filter((x) => x.id === p.id).length;
-        btn.innerHTML = `<strong>${p.name} · ${p.cost}b${count ? ` · ×${count}` : ''}</strong><span class="hint">${p.blurb}${ok ? '' : ' · cannot afford'}</span>`;
-        btn.addEventListener('click', () => {
-          if (!ok) return;
-          s.activePropId = p.id;
+        const hint = document.createElement('p');
+        hint.className = 'stall-wizard-hint';
+        hint.textContent = `Placing: ${s.activePropId.replace(/_/g, ' ')} · WASD fly · mouse look`;
+        body.appendChild(hint);
+        const cancelAim = document.createElement('button');
+        cancelAim.type = 'button';
+        cancelAim.className = 'stall-wizard-opt';
+        cancelAim.innerHTML = '<strong>Cancel aim</strong><span class="hint">Back to prop list (Esc)</span>';
+        cancelAim.addEventListener('click', () => {
+          s.activePropId = null;
           this.rebuildSiteGhost();
           this.refreshSiteBuilderUi();
         });
-        body.appendChild(btn);
+        body.appendChild(cancelAim);
+        const placeNow = document.createElement('button');
+        placeNow.type = 'button';
+        placeNow.className = 'stall-wizard-opt selected';
+        placeNow.innerHTML =
+          '<strong>Place here</strong><span class="hint">Same as Enter — uses look aim</span>';
+        placeNow.addEventListener('click', () => this.siteBuilderConfirmAction());
+        body.appendChild(placeNow);
+      } else {
+        if (sub) {
+          sub.textContent =
+            'Pick a decoration — that starts aim mode (look to position). After placing, pick again or Done placing.';
+        }
+        const catalog = s.kind === 'stall' ? SHOP_PROP_CATALOG : FACTORY_PROP_CATALOG;
+        for (const p of catalog) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'stall-wizard-opt';
+          const ok = this.canAffordSiteCharge(p.cost);
+          if (!ok) {
+            btn.disabled = true;
+            btn.classList.add('unaffordable');
+          }
+          const count = s.props.filter((x) => x.id === p.id).length;
+          btn.innerHTML = `<strong>${p.name} · ${p.cost}b${count ? ` · ×${count}` : ''}</strong><span class="hint">${p.blurb}${ok ? ' · click to aim' : ' · cannot afford'}</span>`;
+          btn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (!ok) return;
+            s.activePropId = p.id;
+            this.rebuildSiteGhost();
+            this.refreshSiteBuilderUi();
+            this.toast(`Aim ${p.name} — look to move · Enter places · Esc cancels tool`, 3);
+            this.setHelp('AIM PROP · look positions ghost · Enter place · Esc back to list');
+          });
+          body.appendChild(btn);
+        }
       }
-      const clear = document.createElement('button');
-      clear.type = 'button';
-      clear.className = 'stall-wizard-opt';
-      clear.textContent = 'Clear prop tool (keep placed)';
-      clear.addEventListener('click', () => {
-        s.activePropId = null;
-        this.rebuildSiteGhost();
-        this.refreshSiteBuilderUi();
-      });
-      body.appendChild(clear);
+      if (s.props.length) {
+        const undo = document.createElement('button');
+        undo.type = 'button';
+        undo.className = 'stall-wizard-opt';
+        undo.innerHTML = `<strong>Undo last prop</strong><span class="hint">${s.props.length} placed · Backspace</span>`;
+        undo.addEventListener('click', () => {
+          s.props.pop();
+          this.rebuildSiteGhost();
+          this.refreshSiteBuilderUi();
+        });
+        body.appendChild(undo);
+      }
     } else {
       if (sub) sub.textContent = 'Confirm to pay any upgrade delta. You can edit again later.';
       const p = document.createElement('p');
@@ -4974,12 +5131,7 @@ export class ForgeHeartGame {
       body.appendChild(p);
     }
 
-    try {
-      if (s.step === 'site' && !s.sitePlaced) this.controls.lock();
-      else this.controls.unlock();
-    } catch {
-      /* ignore */
-    }
+    this.syncSiteBuilderPointer();
   }
 
   private confirmSiteBuilder() {
