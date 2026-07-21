@@ -99,6 +99,14 @@ export interface CityNpc {
   insideHome?: boolean;
   romance?: boolean;
   giftLines?: string[];
+  /** Plaza leash — keep walkers / rogues on their island deck */
+  plazaCx: number;
+  plazaCz: number;
+  plazaRadius: number;
+  homeDistrictId?: string;
+  /** Flyer skyway travel */
+  skyRoute?: SkyRoute | null;
+  routeIndex?: number;
 }
 
 export interface SkyRoute {
@@ -282,6 +290,70 @@ function pathDist(path: THREE.Vector3[]): number[] {
     d.push(acc);
   }
   return d;
+}
+
+/** Random point on a plaza deck (stays well inside the floor pad). */
+function plazaPoint(d: { x: number; z: number; size: number }, spread = 0.42): THREE.Vector3 {
+  const r = d.size * spread;
+  const a = Math.random() * Math.PI * 2;
+  const rad = Math.sqrt(Math.random()) * r;
+  return new THREE.Vector3(d.x + Math.cos(a) * rad, 0, d.z + Math.sin(a) * rad);
+}
+
+function clampToPlaza(
+  pos: THREE.Vector3,
+  cx: number,
+  cz: number,
+  plazaSize: number,
+  y = 0,
+) {
+  const maxR = plazaSize * 0.46;
+  const dx = pos.x - cx;
+  const dz = pos.z - cz;
+  const dist = Math.hypot(dx, dz);
+  if (dist > maxR && dist > 1e-6) {
+    pos.x = cx + (dx / dist) * maxR;
+    pos.z = cz + (dz / dist) * maxR;
+  }
+  pos.y = y;
+}
+
+/** Pick sky route whose ends are near from→to district centers. */
+function pickSkyRoute(
+  routes: SkyRoute[],
+  from: THREE.Vector3,
+  to: THREE.Vector3,
+): SkyRoute | null {
+  let best: SkyRoute | null = null;
+  let bestScore = Infinity;
+  for (const r of routes) {
+    if (r.path.length < 2) continue;
+    const a = r.path[0]!;
+    const b = r.path[r.path.length - 1]!;
+    const forward =
+      a.distanceToSquared(from) + b.distanceToSquared(to);
+    const reverse =
+      b.distanceToSquared(from) + a.distanceToSquared(to);
+    const score = Math.min(forward, reverse);
+    if (score < bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  return bestScore < 180 * 180 * 2 ? best : null;
+}
+
+function nearestRouteIndex(path: THREE.Vector3[], pos: THREE.Vector3): number {
+  let bestI = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < path.length; i++) {
+    const d = path[i]!.distanceToSquared(pos);
+    if (d < bestD) {
+      bestD = d;
+      bestI = i;
+    }
+  }
+  return bestI;
 }
 
 const NPC_PLANE_GEO = (() => {
@@ -1551,29 +1623,43 @@ export function buildSkyCity(): SkyCityBuilt {
     }
   }
 
-  // Ambient NPCs — dense lived-in city
-  const homePts = CITY_DISTRICTS.map((d) => new THREE.Vector3(d.x, 0, d.z));
-  const workPts = CITY_DISTRICTS.filter((d) => d.role === 'industrial' || d.role === 'market').map(
-    (d) => new THREE.Vector3(d.x, 0, d.z),
-  );
-  const marketPts = CITY_DISTRICTS.filter(
-    (d) => d.role === 'market' || d.role === 'premium' || d.role === 'mixed',
-  ).map((d) => new THREE.Vector3(d.x, 0, d.z));
-
+  // Ambient NPCs — dense lived-in city (each walker stays on one plaza)
   // Residents + flyers
   for (let i = 0; i < 48; i++) {
-    const home = homePts[i % homePts.length]!.clone();
-    home.x += (Math.random() - 0.5) * 20;
-    home.z += (Math.random() - 0.5) * 20;
-    const work = workPts[i % workPts.length]!.clone();
-    const market = marketPts[i % marketPts.length]!.clone();
+    const homeD = CITY_DISTRICTS[i % CITY_DISTRICTS.length]!;
+    const home = plazaPoint(homeD, 0.4);
+    // Walkers patrol only on their home plaza; flyers may leave via skyways
     const flyer = i % 4 === 0;
+    const workD = flyer
+      ? CITY_DISTRICTS.filter((d) => d.role === 'industrial' || d.role === 'market')[
+          i % Math.max(1, CITY_DISTRICTS.filter((d) => d.role === 'industrial' || d.role === 'market').length)
+        ] ?? homeD
+      : homeD;
+    const marketD = flyer
+      ? CITY_DISTRICTS.filter(
+          (d) => d.role === 'market' || d.role === 'premium' || d.role === 'mixed',
+        )[
+          i %
+            Math.max(
+              1,
+              CITY_DISTRICTS.filter(
+                (d) => d.role === 'market' || d.role === 'premium' || d.role === 'mixed',
+              ).length,
+            )
+        ] ?? homeD
+      : homeD;
+    const work = flyer ? plazaPoint(workD, 0.35) : plazaPoint(homeD, 0.38);
+    const market = flyer ? plazaPoint(marketD, 0.35) : plazaPoint(homeD, 0.36);
     const parts = makeNpcMesh(flyer ? 'flyer' : 'resident', mats, false, i);
     parts.root.position.copy(home);
-    if (flyer) parts.root.position.y = 4 + Math.random() * 5;
+    if (flyer) parts.root.position.y = DECK_Y + 4.5 + Math.random() * 2;
     addMesh(parts.root);
     const homeInterior = home.clone();
     homeInterior.y = 1.6;
+    const route =
+      flyer && (workD.id !== homeD.id || marketD.id !== homeD.id)
+        ? pickSkyRoute(skyRoutes, home, work.distanceTo(home) > market.distanceTo(home) ? work : market)
+        : null;
     npcs.push({
       mesh: parts.root,
       parts,
@@ -1585,10 +1671,16 @@ export function buildSkyCity(): SkyCityBuilt {
       phase: Math.random(),
       speed: flyer ? 9 + Math.random() * 5 : 2.4 + Math.random() * 1.8,
       homeInterior,
+      plazaCx: homeD.x,
+      plazaCz: homeD.z,
+      plazaRadius: homeD.size,
+      homeDistrictId: homeD.id,
+      skyRoute: route,
+      routeIndex: route ? 0 : undefined,
     });
   }
 
-  // Romance-eligible girl NPCs (named)
+  // Romance-eligible girl NPCs (named) — stay on their plaza
   const girlNames = [
     { id: 'girl_lira', name: 'Lira Voss', lines: ['Oh— a maker? Careful, I might steal your afternoon.', 'Bring me blooms from the gardens… or charm me better.'] },
     { id: 'girl_mira', name: 'Mira Quinn', lines: ['Your board looks fast. Are you?', 'Silk and secrets — gift me either.'] },
@@ -1598,7 +1690,7 @@ export function buildSkyCity(): SkyCityBuilt {
   for (let i = 0; i < girlNames.length; i++) {
     const gdef = girlNames[i]!;
     const d = CITY_DISTRICTS[(i * 3 + 1) % CITY_DISTRICTS.length]!;
-    const home = new THREE.Vector3(d.x + 8 + i * 2, 0, d.z - 6);
+    const home = plazaPoint(d, 0.32);
     const parts = makeNpcMesh('girl', mats, false, i + 3);
     parts.root.position.copy(home);
     addMesh(parts.root);
@@ -1628,8 +1720,8 @@ export function buildSkyCity(): SkyCityBuilt {
       mesh: parts.root,
       parts,
       home,
-      work: workPts[i % workPts.length]!.clone(),
-      market: marketPts[i % marketPts.length]!.clone(),
+      work: plazaPoint(d, 0.34),
+      market: plazaPoint(d, 0.3),
       role: 'girl',
       visual: 'girl',
       phase: Math.random(),
@@ -1637,6 +1729,10 @@ export function buildSkyCity(): SkyCityBuilt {
       romance: true,
       giftLines: gdef.lines,
       homeInterior: new THREE.Vector3(home.x, 1.6, home.z - 1),
+      plazaCx: d.x,
+      plazaCz: d.z,
+      plazaRadius: d.size,
+      homeDistrictId: d.id,
     });
   }
 
@@ -1644,12 +1740,13 @@ export function buildSkyCity(): SkyCityBuilt {
   for (let i = 0; i < 22; i++) {
     const d = CITY_DISTRICTS[i % CITY_DISTRICTS.length]!;
     const rogue = i % 3 === 0;
-    const x = d.x + (Math.random() - 0.5) * d.size * 0.5;
-    const z = d.z + (Math.random() - 0.5) * d.size * 0.5;
-    const robot = new RobotUnit(mats, new THREE.Vector3(x, 0, z));
+    const spawn = plazaPoint(d, 0.4);
+    const robot = new RobotUnit(mats, spawn.clone());
     robot.displayName = rogue ? `Rogue-${i}` : `Frame-${i}`;
-    if (rogue) robot.setPhase('active');
-    else robot.setPhase('ally');
+    if (rogue) {
+      robot.setPhase('active');
+      robot.aggro = false;
+    } else robot.setPhase('ally');
     addMesh(robot.mesh);
     if (rogue) {
       const mark = new THREE.Mesh(
@@ -1660,7 +1757,7 @@ export function buildSkyCity(): SkyCityBuilt {
           emissiveIntensity: 0.6,
         }),
       );
-      mark.position.set(x, 1.3, z + 1.2);
+      mark.position.set(spawn.x, 1.3, spawn.z + 1.2);
       addMesh(mark);
       interactables.push({
         id: `rogue_${i}`,
@@ -1674,14 +1771,19 @@ export function buildSkyCity(): SkyCityBuilt {
     npcs.push({
       mesh: robot.mesh,
       robot,
-      home: new THREE.Vector3(x, 0, z),
-      work: workPts[i % workPts.length]!.clone(),
-      market: marketPts[i % marketPts.length]!.clone(),
+      home: spawn.clone(),
+      work: plazaPoint(d, 0.36),
+      market: plazaPoint(d, 0.34),
       role: rogue ? 'rogue' : 'robot_helper',
       visual: rogue ? 'rogue' : 'robot_helper',
       phase: Math.random(),
       speed: 2.2,
       rogue,
+      plazaCx: d.x,
+      plazaCz: d.z,
+      plazaRadius: d.size,
+      homeDistrictId: d.id,
+      id: rogue ? `rogue_${i}` : `frame_${i}`,
     });
   }
 
@@ -1767,6 +1869,7 @@ export function buildSkyCity(): SkyCityBuilt {
     }
 
     let active = 0;
+    const animT = cityTime * 48;
     for (const n of npcs) {
       const nx = n.mesh.position.x;
       const nz = n.mesh.position.z;
@@ -1784,16 +1887,32 @@ export function buildSkyCity(): SkyCityBuilt {
       }
       active++;
 
-      if (n.robot) {
-        if (n.role === 'rogue') {
-          n.mesh.position.y = 0.05 + Math.sin(cityTime * Math.PI * 2 * 4 + n.phase) * 0.05;
-          n.robot.tickAnim(dt, false, 'chase');
-        } else {
-          n.mesh.rotation.y += dt * 0.4;
-          n.robot.tickAnim(dt, false, 'ally');
-        }
+      // Rogues: combat AI driven by game.ts — skip ambient motion
+      if (n.robot && n.role === 'rogue') {
         continue;
       }
+
+      // Helper robots: gentle plaza patrol
+      if (n.robot) {
+        const t = (cityTime + n.phase * 0.15) % 1;
+        const target = t < 0.35 ? n.home : t < 0.7 ? n.work : n.market;
+        const pos = n.mesh.position;
+        const dx = target.x - pos.x;
+        const dz = target.z - pos.z;
+        const dlen = Math.hypot(dx, dz);
+        let moving = false;
+        if (dlen > 0.5) {
+          const step = Math.min(n.speed * 0.75 * dt, dlen);
+          pos.x += (dx / dlen) * step;
+          pos.z += (dz / dlen) * step;
+          n.mesh.rotation.y = Math.atan2(dx, dz);
+          moving = true;
+        }
+        clampToPlaza(pos, n.plazaCx, n.plazaCz, n.plazaRadius, 0);
+        n.robot.tickAnim(dt, moving, 'ally');
+        continue;
+      }
+
       if (!n.parts) continue;
       let target: THREE.Vector3;
       const t = (cityTime + n.phase * 0.15) % 1;
@@ -1805,16 +1924,70 @@ export function buildSkyCity(): SkyCityBuilt {
 
       let moving = false;
       if (n.role === 'flyer') {
-        scratchDest.copy(target);
-        scratchDest.y = 5 + Math.sin(cityTime * Math.PI * 2 + n.phase) * 2;
         const pos = n.mesh.position;
-        scratchDir.copy(scratchDest).sub(pos);
-        const dlen = scratchDir.length();
-        if (dlen > 0.5) {
-          scratchDir.multiplyScalar(1 / dlen);
-          pos.addScaledVector(scratchDir, Math.min(n.speed * dt, dlen));
-          n.mesh.rotation.y = Math.atan2(scratchDir.x, scratchDir.z);
-          moving = true;
+        const destDist = Math.hypot(target.x - pos.x, target.z - pos.z);
+        // Cross-island: follow skyway at route height
+        const needsRoute = destDist > n.plazaRadius * 0.55;
+        if (needsRoute) {
+          if (!n.skyRoute || (n.routeIndex ?? 0) >= (n.skyRoute.path.length - 1)) {
+            n.skyRoute = pickSkyRoute(skyRoutes, pos, target);
+            n.routeIndex = n.skyRoute ? nearestRouteIndex(n.skyRoute.path, pos) : 0;
+          }
+          const route = n.skyRoute;
+          if (route && route.path.length > 1) {
+            let idx = n.routeIndex ?? 0;
+            // Orient toward the end closer to target
+            const endA = route.path[0]!;
+            const endB = route.path[route.path.length - 1]!;
+            const goForward = endB.distanceToSquared(target) <= endA.distanceToSquared(target);
+            const nextIdx = goForward
+              ? Math.min(route.path.length - 1, idx + 1)
+              : Math.max(0, idx - 1);
+            const nxt = route.path[nextIdx]!;
+            scratchDest.copy(nxt);
+            // Ride slightly above the wind path
+            scratchDest.y = nxt.y + 1.1;
+            scratchDir.copy(scratchDest).sub(pos);
+            const dlen = scratchDir.length();
+            if (dlen > 0.35) {
+              scratchDir.multiplyScalar(1 / dlen);
+              pos.addScaledVector(scratchDir, Math.min(n.speed * dt, dlen));
+              n.mesh.rotation.y = Math.atan2(scratchDir.x, scratchDir.z);
+              moving = true;
+            }
+            if (pos.distanceTo(scratchDest) < 1.2) {
+              n.routeIndex = nextIdx;
+            }
+            // Arrived near destination plaza — drop local
+            if (Math.hypot(target.x - pos.x, target.z - pos.z) < n.plazaRadius * 0.35) {
+              n.skyRoute = null;
+            }
+          } else {
+            scratchDest.set(target.x, DECK_Y + 5 + Math.sin(animT + n.phase) * 1.2, target.z);
+            scratchDir.copy(scratchDest).sub(pos);
+            const dlen = scratchDir.length();
+            if (dlen > 0.5) {
+              scratchDir.multiplyScalar(1 / dlen);
+              pos.addScaledVector(scratchDir, Math.min(n.speed * dt, dlen));
+              n.mesh.rotation.y = Math.atan2(scratchDir.x, scratchDir.z);
+              moving = true;
+            }
+          }
+        } else {
+          n.skyRoute = null;
+          scratchDest.set(
+            target.x,
+            DECK_Y + 4.2 + Math.sin(cityTime * Math.PI * 2 + n.phase) * 1.4,
+            target.z,
+          );
+          scratchDir.copy(scratchDest).sub(pos);
+          const dlen = scratchDir.length();
+          if (dlen > 0.45) {
+            scratchDir.multiplyScalar(1 / dlen);
+            pos.addScaledVector(scratchDir, Math.min(n.speed * dt, dlen));
+            n.mesh.rotation.y = Math.atan2(scratchDir.x, scratchDir.z);
+            moving = true;
+          }
         }
         n.insideHome = false;
       } else {
@@ -1825,23 +1998,23 @@ export function buildSkyCity(): SkyCityBuilt {
           pos.x = n.homeInterior.x;
           pos.z = n.homeInterior.z;
           pos.y = 0;
-          n.mesh.visible = dist < 40; // visible inside if player nearby
+          n.mesh.visible = dist < 40;
         } else {
           n.insideHome = false;
           const dx = target.x - pos.x;
           const dz = target.z - pos.z;
           const dlen = Math.hypot(dx, dz);
-          if (dlen > 0.4) {
+          if (dlen > 0.35) {
             const step = Math.min(n.speed * dt, dlen);
             pos.x += (dx / dlen) * step;
             pos.z += (dz / dlen) * step;
-            pos.y = 0;
             n.mesh.rotation.y = Math.atan2(dx, dz);
             moving = true;
           }
+          clampToPlaza(pos, n.plazaCx, n.plazaCz, n.plazaRadius, 0);
         }
       }
-      tickNpcAnim(n.parts, n.visual, cityTime * 40, moving, n.phase);
+      tickNpcAnim(n.parts, n.visual, animT, moving, n.phase);
     }
     animState.npcActive = active;
   };
