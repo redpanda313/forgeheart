@@ -56,9 +56,12 @@ import { buildMarketHub, type MarketHubBuilt, type HubInteract } from './marketH
 import {
   buildSkyCity,
   syncBrokerFrameDisplays,
+  attachCityWorkRobot,
+  CITY_ROBOT_JOBS,
   type SkyCityBuilt,
   type CityInteract,
   type CityNpc,
+  type CityRobotJobId,
 } from './skyCity';
 import { SpatialColliderGrid } from './spatialGrid';
 import { CityStreamer } from './cityStreamer';
@@ -159,6 +162,7 @@ import {
   giftRomanceNpc,
   onMedallionHostLost,
   districtById,
+  CITY_DISTRICTS,
   type PlacementRecord,
   type StallLayout,
   storageUpgradeCost,
@@ -366,8 +370,13 @@ export class ForgeHeartGame {
   >();
   private static readonly CITY_ROGUE_AGGRO = 15;
   private static readonly CITY_ROGUE_LOSE = 22;
-  /** Helpers roll toward rogue over time */
-  private static readonly CITY_ROGUE_CHANCE_PER_SEC = 0.004;
+  /**
+   * Independent rare hazard per working robot (not a schedule).
+   * ~0.00012/s × 22 bots ≈ one city-wide rogue every ~6–8 minutes on average.
+   */
+  private static readonly CITY_ROGUE_CHANCE_PER_SEC = 0.00012;
+  /** After Hand-fix, this bot cannot roll rogue again for a while. */
+  private static readonly CITY_ROGUE_FIX_IMMUNE_SEC = 180;
   private cityTime = 0;
   private cityInteractPrompt: CityInteract | null = null;
   private neighborLineIdx = 0;
@@ -3196,6 +3205,8 @@ export class ForgeHeartGame {
   }
 
   private isPoweredAlly(r: RobotUnit): boolean {
+    // City work robots reuse ally visuals/phase but are not plasma-powered combat allies.
+    if (this.cityRogueLeash.has(r)) return false;
     return r.phase === 'ally' && r.mesh.visible && r.mesh.parent != null;
   }
 
@@ -4345,8 +4356,8 @@ export class ForgeHeartGame {
     let bestD = 3.5;
     for (const it of this.skyCity.interactables) {
       if (it.kind === 'workshop_chest' && !this.inv.cityWorkshopLeased) continue;
-      // Hide repaired rogues
-      if (it.kind === 'rogue_robot' && !it.mesh.visible) continue;
+      // Hide non-prompt city robots (markers only show when rogue/downed)
+      if (it.kind === 'city_robot' && !it.mesh.visible) continue;
       const d = this.camera.position.distanceTo(it.position);
       if (d < bestD && d <= it.radius + 0.5) {
         bestD = d;
@@ -4521,6 +4532,24 @@ export class ForgeHeartGame {
         this.brass = this.inv.brass;
         if (this.skyCity) syncBrokerFrameDisplays(this.skyCity, this.inv.brokerFrameStock);
         this.rebuildWorkerAgents();
+        if (this.megaCityActive && this.skyCity && r.worker) {
+          this.spawnPlayerCityRobots();
+          // Register any newly attached chassis into the leash/combat lists
+          for (const n of this.skyCity.npcs) {
+            if (!n.robot || n.workerId !== r.worker.id) continue;
+            if (this.cityRogueLeash.has(n.robot)) continue;
+            this.robots.push(n.robot);
+            this.cityRogueLeash.set(n.robot, {
+              cx: n.plazaCx,
+              cz: n.plazaCz,
+              radius: n.plazaRadius * 0.46,
+              homeX: n.home.x,
+              homeZ: n.home.z,
+              deckY: n.deckY,
+              npc: n,
+            });
+          }
+        }
         this.audio.playPickup();
         writeSlot(this.activeSlot, this.buildSaveData());
       }
@@ -4545,12 +4574,18 @@ export class ForgeHeartGame {
       this.syncCityStallVisuals();
       return true;
     }
-    if (it.kind === 'rogue_robot') {
+    if (it.kind === 'city_robot') {
       // E = harvest parts from a downed rogue. Hand (1) click fixes instead.
       const n = this.skyCity?.npcs.find((x) => x.id === it.id && x.robot) ?? null;
       const r = n?.robot ?? null;
-      if (!n || !r || r.phase === 'husk' || !n.rogue) {
-        this.toast(n?.rogue ? 'Frame already gone.' : 'Work frame — leave it to its rounds.', 2.5);
+      if (!n || !r || r.phase === 'husk') {
+        this.toast('That chassis is gone.', 2.5);
+        return true;
+      }
+      if (!n.rogue) {
+        const job = CITY_ROBOT_JOBS.find((j) => j.id === n.jobId)?.label ?? 'work';
+        const owner = n.owner?.name ?? 'someone';
+        this.toast(`${n.displayName ?? 'Frame'} · ${job} for ${owner}.`, 2.5);
         return true;
       }
       const downed = r.phase === 'disabled' || r.reprogramReady;
@@ -7779,7 +7814,7 @@ export class ForgeHeartGame {
     this.camera.position.copy(this.skyCity.apartmentSpawn);
     this.safePos.copy(this.skyCity.apartmentSpawn);
 
-    // Register plaza-bound city robots (wander + chance to go rogue)
+    // Register plaza work robots (NPC-owned + player crew) — slight rogue chance, no schedule
     this.registerCityRobots();
     // Empire combat uses arc wrench
     if (!this.wrenchUnlocked) this.wrenchUnlocked = true;
@@ -7801,7 +7836,7 @@ export class ForgeHeartGame {
     );
     this.flash(fromSave ? 'HOME — EMPIRE SKY CITY' : 'YOUR SKY APARTMENT');
     this.toast(
-      'Plaza bots wander · any may go rogue. Wrench scramble · Hand fix · E harvest. No airways for rogues.',
+      'Every robot has an owner and a job. Any may go rogue — rare. Wrench scramble · Hand fix · E harvest.',
       6.5,
     );
     window.setTimeout(() => {
@@ -8975,11 +9010,15 @@ export class ForgeHeartGame {
     }
   }
 
-  /** All plaza robots — wander on deck; helpers may go rogue; rogues attack nearby. */
+  /** All plaza work robots — owned, on a job; slight independent chance to go rogue. */
   private registerCityRobots() {
     this.robots = [];
     this.cityRogueLeash.clear();
     if (!this.skyCity) return;
+
+    // Attach visible player-owned robot crew onto city plazas
+    this.spawnPlayerCityRobots();
+
     for (const n of this.skyCity.npcs) {
       if (!n.robot) continue;
       if (n.robot.phase === 'husk') continue;
@@ -8991,6 +9030,8 @@ export class ForgeHeartGame {
         n.robot.aggro = false;
       } else {
         n.robot.setPhase('ally');
+        n.role = 'robot_helper';
+        n.visual = 'robot_helper';
       }
       this.robots.push(n.robot);
       this.cityRogueLeash.set(n.robot, {
@@ -9003,6 +9044,40 @@ export class ForgeHeartGame {
         npc: n,
       });
     }
+  }
+
+  /** Player crew robots appear as owned work chassis near industrial / workshop plazas. */
+  private spawnPlayerCityRobots() {
+    if (!this.skyCity) return;
+    const industrial =
+      CITY_DISTRICTS.find((d) => d.role === 'industrial') ?? CITY_DISTRICTS[0]!;
+    const crew = this.inv.workers.filter((w) => w.kind === 'robot');
+    let i = 0;
+    for (const w of crew) {
+      if (this.skyCity.npcs.some((n) => n.workerId === w.id)) continue;
+      const jobId = this.cityJobFromWorkerJob(w.job, i);
+      attachCityWorkRobot(this.skyCity, {
+        id: `playerbot_${w.id}`,
+        displayName: w.name,
+        district: industrial,
+        owner: { kind: 'player', id: 'player', name: 'You' },
+        jobId,
+        workerId: w.id,
+      });
+      i++;
+    }
+  }
+
+  private cityJobFromWorkerJob(job: string, i: number): CityRobotJobId {
+    if (job === 'repair') return 'repair';
+    if (job === 'sell_frame') return 'courier';
+    if (job === 'harvest') return 'haul';
+    if (job === 'craft_wire' || job === 'craft_frame') return 'yard';
+    return (['haul', 'yard', 'dock', 'courier'] as CityRobotJobId[])[i % 4]!;
+  }
+
+  private cityJobLabel(n: CityNpc): string {
+    return CITY_ROBOT_JOBS.find((j) => j.id === n.jobId)?.label ?? 'work';
   }
 
   private pinCityBotToDeck(
@@ -9062,11 +9137,11 @@ export class ForgeHeartGame {
       r.attackCd = Math.max(0, r.attackCd - dt);
       r.boltCd = Math.max(0, r.boltCd - dt);
       r.repairCd = Math.max(0, r.repairCd - dt);
+      if (n.rogueImmuneT && n.rogueImmuneT > 0) n.rogueImmuneT = Math.max(0, n.rogueImmuneT - dt);
 
-      // Helpers may turn rogue over time (plaza only — never airways)
-      if (!n.rogue && r.phase === 'ally') {
-        n.rogueAcc = (n.rogueAcc ?? 0) + dt;
-        if (n.rogueAcc > 8 && Math.random() < ForgeHeartGame.CITY_ROGUE_CHANCE_PER_SEC * dt * 60) {
+      // Any working owned robot: slight independent chance to go rogue (no schedule / accumulator)
+      if (!n.rogue && r.phase === 'ally' && (n.rogueImmuneT ?? 0) <= 0) {
+        if (Math.random() < ForgeHeartGame.CITY_ROGUE_CHANCE_PER_SEC * dt) {
           this.turnCityBotRogue(n, r);
         }
       }
@@ -9097,7 +9172,7 @@ export class ForgeHeartGame {
         continue;
       }
 
-      // Wander home plaza (helpers always; rogues when player is far)
+      // Do their job on the plaza (rogues wander until close enough to aggro)
       this.wanderCityBot(r, leash, n, dt, isRogue ? 'chase' : 'ally');
     }
   }
@@ -9106,42 +9181,59 @@ export class ForgeHeartGame {
     n.rogue = true;
     n.role = 'rogue';
     n.visual = 'rogue';
-    n.rogueAcc = 0;
     r.setPhase('active');
     r.aggro = false;
-    r.displayName = r.displayName.replace(/^Frame/, 'Rogue');
-    this.toast(`${r.displayName} went rogue!`, 2.5);
+    const owner = n.owner?.name ?? 'someone';
+    const job = this.cityJobLabel(n);
+    this.toast(`${r.displayName} went rogue — left ${owner}'s ${job}!`, 2.8);
   }
 
-  /** Hand fix: restore rogue to plaza helper (paid brass, not your ally). */
+  /** Hand fix: restore rogue to its owner's job (not a player combat ally). */
   private fixCityRogue(r: RobotUnit) {
     const leash = this.cityRogueLeash.get(r);
     const n = leash?.npc;
     if (!n) return;
-    const result = repairRogueRobot(this.inv);
+    const result = repairRogueRobot(this.inv, {
+      ownerName: n.owner?.name,
+      jobLabel: this.cityJobLabel(n),
+    });
     this.brass = this.inv.brass;
     n.rogue = false;
     n.role = 'robot_helper';
     n.visual = 'robot_helper';
-    n.rogueAcc = Math.random() * 25;
+    n.rogueImmuneT = ForgeHeartGame.CITY_ROGUE_FIX_IMMUNE_SEC + Math.random() * 120;
     r.setPhase('ally');
     r.aggro = false;
     r.returning = false;
     r.vy = 0;
     r.onGround = true;
-    r.displayName = r.displayName.replace(/^Rogue/, 'Frame');
     if (leash) this.pinCityBotToDeck(r, leash);
     this.audio.playReprogram();
-    this.flash('FRAME RESTORED');
+    this.flash('RETURNED TO WORK');
     this.toast(result.msg, 4);
     writeSlot(this.activeSlot, this.buildSaveData());
     this.syncEconomyHud();
     this.syncCityRogueInteractables();
   }
 
-  /** E harvest: scrap a downed rogue for parts. */
+  /** E harvest: scrap a downed rogue for parts (removes player crew entry if yours). */
   private harvestCityRogue(n: CityNpc, r: RobotUnit, it: CityInteract) {
-    const result = harvestRogueRobot(this.inv, { wasMedallionHost: false });
+    const wasHost =
+      !!n.workerId &&
+      (this.inv.medallionHostId === n.workerId ||
+        !!this.inv.workers.find((w) => w.id === n.workerId && w.hasMedallion));
+    const result = harvestRogueRobot(this.inv, {
+      wasMedallionHost: wasHost,
+      ownerName: n.owner?.name,
+    });
+    if (n.workerId) {
+      const idx = this.inv.workers.findIndex((w) => w.id === n.workerId);
+      if (idx >= 0) {
+        const lost = this.inv.workers[idx]!;
+        if (lost.hasMedallion) onMedallionHostLost(this.inv, lost.id);
+        this.inv.workers.splice(idx, 1);
+      }
+    }
     this.brass = this.inv.brass;
     r.setPhase('husk');
     n.mesh.visible = false;
@@ -9174,11 +9266,12 @@ export class ForgeHeartGame {
     r.wanderTimer -= dt;
     if (r.wanderTimer <= 0) {
       r.wanderTimer = 1.2 + Math.random() * 2.2;
-      // Pick a plaza patrol point
+      // Prefer the job site; occasional home/market errands
       const pick = Math.random();
-      const target = pick < 0.34 ? n.home : pick < 0.67 ? n.work : n.market;
+      const target =
+        pick < 0.62 ? n.work : pick < 0.82 ? n.home : n.market;
       r.wanderAngle = Math.atan2(target.x - r.position.x, target.z - r.position.z);
-      r.wanderAngle += (Math.random() - 0.5) * 0.8;
+      r.wanderAngle += (Math.random() - 0.5) * 0.55;
     }
     const wish = new THREE.Vector3(Math.sin(r.wanderAngle), 0, Math.cos(r.wanderAngle));
     const homePull = new THREE.Vector3(leash.homeX - r.position.x, 0, leash.homeZ - r.position.z);
@@ -9296,9 +9389,10 @@ export class ForgeHeartGame {
       it.mesh.position.set(r.position.x, n.deckY + 1.25, r.position.z + 1.05);
       it.position.copy(it.mesh.position);
       if (n.rogue) {
+        const owner = n.owner?.name ?? 'owner';
         it.label = downed
-          ? 'Hand (1) fix · E harvest parts'
-          : 'Rogue — arc wrench (2) to scramble';
+          ? `Hand (1) fix → ${owner} · E harvest`
+          : `Rogue (${owner}'s ${this.cityJobLabel(n)}) — wrench (2)`;
         const mesh = it.mesh as THREE.Mesh;
         const mat = mesh.material as THREE.MeshStandardMaterial | THREE.MeshStandardMaterial[];
         const m = Array.isArray(mat) ? mat[0] : mat;
@@ -9306,6 +9400,8 @@ export class ForgeHeartGame {
           m.color.setHex(downed ? 0xffcc44 : 0xff6644);
           m.emissive?.setHex(downed ? 0xaa7700 : 0xcc2200);
         }
+      } else {
+        it.label = `${n.displayName ?? 'Frame'} · ${this.cityJobLabel(n)} · ${n.owner?.name ?? 'owner'}`;
       }
     }
   }

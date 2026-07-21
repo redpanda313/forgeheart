@@ -71,8 +71,10 @@
 | **Flyer** | Commute on airways | Board/car mesh on sky routes |
 | **Vendor** | Stationary or short stall path | Existing vendor pattern |
 | **Shopper** | Visits market; chance to “buy” from player stall if present | Walks to market pad |
-| **Helper robot** | Patrol / haul VFX | Robot mesh |
-| **Rogue robot** | Hostile or broken → E repair for brass | Red eyes / spark |
+| **Work robot** | Owned chassis (player crew or NPC employer) doing a plaza job (haul, repair, courier, stall assist, dock, yard) | Robot mesh · green eyes while working |
+| **Rogue (state)** | Temporary hazard — any work robot may go rogue (rare, independent chance; not a schedule). Plaza only (no airways). Attack nearby → wrench scramble → Hand fix (return to owner’s job) or E harvest | Red eyes / sparks |
+
+There are **no dedicated “robots to fix.”** Rogue is a state on an owned worker, not a spawn class.
 
 ### 4.2 Schedule (sim time, not wall clock at first)
 
@@ -101,7 +103,7 @@ Use a looping **city clock** `t ∈ [0,1)` day:
 - Same `InventoryState` / craft / programs / stall pricing.  
 - **New workshop** lease in industrial district (separate from training bay or migrate deed — **TBD**).  
 - Player stall can later bind to grand market frontage.  
-- Rogue robot repairs = brass faucet + attention beat.
+- Rogue robot repairs = brass faucet when a work robot goes hostile (rare spice, not a dedicated spawn class).
 
 ---
 
@@ -124,7 +126,7 @@ Use a looping **city clock** `t ∈ [0,1)` day:
 2. **Training bay / stall inventory** — transfer into city workshop, or fresh city lease?  
 3. **Elias** — present in apartment?  
 4. **Day length** — real minutes per full cycle (e.g. 8–12 min)?  
-5. **Rogue robot rate** — rare spice or frequent mini-game?  
+5. **Rogue robot rate** — **Resolved:** very slight independent chance on any owned work robot (not a timed schedule; post-fix immunity). Rare spice, not a mini-game farm.  
 6. **Win condition in city** — none (sandbox) vs soft goals (expand workshop, reputation)?
 
 ---

@@ -398,15 +398,17 @@ function landmarkFromInteract(it: CityInteract): MapLandmark | null {
     case 'repair_job':
       // Covered by workshop hub pin
       return null;
-    case 'rogue_robot':
+    case 'city_robot':
+      // Map pin only while rogue/downed (marker mesh is shown then)
+      if (!it.mesh.visible) return null;
       return {
         id: it.id,
         kind: 'rogue',
-        label: 'Rogue robot',
+        label: 'Rogue work robot',
         x,
         z,
         tag: '!',
-        blurb: 'Repair for brass',
+        blurb: it.label,
       };
     case 'vendor':
       return null; // aggregated per district
