@@ -29,7 +29,8 @@ export type CityInteractKind =
   | 'workshop_lease'
   | 'workshop_chest'
   | 'board_shop'
-  | 'rogue_robot'
+  /** Downed/hostile city work robot (fix Hand / harvest E) */
+  | 'city_robot'
   | 'ferry_training'
   | 'harvest'
   | 'broker'
@@ -45,6 +46,32 @@ export type CityInteractKind =
   | 'buy_robot'
   | 'assign_medallion'
   | 'circuit_start';
+
+/** Plaza work a city chassis is assigned to while owned. */
+export type CityRobotJobId =
+  | 'haul'
+  | 'repair'
+  | 'courier'
+  | 'vendor_assist'
+  | 'dock'
+  | 'yard';
+
+export const CITY_ROBOT_JOBS: { id: CityRobotJobId; label: string }[] = [
+  { id: 'haul', label: 'Haul' },
+  { id: 'repair', label: 'Field repair' },
+  { id: 'courier', label: 'Courier' },
+  { id: 'vendor_assist', label: 'Stall assist' },
+  { id: 'dock', label: 'Dock work' },
+  { id: 'yard', label: 'Yard duty' },
+];
+
+export type CityRobotOwnerKind = 'player' | 'npc';
+
+export interface CityRobotOwner {
+  kind: CityRobotOwnerKind;
+  id: string;
+  name: string;
+}
 
 export interface CityInteract {
   id: string;
@@ -77,7 +104,7 @@ export interface DistrictBuilt {
 export interface CityNpc {
   mesh: THREE.Group;
   parts?: NpcMeshParts;
-  /** Tutorial RobotUnit chassis for city robots */
+  /** Shared RobotUnit chassis for city work robots */
   robot?: RobotUnit;
   home: THREE.Vector3;
   work: THREE.Vector3;
@@ -87,6 +114,7 @@ export interface CityNpc {
   visual: NpcVisualRole;
   phase: number;
   speed: number;
+  /** Temporary hostile state — any owned work robot may go rogue */
   rogue?: boolean;
   repairCd?: number;
   /** Accumulator for budgeted mid-range ticks */
@@ -109,8 +137,14 @@ export interface CityNpc {
   /** Flyer skyway travel */
   skyRoute?: SkyRoute | null;
   routeIndex?: number;
-  /** Accumulators for helper → rogue conversion */
-  rogueAcc?: number;
+  /** Who owns this chassis (player crew or an NPC employer). */
+  owner?: CityRobotOwner;
+  /** Job the robot performs while working (not a rogue). */
+  jobId?: CityRobotJobId;
+  /** Seconds of immunity after a fix before another rogue roll. */
+  rogueImmuneT?: number;
+  /** Links to InventoryState.workers id when owner.kind === 'player'. */
+  workerId?: string;
 }
 
 export interface SkyRoute {
@@ -325,6 +359,112 @@ function clampToPlaza(
 /** Top of a district plaza floor pad (matches floorPad collider max.y). */
 export function plazaDeckStandY(deckY = 0.2): number {
   return deckY + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+}
+
+const NPC_ROBOT_OWNERS = [
+  'Pip Harper',
+  'Sera Quinn',
+  'Bolt Voss',
+  'Lira Voss',
+  'Mira Quinn',
+  'Nova Hale',
+  'Sage Wren',
+  'Harbor Guild',
+  'Market Consortium',
+  'Sky Foundry Co.',
+  'Spore Gardens LLC',
+  'Aether Spire Yard',
+];
+
+function pickCityRobotJob(districtRole: CityDistrictDef['role'], i: number): CityRobotJobId {
+  if (districtRole === 'harbor') return i % 2 === 0 ? 'dock' : 'haul';
+  if (districtRole === 'market' || districtRole === 'premium') {
+    return (['vendor_assist', 'courier', 'haul'] as CityRobotJobId[])[i % 3]!;
+  }
+  if (districtRole === 'industrial') {
+    return (['yard', 'repair', 'haul'] as CityRobotJobId[])[i % 3]!;
+  }
+  return (['courier', 'haul', 'yard', 'repair'] as CityRobotJobId[])[i % 4]!;
+}
+
+function jobLabel(jobId: CityRobotJobId): string {
+  return CITY_ROBOT_JOBS.find((j) => j.id === jobId)?.label ?? jobId;
+}
+
+/**
+ * Spawn one owned work robot onto a built city (NPC or player crew).
+ * Always starts working — never as a dedicated rogue spawn.
+ */
+export function attachCityWorkRobot(
+  city: SkyCityBuilt,
+  opts: {
+    id: string;
+    displayName: string;
+    district: CityDistrictDef;
+    owner: CityRobotOwner;
+    jobId: CityRobotJobId;
+    workerId?: string;
+  },
+): CityNpc {
+  const deckY = plazaDeckStandY(0.2);
+  const spawn = plazaPoint(opts.district, 0.4);
+  spawn.y = deckY;
+  const work = plazaPoint(opts.district, 0.36);
+  work.y = deckY;
+  const market = plazaPoint(opts.district, 0.34);
+  market.y = deckY;
+  const robot = new RobotUnit(city.mats, spawn.clone());
+  robot.displayName = opts.displayName;
+  robot.setPhase('ally');
+  robot.onGround = true;
+  robot.vy = 0;
+  city.group.add(robot.mesh);
+
+  const mark = new THREE.Mesh(
+    new THREE.SphereGeometry(0.2, 8, 8),
+    new THREE.MeshStandardMaterial({
+      color: 0x66cc88,
+      emissive: 0x228844,
+      emissiveIntensity: 0.55,
+    }),
+  );
+  mark.position.set(spawn.x, deckY + 1.25, spawn.z + 1.15);
+  mark.visible = false;
+  city.group.add(mark);
+  city.interactables.push({
+    id: opts.id,
+    kind: 'city_robot',
+    position: mark.position.clone(),
+    radius: 2.6,
+    mesh: mark,
+    label: `${opts.displayName} · ${jobLabel(opts.jobId)} · ${opts.owner.name}`,
+  });
+
+  const npc: CityNpc = {
+    mesh: robot.mesh,
+    robot,
+    home: spawn.clone(),
+    work,
+    market,
+    role: 'robot_helper',
+    visual: 'robot_helper',
+    phase: Math.random(),
+    speed: 2.35 + Math.random() * 0.6,
+    rogue: false,
+    plazaCx: opts.district.x,
+    plazaCz: opts.district.z,
+    plazaRadius: opts.district.size,
+    deckY,
+    homeDistrictId: opts.district.id,
+    id: opts.id,
+    displayName: opts.displayName,
+    owner: opts.owner,
+    jobId: opts.jobId,
+    rogueImmuneT: 45 + Math.random() * 90,
+    workerId: opts.workerId,
+  };
+  city.npcs.push(npc);
+  return npc;
 }
 
 /** Pick sky route whose ends are near from→to district centers. */
@@ -1748,21 +1888,22 @@ export function buildSkyCity(): SkyCityBuilt {
     });
   }
 
-  // Helper robots — all wander plazas; some start rogue, others can turn rogue over time
+  // Owned work robots — every chassis has an owner + job; none spawn as dedicated rogues
   const DECK_STAND = DECK_STAND_NPC;
   for (let i = 0; i < 22; i++) {
     const d = CITY_DISTRICTS[i % CITY_DISTRICTS.length]!;
-    const startRogue = Math.random() < 0.22;
+    const jobId = pickCityRobotJob(d.role, i);
+    const ownerName = NPC_ROBOT_OWNERS[i % NPC_ROBOT_OWNERS.length]!;
     const spawn = plazaPoint(d, 0.4);
     spawn.y = DECK_STAND;
+    const work = plazaPoint(d, 0.36);
+    work.y = DECK_STAND;
+    const market = plazaPoint(d, 0.34);
+    market.y = DECK_STAND;
     const robot = new RobotUnit(mats, spawn.clone());
-    robot.displayName = startRogue ? `Rogue-${i}` : `Frame-${i}`;
-    if (startRogue) {
-      robot.setPhase('active');
-      robot.aggro = false;
-    } else {
-      robot.setPhase('ally');
-    }
+    const frameName = `Frame-${i + 1}`;
+    robot.displayName = frameName;
+    robot.setPhase('ally');
     robot.onGround = true;
     robot.vy = 0;
     addMesh(robot.mesh);
@@ -1770,46 +1911,45 @@ export function buildSkyCity(): SkyCityBuilt {
     const mark = new THREE.Mesh(
       new THREE.SphereGeometry(0.2, 8, 8),
       new THREE.MeshStandardMaterial({
-        color: startRogue ? 0xff6644 : 0x66cc88,
-        emissive: startRogue ? 0xcc2200 : 0x228844,
+        color: 0x66cc88,
+        emissive: 0x228844,
         emissiveIntensity: 0.55,
       }),
     );
     mark.position.set(spawn.x, DECK_STAND + 1.25, spawn.z + 1.15);
-    mark.visible = startRogue;
+    mark.visible = false;
     addMesh(mark);
     interactables.push({
       id: botId,
-      kind: 'rogue_robot',
+      kind: 'city_robot',
       position: mark.position.clone(),
       radius: 2.6,
       mesh: mark,
-      label: startRogue
-        ? 'Rogue — wrench to scramble · Hand fix · E harvest'
-        : 'Work frame',
+      label: `${frameName} · ${jobLabel(jobId)} · ${ownerName}`,
     });
     npcs.push({
       mesh: robot.mesh,
       robot,
       home: spawn.clone(),
-      work: plazaPoint(d, 0.36),
-      market: plazaPoint(d, 0.34),
-      role: startRogue ? 'rogue' : 'robot_helper',
-      visual: startRogue ? 'rogue' : 'robot_helper',
+      work,
+      market,
+      role: 'robot_helper',
+      visual: 'robot_helper',
       phase: Math.random(),
       speed: 2.35 + Math.random() * 0.6,
-      rogue: startRogue,
+      rogue: false,
       plazaCx: d.x,
       plazaCz: d.z,
       plazaRadius: d.size,
       deckY: DECK_STAND,
       homeDistrictId: d.id,
       id: botId,
-      rogueAcc: Math.random() * 40,
+      displayName: frameName,
+      owner: { kind: 'npc', id: `npc_owner_${i % NPC_ROBOT_OWNERS.length}`, name: ownerName },
+      jobId,
+      // Brief immunity so the city doesn't open with instant rogue rolls
+      rogueImmuneT: 60 + Math.random() * 120,
     });
-    npcs[npcs.length - 1]!.work.y = DECK_STAND;
-    npcs[npcs.length - 1]!.market.y = DECK_STAND;
-    npcs[npcs.length - 1]!.home.y = DECK_STAND;
   }
 
   // Broker frame display props (updated live from game)

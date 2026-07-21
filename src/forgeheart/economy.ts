@@ -522,8 +522,6 @@ export interface WorkerState {
   kind?: 'human' | 'robot';
   /** Elias spirit host — human-parity stats + map marker */
   hasMedallion?: boolean;
-  /** Rare rogue chance accumulator for robots */
-  rogueAcc?: number;
 }
 
 /** Player-placed commercial / cosmetic props from purchase→Game Maker */
@@ -1276,25 +1274,31 @@ export function leaseCityWorkshop(inv: InventoryState): { ok: boolean; msg: stri
   };
 }
 
-export function repairRogueRobot(inv: InventoryState): { ok: boolean; msg: string } {
+export function repairRogueRobot(
+  inv: InventoryState,
+  opts?: { ownerName?: string; jobLabel?: string },
+): { ok: boolean; msg: string } {
   inv.brass += ROGUE_REPAIR_PAY;
   notePeakBrass(inv);
+  const owner = opts?.ownerName ? opts.ownerName : 'its owner';
+  const job = opts?.jobLabel ? ` (${opts.jobLabel})` : '';
   return {
     ok: true,
-    msg: `Robot restored to its owner's work · +${ROGUE_REPAIR_PAY} brass. (Not your ally.)`,
+    msg: `Restored to ${owner}'s work${job} · +${ROGUE_REPAIR_PAY} brass.`,
   };
 }
 
 /** Harvest / scrap a rogue — parts + chance to recover Elias medallion if it was the host. */
 export function harvestRogueRobot(
   inv: InventoryState,
-  opts?: { wasMedallionHost?: boolean },
+  opts?: { wasMedallionHost?: boolean; ownerName?: string },
 ): { ok: boolean; msg: string } {
   addItem(inv, 'scrap_brass', 2 + Math.floor(Math.random() * 3));
   addItem(inv, 'gear_blank', Math.random() < 0.45 ? 1 : 0);
   inv.brass += 8;
   notePeakBrass(inv);
-  let msg = 'Frame harvested · scrap + gear. Robot is gone.';
+  const ownerBit = opts?.ownerName ? ` (${opts.ownerName}'s chassis)` : '';
+  let msg = `Frame harvested${ownerBit} · scrap + gear. Robot is gone.`;
   if (opts?.wasMedallionHost || inv.medallionHostId) {
     inv.medallionLoose = true;
     inv.medallionHostId = null;
@@ -1349,7 +1353,6 @@ export function makeRobotWorker(name: string, id?: string): WorkerState {
     harvestSiteId: null,
     kind: 'robot',
     hasMedallion: false,
-    rogueAcc: 0,
   };
 }
 
@@ -3885,7 +3888,6 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
           : null,
       kind: w.kind === 'robot' ? 'robot' : 'human',
       hasMedallion: !!w.hasMedallion,
-      rogueAcc: typeof w.rogueAcc === 'number' ? w.rogueAcc : 0,
     }));
   } else if (o.laborerHired) {
     // Migrate Phase 1 single laborer
