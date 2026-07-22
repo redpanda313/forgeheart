@@ -651,7 +651,7 @@ Premium must never mint endgame materials or exclusive patents.
 4. Procedural engineer backstory on character create  
 
 ### Phase 1 — SP craft / labor / repair loop (done)
-1. Bay workbench recipes → wire, gear blank, repair kit, basic robot frame  
+1. Bay workbench recipes → wire, gear blank, repair kit; **robot frames via five-slot assembly** (names from ingredients)  
 2. Frame Broker · Hire Board · Repair job  
 
 ### Phase 2 — Workshop Scale (SP, largely done)
@@ -664,7 +664,7 @@ Premium must never mint endgame materials or exclusive patents.
 7. **Game Maker bay-only** bounds  
 8. Upkeep/wages sink  
 
-**Still next pass:** invent→ingredient crafts, branch programs, board race-stat parity.
+**Still next pass:** inventable power supplies, patents after first create, branch programs, board race-stat parity.
 
 ### Phase 3 — Sky City SP (true play space — scaffold live)
 See **`docs/SKY_CITY_SP_PLAN.md`**.
