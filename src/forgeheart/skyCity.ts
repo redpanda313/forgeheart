@@ -46,7 +46,10 @@ export type CityInteractKind =
   | 'npc_home'
   | 'buy_robot'
   | 'assign_medallion'
-  | 'circuit_start';
+  | 'circuit_start'
+  | 'player_home'
+  | 'home_workshop'
+  | 'home_invent';
 
 /** Plaza work a city chassis is assigned to while owned. */
 export type CityRobotJobId =
@@ -169,6 +172,10 @@ export interface SkyCityBuilt {
   mats: Mats;
   /** Player apartment feet spawn */
   apartmentSpawn: THREE.Vector3;
+  /** Player home visual root (rebuilt from apartmentLayout) */
+  apartmentGroup: THREE.Group;
+  /** Home island anchor XZ */
+  apartmentAnchor: THREE.Vector3;
   interactables: CityInteract[];
   npcs: CityNpc[];
   skyRoutes: SkyRoute[];
@@ -1366,21 +1373,42 @@ export function buildSkyCity(): SkyCityBuilt {
   }
 
   // ——— Apartment at residential ———
+  const apartmentGroup = new THREE.Group();
+  apartmentGroup.name = 'PlayerApartment';
+  hubGroup.add(apartmentGroup);
   {
     const home = floorPad(mats, 22, 18, apartmentPos.x, DECK_Y, apartmentPos.z, 0x6a5f50);
     addMesh(home.mesh);
     addCol(home.col);
     // Same residential island cluster — short wind hop to plaza center
-    windSkyway(apartmentPos.x, apartmentPos.z, residential.x, residential.z, { arch: 4, width: 6.5, entryLift: 0.7 });
-    const wall = solidBox(mats, mats.wood, 8, 4, 7, apartmentPos.x - 2, 2.4, apartmentPos.z);
-    addMesh(wall.mesh);
-    addCol(wall.col);
-    const roof = solidBox(mats, mats.copper, 9, 0.4, 8, apartmentPos.x - 2, 4.6, apartmentPos.z);
-    addMesh(roof.mesh);
-    placeScenery(hubGroup, mats, 'tree', 0, apartmentPos.x + 6, apartmentPos.z + 5, 0.4, 0.95);
-    const homeLab = labelSprite('YOUR APARTMENT');
+    windSkyway(apartmentPos.x, apartmentPos.z, residential.x, residential.z, {
+      arch: 4,
+      width: 6.5,
+      entryLift: 0.7,
+    });
+    placeScenery(hubGroup, mats, 'tree', 0, apartmentPos.x + 10, apartmentPos.z + 7, 0.4, 0.95);
+    const homeLab = labelSprite('YOUR HOME');
     homeLab.position.set(apartmentPos.x, 5.2, apartmentPos.z + 2);
     addMesh(homeLab);
+    // Manage / improve interact — visuals filled by syncHomeVisuals
+    const mark = new THREE.Mesh(
+      new THREE.SphereGeometry(0.28, 10, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0xe8c878,
+        emissive: 0xaa8800,
+        emissiveIntensity: 0.55,
+      }),
+    );
+    mark.position.set(apartmentPos.x + 2, 1.25, apartmentPos.z + 6);
+    apartmentGroup.add(mark);
+    interactables.push({
+      id: 'player_home',
+      kind: 'player_home',
+      position: mark.position.clone(),
+      radius: 3.2,
+      mesh: mark,
+      label: 'Your home · improve / expand',
+    });
   }
 
   // Neighbors on residential ring
@@ -2327,6 +2355,8 @@ export function buildSkyCity(): SkyCityBuilt {
     colliders,
     mats,
     apartmentSpawn,
+    apartmentGroup,
+    apartmentAnchor: apartmentPos.clone(),
     interactables,
     npcs,
     skyRoutes,

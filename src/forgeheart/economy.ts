@@ -681,6 +681,12 @@ export interface CustomRecipe {
 /** Stall structure tier — rising build cost past the basic bench */
 export type StallTier = 'bench' | 'shade' | 'shop' | 'large';
 
+/** Home footprint tier — prices rise steeply toward a private island */
+export type HomeTier = 'cottage' | 'house' | 'manor' | 'estate' | 'island';
+
+/** Functional rooms placed on the home plot */
+export type HomeRoomKind = 'living' | 'workshop' | 'invent_lab' | 'gallery' | 'garden';
+
 /** Factory shell form (storage / bay wings — not shop cosmetics) */
 export type FactoryForm = 'horizontal' | 'tall' | 'boiler_yard';
 
@@ -690,6 +696,25 @@ export interface SiteProp {
   lx: number;
   lz: number;
   yaw: number;
+}
+
+export interface HomeRoom {
+  kind: HomeRoomKind;
+  lx: number;
+  lz: number;
+  yaw: number;
+}
+
+/** Saved player home layout (site builder) */
+export interface HomeLayout {
+  plotX: number;
+  plotZ: number;
+  yaw: number;
+  tier: HomeTier;
+  color: number;
+  props: SiteProp[];
+  rooms: HomeRoom[];
+  built: boolean;
 }
 
 /** Saved stall plot + structure + placed props (Game Maker site builder) */
@@ -785,6 +810,37 @@ const FACTORY_PROP_COST: Record<string, number> = {
   valve_rack: 40,
   conduit: 50,
   crane_arm: 110,
+};
+const HOME_TIER_EXTRA: Record<HomeTier, number> = {
+  cottage: 0,
+  house: 450,
+  manor: 1400,
+  estate: 3800,
+  island: 9000,
+};
+const HOME_ROOM_COST: Record<HomeRoomKind, number> = {
+  living: 0,
+  workshop: 380,
+  invent_lab: 520,
+  gallery: 220,
+  garden: 180,
+};
+const HOME_PROP_COST: Record<string, number> = {
+  planters: 40,
+  lanterns: 45,
+  banners: 50,
+  benches: 55,
+  fountain: 120,
+  statue: 150,
+  trellis: 70,
+  chimney: 90,
+};
+const HOME_ROOM_CAP: Record<HomeTier, number> = {
+  cottage: 1,
+  house: 2,
+  manor: 3,
+  estate: 4,
+  island: 5,
 };
 
 function sumPropCosts(props: SiteProp[] | undefined, table: Record<string, number>): number {
@@ -1242,6 +1298,10 @@ export interface InventoryState {
   marketPressure: MarketPressure;
   /** Market tutorial goal — apartment deed from real-estate office */
   apartmentOwned: boolean;
+  /** Expandable home layout (site builder) */
+  apartmentLayout: HomeLayout | null;
+  /** Brass paid toward home layout (redesign charges delta) */
+  apartmentLayoutPaid: number;
   /** Peak brass held (progress toward apartment) */
   peakBrass: number;
   /** Phase 3 city industrial workshop leased */
@@ -1347,6 +1407,8 @@ export function emptyInventory(starterBrass = 40): InventoryState {
     cityStalls: {},
     marketPressure: {},
     apartmentOwned: false,
+    apartmentLayout: null,
+    apartmentLayoutPaid: 0,
     peakBrass: starterBrass,
     cityWorkshopLeased: false,
     inventionsMade: 0,
@@ -1610,10 +1672,11 @@ export function buyApartment(inv: InventoryState): { ok: boolean; msg: string } 
   }
   inv.brass -= APARTMENT_COST;
   inv.apartmentOwned = true;
+  ensureDefaultHomeLayout(inv);
   notePeakBrass(inv);
   return {
     ok: true,
-    msg: `Deed signed · sky apartment yours (−${APARTMENT_COST} brass). Market training complete!`,
+    msg: `Deed signed · sky cottage yours (−${APARTMENT_COST} brass). Improve it from the door!`,
   };
 }
 
@@ -1923,6 +1986,180 @@ export function finalizeFactoryBuild(
   };
 }
 
+/** Residential home-island center (matches skyCity apartment pad). */
+export function apartmentAnchorXZ(): { x: number; z: number } {
+  const r = CITY_DISTRICTS.find((d) => d.id === 'residential')!;
+  return { x: r.x - 32, z: r.z + 20 };
+}
+
+export function ensureDefaultHomeLayout(inv: InventoryState): HomeLayout {
+  if (inv.apartmentLayout?.built) return inv.apartmentLayout;
+  const a = apartmentAnchorXZ();
+  inv.apartmentLayout = {
+    plotX: a.x,
+    plotZ: a.z,
+    yaw: 0,
+    tier: 'cottage',
+    color: 0,
+    props: [],
+    rooms: [{ kind: 'living', lx: 0, lz: 0, yaw: 0 }],
+    built: true,
+  };
+  inv.apartmentLayoutPaid = inv.apartmentLayoutPaid ?? 0;
+  return inv.apartmentLayout;
+}
+
+export function homeHasRoom(inv: InventoryState, kind: HomeRoomKind): boolean {
+  const rooms = inv.apartmentLayout?.rooms;
+  if (!rooms?.length) return false;
+  return rooms.some((r) => r.kind === kind);
+}
+
+export function quoteHomeBuild(opts: {
+  tier: HomeTier;
+  color: number;
+  rooms?: HomeRoom[];
+  props?: SiteProp[];
+}): {
+  total: number;
+  tierFee: number;
+  roomFee: number;
+  propFee: number;
+  colorFee: number;
+} {
+  const tierFee = HOME_TIER_EXTRA[opts.tier] ?? 0;
+  let roomFee = 0;
+  for (const r of opts.rooms ?? []) roomFee += HOME_ROOM_COST[r.kind] ?? 0;
+  const propFee = sumPropCosts(opts.props, HOME_PROP_COST);
+  const c = Math.max(0, Math.min(5, opts.color | 0));
+  const colorFee = c === 0 ? 0 : 25 + c * 20;
+  return {
+    tierFee,
+    roomFee,
+    propFee,
+    colorFee,
+    total: tierFee + roomFee + propFee + colorFee,
+  };
+}
+
+export function isValidHomePlot(x: number, z: number, tier: HomeTier): boolean {
+  const a = apartmentAnchorXZ();
+  const pad =
+    tier === 'island'
+      ? 64
+      : tier === 'estate'
+        ? 48
+        : tier === 'manor'
+          ? 34
+          : tier === 'house'
+            ? 22
+            : 14;
+  const reach = pad * 0.55 + 8;
+  return Math.hypot(x - a.x, z - a.z) <= reach;
+}
+
+function normalizeHomeLayout(layout: HomeLayout): HomeLayout {
+  const tier = (['cottage', 'house', 'manor', 'estate', 'island'] as HomeTier[]).includes(
+    layout.tier as HomeTier,
+  )
+    ? layout.tier
+    : 'cottage';
+  let rooms = Array.isArray(layout.rooms)
+    ? layout.rooms.map((r) => ({
+        kind: r.kind,
+        lx: Number(r.lx) || 0,
+        lz: Number(r.lz) || 0,
+        yaw: Number(r.yaw) || 0,
+      }))
+    : [];
+  if (!rooms.length) rooms = [{ kind: 'living', lx: 0, lz: 0, yaw: 0 }];
+  // Always keep a living room; trim to tier cap
+  if (!rooms.some((r) => r.kind === 'living')) {
+    rooms.unshift({ kind: 'living', lx: 0, lz: 0, yaw: 0 });
+  }
+  const cap = HOME_ROOM_CAP[tier] ?? 1;
+  if (rooms.length > cap) rooms = rooms.slice(0, cap);
+  return {
+    plotX: layout.plotX,
+    plotZ: layout.plotZ,
+    yaw: layout.yaw,
+    tier,
+    color: Math.max(0, Math.min(5, layout.color | 0)),
+    props: Array.isArray(layout.props) ? layout.props.map((p) => ({ ...p })) : [],
+    rooms,
+    built: layout.built,
+  };
+}
+
+export function finalizeHomeBuild(
+  inv: InventoryState,
+  layout: HomeLayout,
+  opts?: { redesign?: boolean },
+): { ok: boolean; msg: string; charged: number } {
+  if (!inv.apartmentOwned) {
+    return { ok: false, msg: 'Buy an apartment deed first.', charged: 0 };
+  }
+  const next = normalizeHomeLayout({ ...layout, built: true });
+  if (!isValidHomePlot(next.plotX, next.plotZ, next.tier)) {
+    return {
+      ok: false,
+      msg: 'Home site must stay on your home island.',
+      charged: 0,
+    };
+  }
+  const cap = HOME_ROOM_CAP[next.tier] ?? 1;
+  if (next.rooms.length > cap) {
+    return {
+      ok: false,
+      msg: `${next.tier} holds at most ${cap} rooms.`,
+      charged: 0,
+    };
+  }
+  const buildQuote = quoteHomeBuild({
+    tier: next.tier,
+    color: next.color,
+    rooms: next.rooms,
+    props: next.props,
+  });
+  const redesign = !!opts?.redesign && !!inv.apartmentLayout?.built;
+  let charge: number;
+  if (redesign && inv.apartmentLayout) {
+    const prev = normalizeHomeLayout(inv.apartmentLayout);
+    const prevBuild = quoteHomeBuild({
+      tier: prev.tier,
+      color: prev.color,
+      rooms: prev.rooms,
+      props: prev.props,
+    }).total;
+    charge = Math.max(0, buildQuote.total - prevBuild);
+  } else {
+    // First customize after deed — cottage base is free; only extras charge
+    charge = buildQuote.total;
+  }
+  if (inv.brass < charge) {
+    return {
+      ok: false,
+      msg: `Need ${charge} brass (have ${inv.brass}).`,
+      charged: 0,
+    };
+  }
+  inv.brass -= charge;
+  inv.apartmentLayout = next;
+  inv.apartmentLayoutPaid = (inv.apartmentLayoutPaid ?? 0) + charge;
+  notePeakBrass(inv);
+  return {
+    ok: true,
+    charged: charge,
+    msg: redesign
+      ? charge > 0
+        ? `Home updated (−${charge}b).`
+        : 'Home updated (no extra charge).'
+      : charge > 0
+        ? `Home built (−${charge}b). Expand toward a private island!`
+        : 'Cottage ready — expand when you can afford it.',
+  };
+}
+
 export const STALL_LEASE_COST = 55;
 /** Seconds between stall customer checks */
 export const STALL_INTERVAL = 10;
@@ -2189,7 +2426,12 @@ export function ownedCityStallCount(inv: InventoryState): number {
 }
 
 export function canInvent(inv: InventoryState): boolean {
-  return inv.bayLevel >= 3 || inv.cityWorkshopLeased;
+  return inv.bayLevel >= 3 || inv.cityWorkshopLeased || homeHasRoom(inv, 'invent_lab');
+}
+
+/** Home workshop or city/training bay craft access */
+export function canCraftAtHomeOrBay(inv: InventoryState): boolean {
+  return inv.cityWorkshopLeased || inv.parcelLeased || homeHasRoom(inv, 'workshop');
 }
 
 // ——— Crafting ———
@@ -4236,6 +4478,49 @@ function factoryLayoutToSave(L: FactoryLayout | null | undefined) {
   };
 }
 
+function homeLayoutToSave(L: HomeLayout | null | undefined) {
+  if (!L) return null;
+  return {
+    plotX: L.plotX,
+    plotZ: L.plotZ,
+    yaw: L.yaw,
+    tier: L.tier,
+    color: L.color,
+    props: (L.props ?? []).map((p) => ({ ...p })),
+    rooms: (L.rooms ?? []).map((r) => ({ ...r })),
+    built: !!L.built,
+  };
+}
+
+function homeLayoutFromSave(raw: unknown): HomeLayout | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const L = raw as HomeLayout;
+  return normalizeHomeLayout({
+    plotX: Number(L.plotX) || 0,
+    plotZ: Number(L.plotZ) || 0,
+    yaw: Number(L.yaw) || 0,
+    tier: L.tier,
+    color: Number(L.color) || 0,
+    props: Array.isArray(L.props)
+      ? L.props.map((p) => ({
+          id: String(p.id ?? 'planters'),
+          lx: Number(p.lx) || 0,
+          lz: Number(p.lz) || 0,
+          yaw: Number(p.yaw) || 0,
+        }))
+      : [],
+    rooms: Array.isArray(L.rooms)
+      ? L.rooms.map((r) => ({
+          kind: r.kind,
+          lx: Number(r.lx) || 0,
+          lz: Number(r.lz) || 0,
+          yaw: Number(r.yaw) || 0,
+        }))
+      : [],
+    built: !!L.built,
+  });
+}
+
 function factoryLayoutFromSave(raw: unknown): FactoryLayout | null {
   if (!raw || typeof raw !== 'object') return null;
   const L = raw as FactoryLayout;
@@ -4294,6 +4579,8 @@ export function invToSave(inv: InventoryState) {
     cityStalls,
     marketPressure: { ...inv.marketPressure },
     apartmentOwned: inv.apartmentOwned,
+    apartmentLayout: homeLayoutToSave(inv.apartmentLayout),
+    apartmentLayoutPaid: inv.apartmentLayoutPaid ?? 0,
     peakBrass: inv.peakBrass,
     cityWorkshopLeased: inv.cityWorkshopLeased,
     inventionsMade: inv.inventionsMade ?? 0,
@@ -4424,6 +4711,12 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
     inv.marketPressure = { ...(o.marketPressure as MarketPressure) };
   }
   inv.apartmentOwned = !!o.apartmentOwned;
+  inv.apartmentLayout = homeLayoutFromSave(o.apartmentLayout);
+  inv.apartmentLayoutPaid =
+    typeof o.apartmentLayoutPaid === 'number' ? o.apartmentLayoutPaid : 0;
+  if (inv.apartmentOwned && !inv.apartmentLayout?.built) {
+    ensureDefaultHomeLayout(inv);
+  }
   inv.peakBrass = typeof o.peakBrass === 'number' ? o.peakBrass : inv.brass;
   inv.cityWorkshopLeased = !!o.cityWorkshopLeased;
   inv.inventionsMade = typeof o.inventionsMade === 'number' ? o.inventionsMade : inv.customRecipes.length;
