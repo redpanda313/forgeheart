@@ -8034,9 +8034,9 @@ export class ForgeHeartGame {
     }
 
     this.scene.background = new THREE.Color(0x5a7a9a);
-    // Fog / far plane match stream ring so unloaded content isn't drawn far away
+    // Fog for scenery; far plane reaches distant plaza beacons (fog-immune)
     this.scene.fog = new THREE.Fog(0x7a9ab8, 60, 380);
-    this.camera.far = 420;
+    this.camera.far = 1100;
     this.camera.fov = 70;
     this.camera.updateProjectionMatrix();
     this.camera.up.set(0, 1, 0);
@@ -9513,10 +9513,12 @@ export class ForgeHeartGame {
   /**
    * Soft rising/falling plaza siren while any robot on that island is rogue.
    * Volume falls off with distance; silence when the plaza is clear again.
+   * Also lights the tall red plaza beacon (visible city-wide) only while rogue.
    */
   private syncCityRogueSirens() {
     if (!this.megaCityActive || !this.skyCity) {
       this.audio.clearPlazaSirens();
+      this.skyCity?.setPlazaRogueBeacons([]);
       return;
     }
     const byPlaza = new Map<string, { x: number; z: number; radius: number }>();
@@ -9528,6 +9530,7 @@ export class ForgeHeartGame {
         byPlaza.set(id, { x: n.plazaCx, z: n.plazaCz, radius: n.plazaRadius });
       }
     }
+    this.skyCity.setPlazaRogueBeacons(byPlaza.keys());
     const alarms = [...byPlaza.entries()].map(([id, p]) => ({
       id,
       x: p.x,

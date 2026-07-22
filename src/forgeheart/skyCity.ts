@@ -102,6 +102,16 @@ export interface DistrictBuilt {
   colliders: Collider[];
 }
 
+/** Tall plaza warning light — lit only while that island has a rogue robot. */
+export interface RogueBeaconHandle {
+  districtId: string;
+  root: THREE.Group;
+  bulbMat: THREE.MeshBasicMaterial;
+  haloMat: THREE.MeshBasicMaterial;
+  shaftMat: THREE.MeshBasicMaterial;
+  lit: boolean;
+}
+
 export interface CityNpc {
   mesh: THREE.Group;
   parts?: NpcMeshParts;
@@ -175,6 +185,10 @@ export interface SkyCityBuilt {
   /** Player factory visuals: storage_resources|crafted|inventions, bay_wing */
   factoryGroups: Record<string, THREE.Group>;
   districts: DistrictBuilt[];
+  /** Tall red warning beacons (always resident — visible across the city) */
+  rogueBeacons: RogueBeaconHandle[];
+  /** Light beacons only for plazas that currently have a rogue robot */
+  setPlazaRogueBeacons: (activeDistrictIds: Iterable<string>) => void;
   /** Streaming chunks (districts + resident skyways/hub) */
   streamChunks: StreamChunk[];
   harvestSpot: THREE.Vector3;
@@ -565,6 +579,12 @@ export function buildSkyCity(): SkyCityBuilt {
   const impostorGroup = new THREE.Group();
   impostorGroup.name = 'IslandImpostors';
   group.add(impostorGroup);
+  // Always-resident rogue warning lights (must stay visible when plazas stream out)
+  const rogueBeaconGroup = new THREE.Group();
+  rogueBeaconGroup.name = 'RogueBeacons';
+  group.add(rogueBeaconGroup);
+  const rogueBeacons: RogueBeaconHandle[] = [];
+  const ROGUE_BEACON_Y = 42;
 
   const scratchDest = new THREE.Vector3();
   const scratchDir = new THREE.Vector3();
@@ -1238,6 +1258,70 @@ export function buildSkyCity(): SkyCityBuilt {
       resident: d.id === 'residential' || d.id === 'industrial',
     });
     impostorGroup.add(makeIslandImpostor(cx, cz, sz, d.color));
+
+    // Rogue warning beacon — high above plaza, always-resident (not on streamed dGroup)
+    {
+      const root = new THREE.Group();
+      root.name = `RogueBeacon_${d.id}`;
+      root.visible = false;
+      root.position.set(cx, 0, cz);
+
+      const mast = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12, 0.22, ROGUE_BEACON_Y - 2, 6),
+        mats.ironDark,
+      );
+      mast.position.y = (ROGUE_BEACON_Y - 2) / 2 + 1;
+      root.add(mast);
+
+      const bulbMat = new THREE.MeshBasicMaterial({
+        color: 0xff2200,
+        fog: false,
+        transparent: true,
+        opacity: 0.95,
+      });
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(1.35, 12, 12), bulbMat);
+      bulb.position.y = ROGUE_BEACON_Y;
+      bulb.renderOrder = 4;
+      root.add(bulb);
+
+      const haloMat = new THREE.MeshBasicMaterial({
+        color: 0xff3300,
+        fog: false,
+        transparent: true,
+        opacity: 0.4,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      });
+      const halo = new THREE.Mesh(new THREE.SphereGeometry(3.2, 12, 12), haloMat);
+      halo.position.y = ROGUE_BEACON_Y;
+      halo.renderOrder = 3;
+      root.add(halo);
+
+      // Tall additive shaft so the warning reads as a skyward column from afar
+      const shaftMat = new THREE.MeshBasicMaterial({
+        color: 0xff2200,
+        fog: false,
+        transparent: true,
+        opacity: 0.28,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.7, 20, 8), shaftMat);
+      shaft.position.y = ROGUE_BEACON_Y - 10;
+      shaft.renderOrder = 2;
+      root.add(shaft);
+
+      rogueBeaconGroup.add(root);
+      rogueBeacons.push({
+        districtId: d.id,
+        root,
+        bulbMat,
+        haloMat,
+        shaftMat,
+        lit: false,
+      });
+    }
   }
 
   // Reset sinks for hub / root content
@@ -2058,12 +2142,36 @@ export function buildSkyCity(): SkyCityBuilt {
     colliders: [],
     resident: true,
   });
+  streamChunks.push({
+    id: 'rogue_beacons',
+    x: 0,
+    z: 0,
+    group: rogueBeaconGroup,
+    colliders: [],
+    resident: true,
+  });
 
   const animState = { npcActive: 0 };
 
   const setLodFocus = (x: number, z: number) => {
     lodFocusX = x;
     lodFocusZ = z;
+  };
+
+  const setPlazaRogueBeacons = (activeDistrictIds: Iterable<string>) => {
+    const lit = activeDistrictIds instanceof Set
+      ? activeDistrictIds
+      : new Set(activeDistrictIds);
+    for (const b of rogueBeacons) {
+      const on = lit.has(b.districtId);
+      b.lit = on;
+      b.root.visible = on;
+      if (!on) {
+        b.bulbMat.opacity = 0.95;
+        b.haloMat.opacity = 0.4;
+        b.shaftMat.opacity = 0.28;
+      }
+    }
   };
 
   const animate = (cityTime: number, dt: number) => {
@@ -2073,8 +2181,19 @@ export function buildSkyCity(): SkyCityBuilt {
       s.root.visible = d < 320;
     }
 
-    let active = 0;
+    // Pulse lit rogue warning beacons (red skyward signal)
     const animT = cityTime * 48;
+    for (const b of rogueBeacons) {
+      if (!b.lit) continue;
+      const pulse = 0.5 + 0.5 * Math.sin(animT * 2.4 + b.root.position.x * 0.01);
+      b.bulbMat.opacity = 0.55 + 0.45 * pulse;
+      b.haloMat.opacity = 0.18 + 0.5 * pulse;
+      b.shaftMat.opacity = 0.14 + 0.32 * pulse;
+      const s = 0.92 + 0.14 * pulse;
+      b.root.scale.set(s, 1 + 0.06 * pulse, s);
+    }
+
+    let active = 0;
     for (const n of npcs) {
       const nx = n.mesh.position.x;
       const nz = n.mesh.position.z;
@@ -2217,6 +2336,8 @@ export function buildSkyCity(): SkyCityBuilt {
     districtStallGroups,
     factoryGroups,
     districts,
+    rogueBeacons,
+    setPlazaRogueBeacons,
     streamChunks,
     harvestSpot,
     residentialPlaza,
