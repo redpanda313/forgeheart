@@ -1,10 +1,14 @@
 /**
- * Shared site-builder session helpers (shop + factory).
+ * Shared site-builder session helpers (shop + factory + home).
  */
 
 import type {
   FactoryForm,
   FactoryLayout,
+  HomeLayout,
+  HomeRoom,
+  HomeRoomKind,
+  HomeTier,
   SiteProp,
   StallLayout,
   StallTier,
@@ -12,13 +16,15 @@ import type {
 } from './economy';
 import {
   quoteFactoryBuild,
+  quoteHomeBuild,
   quoteStallBuild,
 } from './economy';
 import { defaultStallLayout } from './stallBuild';
 import { defaultFactoryLayout } from './factoryBuild';
+import { defaultHomeLayout } from './homeBuild';
 
-export type SiteKind = 'stall' | 'factory' | 'bay_wing';
-export type SiteStep = 'site' | 'structure' | 'props' | 'finalize';
+export type SiteKind = 'stall' | 'factory' | 'bay_wing' | 'home';
+export type SiteStep = 'site' | 'structure' | 'rooms' | 'props' | 'finalize';
 
 export type SiteSession = {
   kind: SiteKind;
@@ -37,6 +43,11 @@ export type SiteSession = {
   color: number;
   /** Factory */
   form: FactoryForm;
+  /** Home */
+  homeTier: HomeTier;
+  rooms: HomeRoom[];
+  /** Active room tool (home rooms step) */
+  activeRoomKind: HomeRoomKind | null;
   props: SiteProp[];
   /** Active prop tool id (null = not placing) */
   activePropId: string | null;
@@ -51,13 +62,16 @@ export function defaultSiteSession(opts: {
   baseCost: number;
   stall?: StallLayout | null;
   factory?: FactoryLayout | null;
+  home?: HomeLayout | null;
   plazaX: number;
   plazaZ: number;
 }): SiteSession {
   const stall = opts.stall;
   const factory = opts.factory;
+  const home = opts.home;
   const fromStall = opts.kind === 'stall' && stall?.built;
-  const fromFactory = opts.kind !== 'stall' && factory?.built;
+  const fromFactory = (opts.kind === 'factory' || opts.kind === 'bay_wing') && factory?.built;
+  const fromHome = opts.kind === 'home' && home?.built;
   return {
     kind: opts.kind,
     districtId: opts.districtId,
@@ -70,22 +84,39 @@ export function defaultSiteSession(opts: {
       ? stall!.plotX
       : fromFactory
         ? factory!.plotX
-        : opts.plazaX,
+        : fromHome
+          ? home!.plotX
+          : opts.plazaX,
     plotZ: fromStall
       ? stall!.plotZ
       : fromFactory
         ? factory!.plotZ
-        : opts.plazaZ,
-    yaw: fromStall ? stall!.yaw : fromFactory ? factory!.yaw : 0,
-    sitePlaced: !!(fromStall || fromFactory),
+        : fromHome
+          ? home!.plotZ
+          : opts.plazaZ,
+    yaw: fromStall
+      ? stall!.yaw
+      : fromFactory
+        ? factory!.yaw
+        : fromHome
+          ? home!.yaw
+          : 0,
+    sitePlaced: !!(fromStall || fromFactory || fromHome),
     tier: stall?.tier ?? 'bench',
-    color: stall?.color ?? 0,
+    color: fromHome ? (home?.color ?? 0) : (stall?.color ?? 0),
     form: factory?.form ?? 'horizontal',
+    homeTier: home?.tier ?? 'cottage',
+    rooms: fromHome
+      ? (home!.rooms ?? []).map((r) => ({ ...r }))
+      : [{ kind: 'living', lx: 0, lz: 0, yaw: 0 }],
+    activeRoomKind: null,
     props: fromStall
       ? [...(stall!.props ?? [])]
       : fromFactory
         ? [...(factory!.props ?? [])]
-        : [],
+        : fromHome
+          ? [...(home!.props ?? [])]
+          : [],
     activePropId: null,
   };
 }
@@ -117,12 +148,46 @@ export function sessionFactoryLayout(s: SiteSession): FactoryLayout {
   };
 }
 
+export function sessionHomeLayout(s: SiteSession): HomeLayout {
+  const d = defaultHomeLayout(s.plotX, s.plotZ);
+  return {
+    ...d,
+    plotX: s.plotX,
+    plotZ: s.plotZ,
+    yaw: s.yaw,
+    tier: s.homeTier,
+    color: s.color,
+    props: s.props.map((p) => ({ ...p })),
+    rooms: s.rooms.map((r) => ({ ...r })),
+    built: false,
+  };
+}
+
 /** Charge preview — only positive delta vs previous when redesigning */
 export function siteChargePreview(
   s: SiteSession,
   prevStall: StallLayout | null | undefined,
   prevFactory: FactoryLayout | null | undefined,
+  prevHome?: HomeLayout | null | undefined,
 ): number {
+  if (s.kind === 'home') {
+    const build = quoteHomeBuild({
+      tier: s.homeTier,
+      color: s.color,
+      rooms: s.rooms,
+      props: s.props,
+    }).total;
+    if (s.redesign && prevHome?.built) {
+      const prev = quoteHomeBuild({
+        tier: prevHome.tier,
+        color: prevHome.color,
+        rooms: prevHome.rooms,
+        props: prevHome.props,
+      }).total;
+      return Math.max(0, build - prev);
+    }
+    return build;
+  }
   if (s.kind === 'stall') {
     const build = quoteStallBuild({
       districtId: s.districtId,
@@ -168,4 +233,10 @@ export function cameraFeetXZ(cam: { position: { x: number; z: number } }): {
   z: number;
 } {
   return { x: cam.position.x, z: cam.position.z };
+}
+
+/** Ordered wizard steps for a site kind */
+export function siteStepsFor(kind: SiteKind): SiteStep[] {
+  if (kind === 'home') return ['site', 'structure', 'rooms', 'props', 'finalize'];
+  return ['site', 'structure', 'props', 'finalize'];
 }

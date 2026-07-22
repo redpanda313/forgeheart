@@ -185,7 +185,12 @@ import {
   quotePlacement,
   finalizeStallBuild,
   finalizeFactoryBuild,
+  finalizeHomeBuild,
   isValidStallPlot,
+  isValidHomePlot,
+  ensureDefaultHomeLayout,
+  homeHasRoom,
+  canCraftAtHomeOrBay,
   giftRomanceNpc,
   onMedallionHostLost,
   districtById,
@@ -250,11 +255,25 @@ import {
   factoryPropCost,
 } from './factoryBuild';
 import {
+  HOME_TIERS,
+  HOME_COLOR_NAMES,
+  HOME_ROOM_CATALOG,
+  HOME_PROP_CATALOG,
+  buildHomeVisual,
+  worldHomeColliders,
+  homeRoomCap,
+  homeRoomCost,
+  homePropCost,
+  apartmentAnchorXZ,
+} from './homeBuild';
+import {
   type SiteSession,
   defaultSiteSession,
   sessionStallLayout,
   sessionFactoryLayout,
+  sessionHomeLayout,
   siteChargePreview,
+  siteStepsFor,
 } from './siteSession';
 
 /** Game Maker interaction mode */
@@ -1378,6 +1397,13 @@ export class ForgeHeartGame {
           this.rebuildSiteGhost();
           this.refreshSiteBuilderUi();
           this.toast('Prop tool cleared — pick another or Done placing.', 2);
+          return true;
+        }
+        if (this.siteBuilder.step === 'rooms' && this.siteBuilder.activeRoomKind) {
+          this.siteBuilder.activeRoomKind = null;
+          this.rebuildSiteGhost();
+          this.refreshSiteBuilderUi();
+          this.toast('Room tool cleared.', 2);
           return true;
         }
         this.cancelSiteBuilder();
@@ -4454,11 +4480,43 @@ export class ForgeHeartGame {
       return true;
     }
     if (it.kind === 'craft_bench') {
-      if (!this.inv.cityWorkshopLeased && !this.inv.parcelLeased) {
-        this.toast('Lease the city workshop to use the craft bench.', 3);
+      if (!canCraftAtHomeOrBay(this.inv)) {
+        this.toast('Lease a workshop — or build a Workshop room at home.', 3);
         return true;
       }
       this.openCraft();
+      return true;
+    }
+    if (it.kind === 'player_home') {
+      if (!this.inv.apartmentOwned) {
+        this.toast('Buy a sky apartment deed first (training Real Estate).', 3);
+        return true;
+      }
+      ensureDefaultHomeLayout(this.inv);
+      this.beginSiteBuilder({
+        kind: 'home',
+        districtId: 'residential',
+        redesign: !!this.inv.apartmentLayout?.built,
+        applyUpgrade: false,
+        baseCost: 0,
+      });
+      return true;
+    }
+    if (it.kind === 'home_workshop') {
+      if (!homeHasRoom(this.inv, 'workshop')) {
+        this.toast('Add a Workshop room when improving your home.', 3);
+        return true;
+      }
+      this.openCraft();
+      return true;
+    }
+    if (it.kind === 'home_invent') {
+      if (!homeHasRoom(this.inv, 'invent_lab')) {
+        this.toast('Add an Invention lab room when improving your home.', 3);
+        return true;
+      }
+      this.bayTab = 'invent';
+      this.openBay();
       return true;
     }
     if (it.kind === 'hire_board') {
@@ -4522,7 +4580,7 @@ export class ForgeHeartGame {
     }
     if (it.kind === 'invent_desk') {
       if (!canInvent(this.inv)) {
-        this.toast('Invent needs Workshop Wing (L3+) or a leased city workshop.', 3.5);
+        this.toast('Invent needs bay L3+, city workshop, or a home Invention lab.', 3.5);
         return true;
       }
       this.bayTab = 'invent';
@@ -4689,7 +4747,7 @@ export class ForgeHeartGame {
   }
 
   private beginSiteBuilder(opts: {
-    kind: 'stall' | 'factory' | 'bay_wing';
+    kind: 'stall' | 'factory' | 'bay_wing' | 'home';
     districtId: string;
     storageTrack?: StorageTrack;
     redesign: boolean;
@@ -4697,7 +4755,7 @@ export class ForgeHeartGame {
     baseCost: number;
   }) {
     const dist = districtById(opts.districtId);
-    if (!dist) {
+    if (!dist && opts.kind !== 'home') {
       this.toast('Unknown district.', 2);
       return;
     }
@@ -4710,17 +4768,23 @@ export class ForgeHeartGame {
         : opts.kind === 'bay_wing'
           ? this.inv.bayWingLayout
           : null;
+    const home =
+      opts.kind === 'home'
+        ? ensureDefaultHomeLayout(this.inv)
+        : null;
+    const anchor = apartmentAnchorXZ();
     this.siteBuilder = defaultSiteSession({
       kind: opts.kind,
-      districtId: opts.districtId,
+      districtId: opts.districtId || 'residential',
       storageTrack: opts.storageTrack,
       redesign: opts.redesign,
       applyUpgrade: opts.applyUpgrade,
       baseCost: opts.baseCost,
       stall: stall ?? null,
       factory: factory ?? null,
-      plazaX: dist.x,
-      plazaZ: dist.z,
+      home: home ?? null,
+      plazaX: opts.kind === 'home' ? (home?.plotX ?? anchor.x) : dist!.x,
+      plazaZ: opts.kind === 'home' ? (home?.plotZ ?? anchor.z) : dist!.z,
     });
     // Always start with selection box on the plaza (editable / movable)
     this.siteBuilder.step = 'site';
@@ -4731,12 +4795,21 @@ export class ForgeHeartGame {
     this.cityEditor?.updateGhost(null, 0);
     this.clearCityGhost();
     if (this.megaCityActive) {
-      this.camera.position.set(dist.x, Math.max(this.camera.position.y, 16), dist.z + dist.size * 0.15);
+      const cx = opts.kind === 'home' ? anchor.x : dist!.x;
+      const cz = opts.kind === 'home' ? anchor.z : dist!.z;
+      const size = opts.kind === 'home' ? 20 : dist!.size;
+      this.camera.position.set(cx, Math.max(this.camera.position.y, 16), cz + size * 0.15);
     }
     this.rebuildSiteGhost();
     this.refreshSiteBuilderUi();
     const label =
-      opts.kind === 'stall' ? 'shop' : opts.kind === 'bay_wing' ? 'bay factory' : 'factory';
+      opts.kind === 'stall'
+        ? 'shop'
+        : opts.kind === 'bay_wing'
+          ? 'bay factory'
+          : opts.kind === 'home'
+            ? 'home'
+            : 'factory';
     this.toast(
       opts.redesign
         ? `Edit ${label} — look to move the selection box, Enter locks it. Only upgrades cost more.`
@@ -4773,23 +4846,27 @@ export class ForgeHeartGame {
   private prevLayoutsForCharge(): {
     stall: StallLayout | null;
     factory: import('./economy').FactoryLayout | null;
+    home: import('./economy').HomeLayout | null;
   } {
     const s = this.siteBuilder;
-    if (!s) return { stall: null, factory: null };
+    if (!s) return { stall: null, factory: null, home: null };
+    if (s.kind === 'home') {
+      return { stall: null, factory: null, home: this.inv.apartmentLayout ?? null };
+    }
     if (s.kind === 'stall') {
-      return { stall: this.inv.cityStalls[s.districtId]?.layout ?? null, factory: null };
+      return { stall: this.inv.cityStalls[s.districtId]?.layout ?? null, factory: null, home: null };
     }
     if (s.kind === 'factory' && s.storageTrack) {
-      return { stall: null, factory: this.inv.storageLayouts?.[s.storageTrack] ?? null };
+      return { stall: null, factory: this.inv.storageLayouts?.[s.storageTrack] ?? null, home: null };
     }
-    return { stall: null, factory: this.inv.bayWingLayout };
+    return { stall: null, factory: this.inv.bayWingLayout, home: null };
   }
 
   private siteCharge(): number {
     const s = this.siteBuilder;
     if (!s) return 0;
     const prev = this.prevLayoutsForCharge();
-    return siteChargePreview(s, prev.stall, prev.factory);
+    return siteChargePreview(s, prev.stall, prev.factory, prev.home);
   }
 
   private canAffordSiteCharge(extraPropCost = 0): boolean {
@@ -4834,7 +4911,9 @@ export class ForgeHeartGame {
     const s = this.siteBuilder;
     if (!s) return;
     const aiming =
-      (s.step === 'site' && !s.sitePlaced) || (s.step === 'props' && !!s.activePropId);
+      (s.step === 'site' && !s.sitePlaced) ||
+      (s.step === 'props' && !!s.activePropId) ||
+      (s.step === 'rooms' && !!s.activeRoomKind);
     try {
       if (aiming) this.controls.lock();
       else this.controls.unlock();
@@ -4857,7 +4936,7 @@ export class ForgeHeartGame {
 
     // Pure selection box while choosing site location (no building preview)
     if (s.step === 'site' && !s.sitePlaced) {
-      const box = makeSelectionBox(s.kind === 'stall' ? 12 : 16);
+      const box = makeSelectionBox(s.kind === 'home' ? 18 : s.kind === 'stall' ? 12 : 16);
       const look = this.siteLookPoint();
       box.position.set(look.x, 0.05, look.z);
       box.rotation.y = s.yaw;
@@ -4870,6 +4949,9 @@ export class ForgeHeartGame {
     let root: THREE.Group;
     if (s.kind === 'stall') {
       const built = buildStallVisual(this.skyCity.mats, sessionStallLayout(s));
+      root = built.group;
+    } else if (s.kind === 'home') {
+      const built = buildHomeVisual(this.skyCity.mats, sessionHomeLayout(s));
       root = built.group;
     } else {
       const built = buildFactoryVisual(this.skyCity.mats, sessionFactoryLayout(s));
@@ -4899,7 +4981,17 @@ export class ForgeHeartGame {
       const pg =
         s.kind === 'stall'
           ? makeShopPropGhost(s.activePropId, this.skyCity.mats)
-          : makeFactoryPropGhost(s.activePropId, this.skyCity.mats);
+          : s.kind === 'home'
+            ? makeShopPropGhost(s.activePropId, this.skyCity.mats)
+            : makeFactoryPropGhost(s.activePropId, this.skyCity.mats);
+      const look = this.siteLookPoint();
+      pg.position.copy(look);
+      pg.rotation.y = s.yaw;
+      this.scene.add(pg);
+      this.sitePropGhost = pg;
+    }
+    if (s.step === 'rooms' && s.activeRoomKind) {
+      const pg = makeShopPropGhost('planters', this.skyCity.mats);
       const look = this.siteLookPoint();
       pg.position.copy(look);
       pg.rotation.y = s.yaw;
@@ -4918,7 +5010,10 @@ export class ForgeHeartGame {
       this.siteGhost.position.z = look.z;
       this.siteGhost.position.y = 0.05;
       this.siteGhost.rotation.y = s.yaw;
-      const ok = isValidStallPlot(s.districtId, look.x, look.z);
+      const ok =
+        s.kind === 'home'
+          ? isValidHomePlot(look.x, look.z, s.homeTier)
+          : isValidStallPlot(s.districtId, look.x, look.z);
       this.siteGhost.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh && m.material && !Array.isArray(m.material)) {
@@ -4933,7 +5028,10 @@ export class ForgeHeartGame {
       });
     }
 
-    if (s.step === 'props' && s.activePropId && this.sitePropGhost) {
+    if (
+      ((s.step === 'props' && s.activePropId) || (s.step === 'rooms' && s.activeRoomKind)) &&
+      this.sitePropGhost
+    ) {
       this.sitePropGhost.position.x = look.x;
       this.sitePropGhost.position.z = look.z;
       this.sitePropGhost.position.y = 0.05;
@@ -4942,7 +5040,8 @@ export class ForgeHeartGame {
       this.sitePropGhost.userData.lx = local.lx;
       this.sitePropGhost.userData.lz = local.lz;
       // Tint red if too far from site footprint
-      const far = Math.hypot(local.lx, local.lz) > 9;
+      const reach = s.kind === 'home' ? 22 : 9;
+      const far = Math.hypot(local.lx, local.lz) > reach;
       this.sitePropGhost.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh && m.material && !Array.isArray(m.material)) {
@@ -4966,8 +5065,17 @@ export class ForgeHeartGame {
           : this.siteLookPoint();
       const px = look.x;
       const pz = look.z;
-      if (!isValidStallPlot(s.districtId, px, pz)) {
-        this.toast('Site must be on the plaza or within NPC reach.', 3);
+      const ok =
+        s.kind === 'home'
+          ? isValidHomePlot(px, pz, s.homeTier)
+          : isValidStallPlot(s.districtId, px, pz);
+      if (!ok) {
+        this.toast(
+          s.kind === 'home'
+            ? 'Home site must stay on your home island.'
+            : 'Site must be on the plaza or within NPC reach.',
+          3,
+        );
         return;
       }
       s.plotX = px;
@@ -4981,8 +5089,55 @@ export class ForgeHeartGame {
       return;
     }
 
+    if (s.step === 'rooms' && s.activeRoomKind) {
+      const cost = homeRoomCost(s.activeRoomKind);
+      if (!this.canAffordSiteCharge(cost)) {
+        this.toast(`Cannot afford this room (${cost}b).`, 2.5);
+        return;
+      }
+      const cap = homeRoomCap(s.homeTier);
+      if (s.rooms.length >= cap) {
+        this.toast(`${s.homeTier} holds at most ${cap} rooms — expand the home first.`, 3);
+        return;
+      }
+      if (s.rooms.some((r) => r.kind === s.activeRoomKind)) {
+        this.toast('That room type is already on your home.', 2.5);
+        return;
+      }
+      let lx: number;
+      let lz: number;
+      if (this.sitePropGhost) {
+        const local = this.worldToSiteLocal(
+          this.sitePropGhost.position.x,
+          this.sitePropGhost.position.z,
+        );
+        lx = local.lx;
+        lz = local.lz;
+      } else {
+        const look = this.siteLookPoint();
+        const local = this.worldToSiteLocal(look.x, look.z);
+        lx = local.lx;
+        lz = local.lz;
+      }
+      if (Math.hypot(lx, lz) > 22) {
+        this.toast('Aim closer to your home footprint.', 2.5);
+        return;
+      }
+      s.rooms.push({ kind: s.activeRoomKind, lx, lz, yaw: s.yaw });
+      s.activeRoomKind = null;
+      this.rebuildSiteGhost();
+      this.refreshSiteBuilderUi();
+      this.toast('Room placed.', 1.5);
+      return;
+    }
+
     if (s.step === 'props' && s.activePropId) {
-      const cost = s.kind === 'stall' ? shopPropCost(s.activePropId) : factoryPropCost(s.activePropId);
+      const cost =
+        s.kind === 'stall'
+          ? shopPropCost(s.activePropId)
+          : s.kind === 'home'
+            ? homePropCost(s.activePropId)
+            : factoryPropCost(s.activePropId);
       if (!this.canAffordSiteCharge(cost)) {
         this.toast(`Cannot afford this prop (${cost}b).`, 2.5);
         return;
@@ -5003,7 +5158,8 @@ export class ForgeHeartGame {
         lx = local.lx;
         lz = local.lz;
       }
-      if (Math.hypot(lx, lz) > 10) {
+      const reach = s.kind === 'home' ? 22 : 10;
+      if (Math.hypot(lx, lz) > reach) {
         this.toast('Aim closer to your site footprint.', 2.5);
         return;
       }
@@ -5024,15 +5180,15 @@ export class ForgeHeartGame {
   private siteBuilderBack() {
     const s = this.siteBuilder;
     if (!s) return;
-    const order: typeof s.step[] = ['site', 'structure', 'props', 'finalize'];
+    const order = siteStepsFor(s.kind);
     const i = order.indexOf(s.step);
     if (i <= 0) return;
     s.step = order[i - 1]!;
     if (s.step === 'site') {
-      // Keep coords but allow move
       s.sitePlaced = false;
     }
     s.activePropId = null;
+    s.activeRoomKind = null;
     this.rebuildSiteGhost();
     this.refreshSiteBuilderUi();
   }
@@ -5049,11 +5205,27 @@ export class ForgeHeartGame {
         this.toast('Cannot afford this structure — pick a cheaper option.', 3);
         return;
       }
+      if (s.kind === 'home') {
+        s.step = 'rooms';
+        s.activeRoomKind = null;
+        this.setHelp('ROOMS · add workshop / invent lab · Next when ready');
+      } else {
+        s.step = 'props';
+        s.activePropId = null;
+        this.setHelp('PROPS · pick from panel to aim · Enter places · Done when finished');
+      }
+    } else if (s.step === 'rooms') {
+      if (s.activeRoomKind) {
+        this.siteBuilderConfirmAction();
+        return;
+      }
+      if (!s.rooms.some((r) => r.kind === 'living')) {
+        s.rooms.unshift({ kind: 'living', lx: 0, lz: 0, yaw: 0 });
+      }
       s.step = 'props';
       s.activePropId = null;
-      this.setHelp('PROPS · pick from panel to aim · Enter places · Done when finished');
+      this.setHelp('PROPS · décor · Enter places · Done when finished');
     } else if (s.step === 'props') {
-      // If still aiming, place that prop first
       if (s.activePropId) {
         this.siteBuilderConfirmAction();
         return;
@@ -5083,14 +5255,20 @@ export class ForgeHeartGame {
     panel.setAttribute('aria-hidden', 'false');
     const charge = this.siteCharge();
     const kindLabel =
-      s.kind === 'stall' ? 'shop' : s.kind === 'bay_wing' ? 'bay factory' : 'factory';
+      s.kind === 'stall'
+        ? 'shop'
+        : s.kind === 'bay_wing'
+          ? 'bay factory'
+          : s.kind === 'home'
+            ? 'home'
+            : 'factory';
     if (title) {
-      title.textContent = s.redesign ? `Edit ${kindLabel}` : `Build ${kindLabel}`;
+      title.textContent = s.redesign ? `Improve ${kindLabel}` : `Build ${kindLabel}`;
     }
     if (quoteEl) {
       quoteEl.textContent = `Brass ${this.inv.brass} · charge ${charge}b (only upgrades / pricier picks)`;
     }
-    const steps = ['site', 'structure', 'props', 'finalize'] as const;
+    const steps = siteStepsFor(s.kind);
     const si = steps.indexOf(s.step);
     if (stepEl) stepEl.textContent = `Step ${si + 1} / ${steps.length} · ${s.step}`;
     body.innerHTML = '';
@@ -5105,7 +5283,11 @@ export class ForgeHeartGame {
               ? s.activePropId
                 ? 'Place aimed prop'
                 : 'Done placing'
-              : 'Next';
+              : s.step === 'rooms'
+                ? s.activeRoomKind
+                  ? 'Place aimed room'
+                  : 'Done rooms'
+                : 'Next';
       nextBtn.disabled = s.step === 'finalize' && !this.canAffordSiteCharge();
       // When aiming, Next places; when browsing props, Next finishes prop step
       nextBtn.onclick = null;
@@ -5131,7 +5313,7 @@ export class ForgeHeartGame {
           btn.className = 'stall-wizard-opt' + (s.tier === t.id ? ' selected' : '');
           const trial = { ...s, tier: t.id };
           const prev = this.prevLayoutsForCharge();
-          const c = siteChargePreview(trial, prev.stall, prev.factory);
+          const c = siteChargePreview(trial, prev.stall, prev.factory, prev.home);
           const ok = this.inv.brass >= c;
           if (!ok) {
             btn.disabled = true;
@@ -5152,7 +5334,7 @@ export class ForgeHeartGame {
           btn.className = 'stall-wizard-opt' + (s.color === i ? ' selected' : '');
           const trial = { ...s, color: i };
           const prev = this.prevLayoutsForCharge();
-          const c = siteChargePreview(trial, prev.stall, prev.factory);
+          const c = siteChargePreview(trial, prev.stall, prev.factory, prev.home);
           const ok = this.inv.brass >= c;
           if (!ok) {
             btn.disabled = true;
@@ -5160,6 +5342,59 @@ export class ForgeHeartGame {
           }
           const fee = i === 0 ? 0 : 20 + i * 15;
           btn.innerHTML = `<strong>Color · ${STALL_COLOR_NAMES[i]} · +${fee}b</strong>`;
+          btn.addEventListener('click', () => {
+            if (!ok) return;
+            s.color = i;
+            this.rebuildSiteGhost();
+            this.refreshSiteBuilderUi();
+          });
+          body.appendChild(btn);
+        }
+      } else if (s.kind === 'home') {
+        if (sub) {
+          sub.textContent =
+            'Grow your home toward a private island. Bigger tiers unlock more rooms — and cost more.';
+        }
+        for (const t of HOME_TIERS) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'stall-wizard-opt' + (s.homeTier === t.id ? ' selected' : '');
+          const trial = { ...s, homeTier: t.id };
+          // Trim rooms if shrinking
+          if (trial.rooms.length > t.roomCap) {
+            trial.rooms = trial.rooms.slice(0, t.roomCap);
+          }
+          const prev = this.prevLayoutsForCharge();
+          const c = siteChargePreview(trial, prev.stall, prev.factory, prev.home);
+          const ok = this.inv.brass >= c;
+          if (!ok) {
+            btn.disabled = true;
+            btn.classList.add('unaffordable');
+          }
+          btn.innerHTML = `<strong>${t.name} · +${t.extraCost}b</strong><span class="hint">${t.blurb}${ok ? '' : ' · cannot afford'}</span>`;
+          btn.addEventListener('click', () => {
+            if (!ok) return;
+            s.homeTier = t.id;
+            if (s.rooms.length > t.roomCap) s.rooms = s.rooms.slice(0, t.roomCap);
+            this.rebuildSiteGhost();
+            this.refreshSiteBuilderUi();
+          });
+          body.appendChild(btn);
+        }
+        for (let i = 0; i < HOME_COLOR_NAMES.length; i++) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'stall-wizard-opt' + (s.color === i ? ' selected' : '');
+          const trial = { ...s, color: i };
+          const prev = this.prevLayoutsForCharge();
+          const c = siteChargePreview(trial, prev.stall, prev.factory, prev.home);
+          const ok = this.inv.brass >= c;
+          if (!ok) {
+            btn.disabled = true;
+            btn.classList.add('unaffordable');
+          }
+          const fee = i === 0 ? 0 : 25 + i * 20;
+          btn.innerHTML = `<strong>Color · ${HOME_COLOR_NAMES[i]} · +${fee}b</strong>`;
           btn.addEventListener('click', () => {
             if (!ok) return;
             s.color = i;
@@ -5179,7 +5414,7 @@ export class ForgeHeartGame {
           btn.className = 'stall-wizard-opt' + (s.form === f.id ? ' selected' : '');
           const trial = { ...s, form: f.id };
           const prev = this.prevLayoutsForCharge();
-          const c = siteChargePreview(trial, prev.stall, prev.factory);
+          const c = siteChargePreview(trial, prev.stall, prev.factory, prev.home);
           const ok = this.inv.brass >= c;
           if (!ok) {
             btn.disabled = true;
@@ -5193,6 +5428,71 @@ export class ForgeHeartGame {
             this.refreshSiteBuilderUi();
           });
           body.appendChild(btn);
+        }
+      }
+    } else if (s.step === 'rooms') {
+      const cap = homeRoomCap(s.homeTier);
+      if (s.activeRoomKind) {
+        if (sub) {
+          sub.textContent = 'AIMING room wing — look to place, Enter confirms, Esc cancels.';
+        }
+        const hint = document.createElement('p');
+        hint.className = 'stall-wizard-hint';
+        hint.textContent = `Placing: ${s.activeRoomKind.replace(/_/g, ' ')} · ${s.rooms.length}/${cap} rooms`;
+        body.appendChild(hint);
+        const cancelAim = document.createElement('button');
+        cancelAim.type = 'button';
+        cancelAim.className = 'stall-wizard-opt';
+        cancelAim.innerHTML = '<strong>Cancel aim</strong>';
+        cancelAim.addEventListener('click', () => {
+          s.activeRoomKind = null;
+          this.rebuildSiteGhost();
+          this.refreshSiteBuilderUi();
+        });
+        body.appendChild(cancelAim);
+      } else {
+        if (sub) {
+          sub.textContent = `Add functional rooms (${s.rooms.length}/${cap}). Workshop crafts · Invent lab prototypes.`;
+        }
+        for (const r of HOME_ROOM_CATALOG) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'stall-wizard-opt';
+          const have = s.rooms.some((x) => x.kind === r.id);
+          const full = s.rooms.length >= cap && !have;
+          const ok = !have && !full && this.canAffordSiteCharge(r.cost);
+          if (!ok) {
+            btn.disabled = true;
+            btn.classList.add('unaffordable');
+          }
+          btn.innerHTML = `<strong>${r.name} · ${r.cost}b${have ? ' · ✓' : ''}</strong><span class="hint">${r.blurb}${have ? ' · already placed' : full ? ' · room cap' : ok ? ' · click to aim' : ' · cannot afford'}</span>`;
+          btn.addEventListener('click', () => {
+            if (!ok) return;
+            if (r.id === 'living') {
+              if (!have) s.rooms.unshift({ kind: 'living', lx: 0, lz: 0, yaw: 0 });
+              this.rebuildSiteGhost();
+              this.refreshSiteBuilderUi();
+              return;
+            }
+            s.activeRoomKind = r.id;
+            this.rebuildSiteGhost();
+            this.refreshSiteBuilderUi();
+            this.toast(`Aim ${r.name} — look · Enter places`, 3);
+          });
+          body.appendChild(btn);
+        }
+        if (s.rooms.length > 1) {
+          const undo = document.createElement('button');
+          undo.type = 'button';
+          undo.className = 'stall-wizard-opt';
+          undo.innerHTML = '<strong>Undo last room</strong>';
+          undo.addEventListener('click', () => {
+            const last = s.rooms[s.rooms.length - 1];
+            if (last && last.kind !== 'living') s.rooms.pop();
+            this.rebuildSiteGhost();
+            this.refreshSiteBuilderUi();
+          });
+          body.appendChild(undo);
         }
       }
     } else if (s.step === 'props') {
@@ -5227,7 +5527,12 @@ export class ForgeHeartGame {
           sub.textContent =
             'Pick a decoration — that starts aim mode (look to position). After placing, pick again or Done placing.';
         }
-        const catalog = s.kind === 'stall' ? SHOP_PROP_CATALOG : FACTORY_PROP_CATALOG;
+        const catalog =
+          s.kind === 'stall'
+            ? SHOP_PROP_CATALOG
+            : s.kind === 'home'
+              ? HOME_PROP_CATALOG
+              : FACTORY_PROP_CATALOG;
         for (const p of catalog) {
           const btn = document.createElement('button');
           btn.type = 'button';
@@ -5270,6 +5575,8 @@ export class ForgeHeartGame {
       p.className = 'stall-wizard-hint';
       if (s.kind === 'stall') {
         p.textContent = `${STALL_TIERS.find((t) => t.id === s.tier)?.name} · ${s.props.length} props · ${STALL_COLOR_NAMES[s.color]} · ${charge}b`;
+      } else if (s.kind === 'home') {
+        p.textContent = `${HOME_TIERS.find((t) => t.id === s.homeTier)?.name} · ${s.rooms.length} rooms · ${s.props.length} décor · ${HOME_COLOR_NAMES[s.color]} · ${charge}b`;
       } else {
         p.textContent = `${FACTORY_FORMS.find((f) => f.id === s.form)?.name} · ${s.props.length} props · ${charge}b`;
       }
@@ -5284,6 +5591,20 @@ export class ForgeHeartGame {
     if (!s) return;
     if (!s.sitePlaced) {
       this.toast('Place the site first.', 2);
+      return;
+    }
+    if (s.kind === 'home') {
+      const layout = sessionHomeLayout(s);
+      const r = finalizeHomeBuild(this.inv, layout, { redesign: s.redesign });
+      this.toast(r.msg, 4);
+      if (!r.ok) return;
+      this.brass = this.inv.brass;
+      this.clearSiteBuilderVisuals();
+      if (this.gameMakerActive) this.exitGameMaker();
+      this.syncHomeVisuals();
+      this.audio.playPickup();
+      writeSlot(this.activeSlot, this.buildSaveData());
+      this.syncEconomyHud();
       return;
     }
     if (s.kind === 'stall') {
@@ -7112,7 +7433,7 @@ export class ForgeHeartGame {
       invnEl.innerHTML = '';
       if (!canInvent(this.inv)) {
         invnEl.innerHTML =
-          '<p class="craft-hint">Unlock invent: expand bay to Workshop Wing (L3) or lease a city workshop (industrial).</p>';
+          '<p class="craft-hint">Unlock invent: bay Workshop Wing (L3), lease a city workshop, or build an Invention lab at home.</p>';
       } else {
         const intro = document.createElement('p');
         intro.className = 'craft-hint';
@@ -7995,7 +8316,7 @@ export class ForgeHeartGame {
     if (it.kind === 'invent_desk') {
       if (!canInvent(this.inv)) {
         this.toast(
-          'Invent unlocks at Workshop Wing (bay L3+) or with a leased city workshop.',
+          'Invent at bay L3+, city workshop, or a home Invention lab.',
           3.5,
         );
         return true;
@@ -8095,6 +8416,7 @@ export class ForgeHeartGame {
     if (!this.inv.apartmentOwned) {
       this.inv.apartmentOwned = true;
     }
+    ensureDefaultHomeLayout(this.inv);
     this.syncBoardOwnership();
     this.brass = this.inv.brass;
     const seed =
@@ -8146,6 +8468,7 @@ export class ForgeHeartGame {
     this.respawnCd = 0;
     this.fallKillY = this.skyCity.lowestY - 20;
     this.syncCityStallVisuals();
+    this.syncHomeVisuals();
     this.updateNavCompass(); // show home/work compass immediately
     this.wireCityMapUi();
     this.cityMapOpen = false;
@@ -8341,6 +8664,75 @@ export class ForgeHeartGame {
           it.mesh.position.copy(world);
         }
       }
+    }
+  }
+
+  /** Rebuild player home mesh, colliders, and room interactables. */
+  private syncHomeVisuals() {
+    if (!this.skyCity?.apartmentGroup) return;
+    const g = this.skyCity.apartmentGroup;
+    // Keep the door marker (player_home) — remove prior build meshes
+    const keep = new Set(
+      this.skyCity.interactables
+        .filter((x) => x.id === 'player_home' || x.id.startsWith('home_'))
+        .map((x) => x.mesh),
+    );
+    for (const child of [...g.children]) {
+      if (!keep.has(child)) g.remove(child);
+    }
+    // Drop old home room interactables
+    this.skyCity.interactables = this.skyCity.interactables.filter(
+      (x) => x.kind !== 'home_workshop' && x.kind !== 'home_invent',
+    );
+    this.spatialGrid?.removeChunk('player_home');
+
+    if (!this.inv.apartmentOwned) {
+      g.visible = false;
+      return;
+    }
+    g.visible = true;
+    const layout = ensureDefaultHomeLayout(this.inv);
+    const built = buildHomeVisual(this.skyCity.mats, layout);
+    built.group.position.set(layout.plotX, 0, layout.plotZ);
+    built.group.rotation.y = layout.yaw;
+    g.add(built.group);
+    const cols = worldHomeColliders(built, layout.plotX, layout.plotZ, layout.yaw);
+    this.spatialGrid?.setChunk('player_home', cols);
+
+    const door = this.skyCity.interactables.find((x) => x.id === 'player_home');
+    if (door) {
+      const world = rotateLocal(built.interactLocal, layout.yaw, layout.plotX, layout.plotZ);
+      door.position.copy(world);
+      door.mesh.position.copy(world);
+      const tierName = HOME_TIERS.find((t) => t.id === layout.tier)?.name ?? 'Home';
+      door.label = `${tierName} · improve / expand`;
+    }
+
+    for (const ri of built.roomInteracts) {
+      const world = rotateLocal(ri.local, layout.yaw, layout.plotX, layout.plotZ);
+      const mark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.22, 8, 8),
+        new THREE.MeshStandardMaterial({
+          color: ri.kind === 'invent_lab' ? 0x88e0ff : 0xc4a35a,
+          emissive: ri.kind === 'invent_lab' ? 0x4488aa : 0xaa8800,
+          emissiveIntensity: 0.55,
+        }),
+      );
+      mark.position.copy(world);
+      g.add(mark);
+      const kind = ri.kind === 'invent_lab' ? 'home_invent' : 'home_workshop';
+      this.skyCity.interactables.push({
+        id: `home_${ri.kind}`,
+        kind,
+        position: world.clone(),
+        radius: 2.8,
+        mesh: mark,
+        label: ri.kind === 'invent_lab' ? 'Home Invention Lab' : 'Home Workshop',
+      });
+    }
+
+    if (this.spatialGrid) {
+      this.colliders = this.spatialGrid.getAll() as Collider[];
     }
   }
 
