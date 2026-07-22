@@ -123,6 +123,12 @@ import {
   listHarvestSites,
   describeWorkerAssignment,
   createProgram,
+  createProgramFromTemplate,
+  setProgramFramePref,
+  PROGRAM_TEMPLATES,
+  minPayGradeForNodes,
+  workerMaxProgramNodes,
+  PROGRAM_FREE_NODES,
   addProgramNode,
   removeProgramNode,
   moveProgramNode,
@@ -6328,6 +6334,19 @@ export class ForgeHeartGame {
     }
   }
 
+  newProgramFromTemplatePublic(templateId: string) {
+    const id = templateId as (typeof PROGRAM_TEMPLATES)[number]['id'];
+    if (!PROGRAM_TEMPLATES.some((t) => t.id === id)) return;
+    const r = createProgramFromTemplate(this.inv, id);
+    this.programLog(r.msg);
+    if (r.ok && r.program) {
+      this.activeProgramId = r.program.id;
+      writeSlot(this.activeSlot, this.buildSaveData());
+      this.fillProgramPanel();
+      this.syncWorkerAgentsLoadout();
+    }
+  }
+
   setBayTabPublic(tab: string) {
     if (tab === 'inv' || tab === 'workers' || tab === 'invent' || tab === 'code') {
       this.bayTab = tab;
@@ -7444,13 +7463,30 @@ export class ForgeHeartGame {
     const addEl = document.getElementById('program-add-nodes');
     const assignEl = document.getElementById('program-assign');
     const title = document.getElementById('program-edit-title');
+    const templatesEl = document.getElementById('program-templates');
+    const prefEl = document.getElementById('program-frame-pref');
+    const gradeHint = document.getElementById('program-grade-hint');
     if (!list || !nodesEl || !addEl || !assignEl) return;
+
+    if (templatesEl) {
+      templatesEl.innerHTML = '';
+      for (const t of PROGRAM_TEMPLATES) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.dataset.programTemplate = t.id;
+        b.className = 'program-template-btn';
+        b.title = t.blurb;
+        b.innerHTML = `<strong>${t.name}</strong><span>${t.nodes.length} steps</span>`;
+        templatesEl.appendChild(b);
+      }
+    }
 
     list.innerHTML = '';
     for (const p of this.inv.programs) {
       const b = document.createElement('button');
       b.type = 'button';
-      b.textContent = `${p.name} (${p.nodes.length} nodes)`;
+      const grade = minPayGradeForNodes(p.nodes.length);
+      b.textContent = `${p.name} · ${p.nodes.length} steps${grade > 0 ? ` · G${grade}` : ''}`;
       if (p.id === this.activeProgramId) b.style.borderColor = '#88e0ff';
       b.addEventListener('click', () => {
         this.activeProgramId = p.id;
@@ -7463,7 +7499,7 @@ export class ForgeHeartGame {
     if (title) title.textContent = prog ? `Nodes · ${prog.name}` : 'Nodes';
     nodesEl.innerHTML = '';
     if (!prog) {
-      nodesEl.innerHTML = '<p class="craft-hint">Create a program first.</p>';
+      nodesEl.innerHTML = '<p class="craft-hint">Create a program or pick a Frame Line template.</p>';
     } else {
       prog.nodes.forEach((n, i) => {
         const row = document.createElement('div');
@@ -7505,6 +7541,49 @@ export class ForgeHeartGame {
       });
     }
 
+    const hasFrameNode =
+      !!prog &&
+      prog.nodes.some((n) => n === 'craft_frame' || n === 'craft_fine_frame');
+    if (prefEl) {
+      if (!prog || !hasFrameNode) {
+        prefEl.classList.add('hidden');
+        prefEl.innerHTML = '';
+      } else {
+        prefEl.classList.remove('hidden');
+        prefEl.innerHTML = '';
+        const lab = document.createElement('span');
+        lab.className = 'craft-hint';
+        lab.textContent = 'Frame parts';
+        prefEl.appendChild(lab);
+        for (const pref of ['service', 'fine'] as const) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = pref === 'fine' ? 'Fine' : 'Serviceable';
+          if ((prog.framePref ?? 'service') === pref) b.classList.add('active');
+          b.addEventListener('click', () => {
+            const r = setProgramFramePref(this.inv, prog.id, pref);
+            this.programLog(r.msg);
+            writeSlot(this.activeSlot, this.buildSaveData());
+            this.fillProgramPanel();
+          });
+          prefEl.appendChild(b);
+        }
+      }
+    }
+
+    if (gradeHint) {
+      if (!prog) {
+        gradeHint.textContent = '';
+      } else {
+        const need = minPayGradeForNodes(prog.nodes.length);
+        const free = PROGRAM_FREE_NODES;
+        gradeHint.textContent =
+          need <= 0
+            ? `${prog.nodes.length} steps · grade 0 OK (first ${free} steps free)`
+            : `${prog.nodes.length} steps · needs pay grade ${need}+ (raise pay in Bay → Workers)`;
+      }
+    }
+
     // Category chips + compact picker (same pattern as workbench)
     const filterEl = document.getElementById('program-filters');
     const blurbEl = document.getElementById('program-add-blurb');
@@ -7540,7 +7619,10 @@ export class ForgeHeartGame {
       }
     }
 
-    const catNodes = PROGRAM_NODE_DEFS.filter((d) => d.category === this.programFilter);
+    // Hide legacy fine-frame duplicate — Fine preference covers it
+    const catNodes = PROGRAM_NODE_DEFS.filter(
+      (d) => d.category === this.programFilter && d.id !== 'craft_fine_frame',
+    );
     if (
       this.programPickNode &&
       !catNodes.some((d) => d.id === this.programPickNode)
@@ -7592,7 +7674,6 @@ export class ForgeHeartGame {
         '<span class="craft-hint">Hire a worker first (Hire Board at workshop).</span>';
     }
     const sites = listHarvestSites();
-    // In training, still show mixed + a few empire sites for planning; all work via pool
     for (const w of this.inv.workers) {
       if (w.harvestSiteId === undefined) w.harvestSiteId = null;
       const card = document.createElement('div');
@@ -7600,9 +7681,10 @@ export class ForgeHeartGame {
       const runningProg =
         w.job === 'program' && w.programId === this.activeProgramId;
       const status = describeWorkerAssignment(this.inv, w);
-      card.innerHTML = `<strong>${w.name}</strong><div class="pa-status">${status}${
-        runningProg ? ' · this program' : ''
-      }</div>`;
+      const maxN = workerMaxProgramNodes(w);
+      const grade = w.payGrade ?? 0;
+      card.innerHTML = `<strong>${w.name}</strong><div class="pa-status">${status}</div>
+        <div class="pa-meta">Pay G${grade} · up to ${maxN} steps</div>`;
 
       // Harvest reef site (applies to harvest job + harvest program nodes)
       const reefRow = document.createElement('div');
@@ -7622,7 +7704,6 @@ export class ForgeHeartGame {
         const id = reefSel.value === '' ? null : reefSel.value;
         const r = setWorkerHarvestSite(this.inv, w.id, id);
         this.programLog(r.msg);
-        // Auto-set harvest job if idle-ish so reef choice does work immediately
         if (w.job === 'idle' || w.job === 'harvest') {
           setWorkerJob(this.inv, w.id, 'harvest');
         }
@@ -7634,30 +7715,42 @@ export class ForgeHeartGame {
       reefRow.appendChild(reefSel);
       card.appendChild(reefRow);
 
-      // Quick jobs
+      // Compact quick-job select (programs are the main path)
       const jobRow = document.createElement('div');
       jobRow.className = 'pa-row';
       const jobLab = document.createElement('label');
       jobLab.className = 'pa-lab';
       jobLab.textContent = 'JOB';
-      jobRow.appendChild(jobLab);
+      const jobSel = document.createElement('select');
       for (const j of JOB_DEFS) {
         if (j.id === 'program') continue;
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = j.name;
-        if (w.job === j.id) b.classList.add('active');
-        b.title = j.blurb;
-        b.addEventListener('click', () => {
-          const r = setWorkerJob(this.inv, w.id, j.id as JobId);
-          this.programLog(r.msg);
-          this.syncWorkerAgentsLoadout();
-          writeSlot(this.activeSlot, this.buildSaveData());
-          this.fillProgramPanel();
-          this.syncEconomyHud();
-        });
-        jobRow.appendChild(b);
+        const o = document.createElement('option');
+        o.value = j.id;
+        o.textContent = j.name;
+        o.title = j.blurb;
+        if (w.job === j.id) o.selected = true;
+        jobSel.appendChild(o);
       }
+      if (w.job === 'program') {
+        const o = document.createElement('option');
+        o.value = '_program';
+        o.textContent = 'Running program…';
+        o.selected = true;
+        o.disabled = true;
+        jobSel.appendChild(o);
+      }
+      jobSel.addEventListener('change', () => {
+        const id = jobSel.value as JobId;
+        if (id === ('_program' as JobId)) return;
+        const r = setWorkerJob(this.inv, w.id, id);
+        this.programLog(r.msg);
+        this.syncWorkerAgentsLoadout();
+        writeSlot(this.activeSlot, this.buildSaveData());
+        this.fillProgramPanel();
+        this.syncEconomyHud();
+      });
+      jobRow.appendChild(jobLab);
+      jobRow.appendChild(jobSel);
       card.appendChild(jobRow);
 
       // Assign this program
@@ -7671,7 +7764,7 @@ export class ForgeHeartGame {
       assignBtn.type = 'button';
       assignBtn.className = 'primary';
       assignBtn.textContent = runningProg
-        ? `✓ Running this program`
+        ? `✓ Running “${prog?.name ?? 'this'}”`
         : this.activeProgramId
           ? `Run “${prog?.name ?? 'program'}”`
           : 'Select a program first';

@@ -394,7 +394,7 @@
           <header class="market-head">
             <div>
               <h3>Visual Programs</h3>
-              <p class="market-sub">Chain task nodes · assign a worker · they path around walls to each stop.</p>
+              <p class="market-sub">Start from a Frame Line template · tweak nodes · assign a worker.</p>
             </div>
             <button type="button" id="program-close" class="maker-close">×</button>
           </header>
@@ -402,11 +402,15 @@
             <div>
               <h4>Programs</h4>
               <div id="program-list" class="market-list"></div>
-              <button type="button" id="program-new" class="program-new-btn">+ New program</button>
+              <button type="button" id="program-new" class="program-new-btn">+ Blank program</button>
+              <p class="craft-hint program-template-label">Quick start</p>
+              <div id="program-templates" class="program-templates" role="group" aria-label="Program templates"></div>
             </div>
             <div>
               <h4 id="program-edit-title">Nodes</h4>
+              <div id="program-frame-pref" class="program-frame-pref hidden"></div>
               <div id="program-nodes" class="program-nodes"></div>
+              <p id="program-grade-hint" class="craft-hint program-grade-hint"></p>
               <h4>Add node</h4>
               <div id="program-filters" class="ui-chips" role="tablist" aria-label="Node categories"></div>
               <div class="program-add-split">
@@ -418,7 +422,7 @@
               </div>
               <h4>Crew assignment</h4>
               <p class="craft-hint program-assign-hint">
-                Assign programs &amp; harvest reefs here. Workers tab is status / gear only.
+                Run a program on a worker. Quick job is a one-task fallback.
               </p>
               <div id="program-assign" class="program-assign-list"></div>
             </div>

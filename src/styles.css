@@ -2035,6 +2035,75 @@ h1 {
   border-color: #c4a35a;
   color: #e8c878;
 }
+.program-template-label {
+  margin: 0.65rem 0 0.3rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  color: #7a90a0;
+}
+.program-templates {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.program-template-btn {
+  appearance: none;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #2a4858;
+  background: linear-gradient(135deg, #102838 0%, #0c1c28 100%);
+  color: #d0e0f0;
+  padding: 0.45rem 0.55rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+.program-template-btn strong {
+  color: #e8c878;
+  font-weight: 600;
+}
+.program-template-btn span {
+  color: #7a9ab0;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+.program-template-btn:hover {
+  border-color: #68a8c8;
+  background: #143848;
+}
+.program-frame-pref {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+.program-frame-pref button {
+  appearance: none;
+  border: 1px solid #3a5568;
+  background: #142838;
+  color: #c8d8e8;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.program-frame-pref button.active {
+  border-color: #88d0f0;
+  background: #1a4058;
+  color: #e8f4ff;
+}
+.program-grade-hint {
+  margin: 0.35rem 0 0.55rem;
+}
+.program-assign-card .pa-meta {
+  font-size: 0.68rem;
+  color: #7a9ab0;
+  margin: 0.15rem 0 0.35rem;
+}
 
 /* Game Maker HUD + palette */
 .maker-hud {

@@ -292,7 +292,12 @@ export const PROGRAM_NODE_DEFS: {
   { id: 'craft_wire', name: 'Craft Wire', blurb: '2 scrap → wire', category: 'craft' },
   { id: 'craft_gear', name: 'Craft Gear Blank', blurb: 'iron + scrap → gear', category: 'craft' },
   { id: 'craft_kit', name: 'Craft Repair Kit', blurb: 'wire + scrap → kit', category: 'craft' },
-  { id: 'craft_frame', name: 'Assemble Robot Frame', blurb: 'auto-fill five slots from stock', category: 'craft' },
+  {
+    id: 'craft_frame',
+    name: 'Make Frame',
+    blurb: 'Prep wire/gear from stock · fill five slots · assemble',
+    category: 'craft',
+  },
   { id: 'craft_speed_tool', name: 'Craft Rivet Spanner', blurb: 'gear · wire · iron → tool', category: 'craft' },
   { id: 'craft_haul_pack', name: 'Craft Haul Pack', blurb: 'silk + scrap → pack', category: 'craft' },
   {
@@ -303,8 +308,8 @@ export const PROGRAM_NODE_DEFS: {
   },
   {
     id: 'craft_fine_frame',
-    name: 'Assemble Fine Frame',
-    blurb: 'Auto-fill slots preferring polished / silk parts',
+    name: 'Make Fine Frame',
+    blurb: 'Legacy · same as Make Frame with Fine preference',
     category: 'craft',
   },
   {
@@ -500,7 +505,50 @@ export interface WorkerProgram {
   name: string;
   /** Ordered graph (linear chain v1 — branches later) */
   nodes: ProgramNodeKind[];
+  /** Preference for Make Frame nodes — serviceable stock vs fine parts */
+  framePref?: 'service' | 'fine';
 }
+
+/** One-click program starters — balanced length, clear purpose. */
+export type ProgramTemplateId = 'frame_line' | 'frame_broker' | 'frame_stall' | 'harvest_loop';
+
+export interface ProgramTemplate {
+  id: ProgramTemplateId;
+  name: string;
+  blurb: string;
+  nodes: ProgramNodeKind[];
+  framePref?: 'service' | 'fine';
+}
+
+export const PROGRAM_TEMPLATES: ProgramTemplate[] = [
+  {
+    id: 'frame_line',
+    name: 'Frame Line',
+    blurb: 'Reef → buy fuel → make frame → bay · 4 steps',
+    nodes: ['harvest', 'buy_fuel_cell', 'craft_frame', 'return_bay'],
+    framePref: 'service',
+  },
+  {
+    id: 'frame_broker',
+    name: 'Frame → Broker',
+    blurb: 'Make frames & sell to broker · 5 steps',
+    nodes: ['harvest', 'buy_fuel_cell', 'craft_frame', 'sell_frame', 'return_bay'],
+    framePref: 'service',
+  },
+  {
+    id: 'frame_stall',
+    name: 'Frame → Stall',
+    blurb: 'Make a frame & stock your stall · 4 steps',
+    nodes: ['buy_fuel_cell', 'craft_frame', 'stock_stall_frame', 'return_bay'],
+    framePref: 'service',
+  },
+  {
+    id: 'harvest_loop',
+    name: 'Harvest Loop',
+    blurb: 'Reef haul home · 2 steps',
+    nodes: ['harvest', 'return_bay'],
+  },
+];
 
 export const JOB_DEFS: {
   id: JobId;
@@ -525,7 +573,7 @@ export const JOB_DEFS: {
   {
     id: 'craft_frame',
     name: 'Build Frames',
-    blurb: 'Assemble Basic Robot Frames at the bench.',
+    blurb: 'Prep parts & assemble robot frames at the bench.',
     route: ['bay', 'craft', 'bay'],
   },
   {
@@ -1276,6 +1324,12 @@ export function emptyInventory(starterBrass = 40): InventoryState {
         id: 'prog_default_haul',
         name: 'Haul Loop',
         nodes: ['harvest', 'return_bay'],
+      },
+      {
+        id: 'prog_frame_line',
+        name: 'Frame Line',
+        nodes: ['harvest', 'buy_fuel_cell', 'craft_frame', 'return_bay'],
+        framePref: 'service',
       },
       {
         id: 'prog_invent_cycle',
@@ -2384,6 +2438,107 @@ export function createProgram(
   return { ok: true, msg: `Created ${program.name}`, program };
 }
 
+/** Spawn a program from a curated template (Frame Line, broker run, …). */
+export function createProgramFromTemplate(
+  inv: InventoryState,
+  templateId: ProgramTemplateId,
+): { ok: boolean; msg: string; program?: WorkerProgram } {
+  if (inv.programs.length >= 32) {
+    return { ok: false, msg: 'Max 32 programs on this empire bay.' };
+  }
+  const t = PROGRAM_TEMPLATES.find((x) => x.id === templateId);
+  if (!t) return { ok: false, msg: 'Unknown template.' };
+  const program: WorkerProgram = {
+    id: `prog_${Date.now()}`,
+    name: t.name,
+    nodes: [...t.nodes],
+    framePref: t.framePref ?? 'service',
+  };
+  inv.programs.push(program);
+  const grade = minPayGradeForNodes(program.nodes.length);
+  const gradeNote = grade > 0 ? ` · needs pay grade ${grade}` : ' · free for grade 0';
+  return {
+    ok: true,
+    msg: `Created “${program.name}” (${program.nodes.length} steps${gradeNote})`,
+    program,
+  };
+}
+
+export function setProgramFramePref(
+  inv: InventoryState,
+  programId: string,
+  pref: 'service' | 'fine',
+): { ok: boolean; msg: string } {
+  const p = inv.programs.find((x) => x.id === programId);
+  if (!p) return { ok: false, msg: 'Program not found.' };
+  p.framePref = pref;
+  return {
+    ok: true,
+    msg:
+      pref === 'fine'
+        ? `“${p.name}” prefers fine parts (silk · polished wire)`
+        : `“${p.name}” uses serviceable stock`,
+  };
+}
+
+/**
+ * Worker Make Frame: craft missing wire/gear from stock, soft-buy a bloom if
+ * needed, then auto-fill five slots. Prefer fine parts when requested.
+ */
+export function buildFrameForWorker(
+  inv: InventoryState,
+  preferFine: boolean,
+): { ok: boolean; msg: string } {
+  if (inv.bayLevel < 1) {
+    return { ok: false, msg: 'Lease a bay before assembling frames.' };
+  }
+  const notes: string[] = [];
+
+  const craftOnce = (recipeId: string, label: string) => {
+    const recipe = RECIPES.find((r) => r.id === recipeId);
+    if (!recipe || !canCraft(inv, recipe)) return false;
+    const r = craft(inv, recipe);
+    if (r.ok) notes.push(label);
+    return r.ok;
+  };
+
+  if (getQty(inv, 'wire') < 1 && getQty(inv, 'polished_wire') < 1) {
+    craftOnce('wire_from_scrap', 'drew wire');
+  }
+  if (getQty(inv, 'gear_blank') < 1) {
+    craftOnce('gear_blank', 'cut gear');
+  }
+  if (preferFine && getQty(inv, 'polished_wire') < 1 && getQty(inv, 'wire') >= 1) {
+    craftOnce('polished_wire', 'polished wire');
+  }
+
+  // Soft-buy a cloudbloom so Make Frame isn't blocked on plaza flowers
+  const hasPersonality =
+    getQty(inv, 'flower_gift') > 0 ||
+    getQty(inv, 'bloom_brass') > 0 ||
+    getQty(inv, 'bloom_sky') > 0 ||
+    getQty(inv, 'bloom_spore') > 0 ||
+    getQty(inv, 'bloom_harbor') > 0 ||
+    getQty(inv, 'bloom_aether') > 0;
+  if (!hasPersonality) {
+    const vendor = findVendorForTrade('flower_gift', 'buy');
+    if (vendor) {
+      const buy = buyFromVendor(inv, vendor, 'flower_gift', 1);
+      if (buy.ok) notes.push('bought bloom');
+    }
+  }
+
+  const r = tryAutoAssembleFrame(inv, preferFine);
+  if (!r.ok) {
+    return {
+      ok: false,
+      msg: notes.length ? `${notes.join(', ')} · ${r.msg}` : r.msg,
+    };
+  }
+  const prefix = notes.length ? `${notes.join(', ')} · ` : '';
+  return { ok: true, msg: `${prefix}${r.msg}` };
+}
+
 export function addProgramNode(
   inv: InventoryState,
   programId: string,
@@ -2478,9 +2633,11 @@ export function applyProgramNodeResult(
     return { ok: true, msg: `${name} returned to bay` };
   }
 
-  // ——— Slot frame assembly (replaces fixed basic/fine recipes) ———
+  // ——— Make Frame (prep parts + assemble five slots) ———
   if (node === 'craft_frame' || node === 'craft_fine_frame') {
-    const r = tryAutoAssembleFrame(inv, node === 'craft_fine_frame');
+    const prog = w?.programId ? inv.programs.find((p) => p.id === w.programId) : undefined;
+    const preferFine = node === 'craft_fine_frame' || prog?.framePref === 'fine';
+    const r = buildFrameForWorker(inv, preferFine);
     return finish({ ok: r.ok, msg: `${name}: ${r.msg}` });
   }
 
@@ -4131,6 +4288,7 @@ export function invToSave(inv: InventoryState) {
       id: p.id,
       name: p.name,
       nodes: [...p.nodes],
+      framePref: p.framePref === 'fine' ? 'fine' : 'service',
     })),
     stall: stallToSave(inv.stall),
     cityStalls,
@@ -4295,6 +4453,7 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
       id: String(p.id),
       name: String(p.name ?? 'Program'),
       nodes: Array.isArray(p.nodes) ? [...p.nodes] : ['harvest', 'return_bay'],
+      framePref: p.framePref === 'fine' ? 'fine' : 'service',
     }));
   }
   inv.brokerFrameStock = typeof o.brokerFrameStock === 'number' ? o.brokerFrameStock : 0;

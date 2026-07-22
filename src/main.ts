@@ -212,6 +212,13 @@ document.getElementById('program-new')?.addEventListener('click', () => {
   (game as { newProgramPublic?: () => void } | null)?.newProgramPublic?.();
 });
 
+document.getElementById('program-templates')?.addEventListener('click', (ev) => {
+  const t = (ev.target as HTMLElement | null)?.closest?.('[data-program-template]') as HTMLElement | null;
+  const id = t?.dataset.programTemplate;
+  if (!id) return;
+  (game as { newProgramFromTemplatePublic?: (id: string) => void } | null)?.newProgramFromTemplatePublic?.(id);
+});
+
 document.querySelectorAll('[data-bay-tab]').forEach((el) => {
   el.addEventListener('click', () => {
     const tab = (el as HTMLElement).dataset.bayTab;
