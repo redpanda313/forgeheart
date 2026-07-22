@@ -641,6 +641,7 @@ export class ForgeHeartGame {
     this.mobile.attach({
       applyTouchLook: (dx, dy) => this.applyTouchLook(dx, dy),
       applyTouchRotate: (deltaRad) => this.applyTouchRotate(deltaRad),
+      isSiteRotateEnabled: () => !!this.siteBuilder && !this.paused && !this.disposed,
       setFireHeld: (v) => this.setFireHeld(v),
       setPaused: (p) => this.setPaused(p),
       isPaused: () => this.isPaused(),
@@ -2096,8 +2097,8 @@ export class ForgeHeartGame {
 
     if (s.kind === 'home') {
       this.siteRotateAcc += deltaRad;
-      // ~25° of twist triggers one 90° snap
-      const threshold = 0.45;
+      // ~12° of twist triggers one 90° snap (responsive on phones)
+      const threshold = 0.22;
       while (Math.abs(this.siteRotateAcc) >= threshold) {
         const dir = this.siteRotateAcc > 0 ? 1 : -1;
         this.nudgeSiteBuilderYaw(dir * 0.25);
@@ -2112,7 +2113,8 @@ export class ForgeHeartGame {
       if (this.sitePropGhost) this.sitePropGhost.rotation.y = s.yaw + s.placeYaw;
     } else {
       s.yaw += deltaRad;
-      this.rebuildSiteGhost();
+      if (this.siteGhost) this.siteGhost.rotation.y = s.yaw;
+      else this.rebuildSiteGhost();
     }
   }
 
@@ -2267,6 +2269,7 @@ export class ForgeHeartGame {
       this.isEconomyUiOpen();
     this.mobile.setGameplayActive(!blocked);
     this.mobile.syncBoardButtons();
+    this.mobile.syncSiteRotateButtons();
   }
 
   /** Phase-aware help when touch controls are active. */
@@ -2282,13 +2285,13 @@ export class ForgeHeartGame {
       const s = this.siteBuilder;
       if (s.step === 'site' && !s.sitePlaced) {
         return s.kind === 'home'
-          ? 'Stick fly · drag look · two-finger twist rotates · open ENTRY face = front door'
-          : 'Stick fly · drag look · two-finger twist rotates the box';
+          ? 'Stick fly · two-finger twist or ⟲⟳ rotates · open ENTRY = front door'
+          : 'Stick fly · two-finger twist or ⟲⟳ rotates the box';
       }
       if ((s.step === 'props' && s.activePropId) || (s.step === 'rooms' && s.activeRoomKind)) {
-        return 'Stick fly · drag look · two-finger twist rotates the aimed item';
+        return 'Stick fly · two-finger twist or ⟲⟳ rotates the aimed item';
       }
-      return 'Stick fly · drag look · two-finger twist rotates · Pause';
+      return 'Stick fly · two-finger twist or ⟲⟳ rotates · Pause';
     }
     if (this.gameMakerActive) {
       return 'Stick fly · drag look · Pause · tools in pause menu';
@@ -4898,7 +4901,7 @@ export class ForgeHeartGame {
           : opts.kind === 'home'
             ? 'home'
             : 'factory';
-    const mobileHint = this.mobile.enabled ? ' · two-finger twist rotates' : '';
+    const mobileHint = this.mobile.enabled ? ' · two-finger twist or ⟲⟳ rotates' : '';
     this.toast(
       opts.redesign
         ? `Edit ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (open ENTRY face = front)' : ''}${mobileHint}, Enter locks.`
@@ -4908,12 +4911,13 @@ export class ForgeHeartGame {
     this.setHelp(
       opts.kind === 'home'
         ? this.mobile.enabled
-          ? 'SITE · open ENTRY face = front door · two-finger twist rotates 90° · Enter lock'
+          ? 'SITE · open ENTRY = front · two-finger twist or ⟲⟳ · Enter lock'
           : 'SITE · look / arrows aim · [/] rotate 90° · open ENTRY face = front door · Enter lock · Esc cancel'
         : this.mobile.enabled
-          ? 'SITE · look / arrows aim · two-finger twist rotates · Enter lock · Esc cancel'
+          ? 'SITE · look / arrows aim · two-finger twist or ⟲⟳ · Enter lock · Esc cancel'
           : 'SITE · look / arrows aim box · [/] rotate · WASD fly · Enter lock · Esc cancel',
     );
+    this.syncMobileGameplay();
   }
 
   /** Place decorations inside the living shell — walls go see-through while aiming. */
@@ -4950,11 +4954,16 @@ export class ForgeHeartGame {
     this.rebuildSiteGhost();
     this.refreshSiteBuilderUi();
     this.toast('Interior décor — walls translucent. Pick an item, aim inside, Enter places.', 5);
-    this.setHelp('INTERIOR · pick décor · aim inside · [/] rotate · Enter place · Esc done');
+    this.setHelp(
+      this.mobile.enabled
+        ? 'INTERIOR · pick décor · ⟲⟳ or two-finger twist rotates · Enter place · Esc done'
+        : 'INTERIOR · pick décor · aim inside · [/] rotate · Enter place · Esc done',
+    );
     // Nudge camera toward interior
     const cos = Math.cos(home.yaw);
     const sin = Math.sin(home.yaw);
     this.camera.position.set(home.plotX - sin * 2, Math.max(this.camera.position.y, 3.2), home.plotZ - cos * 2);
+    this.syncMobileGameplay();
   }
 
   private clearSiteBuilderVisuals(opts?: { restoreHome?: boolean }) {
@@ -4974,6 +4983,7 @@ export class ForgeHeartGame {
     panel?.classList.add('hidden');
     panel?.setAttribute('aria-hidden', 'true');
     if (wasHome && restoreHome) this.syncHomeVisuals();
+    this.syncMobileGameplay();
   }
 
   private cancelSiteBuilder() {

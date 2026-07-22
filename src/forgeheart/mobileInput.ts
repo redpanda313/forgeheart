@@ -75,10 +75,12 @@ export type MobileInputHost = {
   /** Apply look delta in CSS pixels (positive dx = look right, dy = look down). */
   applyTouchLook(dx: number, dy: number): void;
   /**
-   * Two-finger twist on the look pad (radians). Positive = CCW.
+   * Two-finger twist / rotate-button delta in radians. Positive = CCW.
    * Used to rotate the site / aimed prop while the site builder is open.
    */
   applyTouchRotate(deltaRad: number): void;
+  /** True while site builder can accept rotate gestures / buttons. */
+  isSiteRotateEnabled(): boolean;
   setFireHeld(v: boolean): void;
   setPaused(p: boolean): void;
   isPaused(): boolean;
@@ -224,11 +226,13 @@ export class MobileControls {
     const sig = this.abort.signal;
     this.bindStick(sig);
     this.bindLook(sig);
+    this.bindTwoFingerTouchRotate(sig);
     this.bindButtons(sig);
     this.bindTapAffordance(sig);
     this.setVisible(true);
     this.setGameplayActive(true);
     this.syncBoardButtons();
+    this.syncSiteRotateButtons();
   }
 
   detach() {
@@ -282,8 +286,17 @@ export class MobileControls {
   syncBoardButtons() {
     const riding = !!this.host?.isBoardMounted();
     this.root?.querySelectorAll<HTMLElement>('.mobile-board-only').forEach((el) => {
-      el.classList.toggle('hidden', !riding);
+      el.classList.toggle('hidden', riding ? false : true);
       el.setAttribute('aria-hidden', riding ? 'false' : 'true');
+    });
+  }
+
+  /** Show ⟲/⟳ while the site builder can rotate. */
+  syncSiteRotateButtons() {
+    const on = !!this.host?.isSiteRotateEnabled();
+    this.root?.querySelectorAll<HTMLElement>('.mobile-site-rotate').forEach((el) => {
+      el.classList.toggle('hidden', !on);
+      el.setAttribute('aria-hidden', on ? 'false' : 'true');
     });
   }
 
@@ -569,6 +582,68 @@ export class MobileControls {
     el.addEventListener('pointercancel', onUp, { signal: sig });
   }
 
+  /**
+   * Native TouchEvent two-finger twist — more reliable on iOS than multi-pointer
+   * on the look pad alone (second finger often lands on stick / wizard / buttons).
+   */
+  private bindTwoFingerTouchRotate(sig: AbortSignal) {
+    let lastAngle: number | null = null;
+    let active = false;
+
+    const angleTouches = (a: Touch, b: Touch) => Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX);
+
+    const enabled = () =>
+      !!this.host &&
+      !this.host.isDisposed() &&
+      this.visible &&
+      this.active &&
+      this.host.isSiteRotateEnabled();
+
+    const onStart = (ev: TouchEvent) => {
+      if (!enabled()) {
+        lastAngle = null;
+        active = false;
+        return;
+      }
+      if (ev.touches.length >= 2) {
+        lastAngle = angleTouches(ev.touches[0]!, ev.touches[1]!);
+        active = true;
+        // Don't treat concurrent look-pad drag as a tap
+        this.lookMoved = true;
+        this.rotateMode = true;
+      }
+    };
+
+    const onMove = (ev: TouchEvent) => {
+      if (!enabled() || !active || ev.touches.length < 2 || lastAngle == null) return;
+      // Block page pinch-zoom while twisting the site
+      ev.preventDefault();
+      const ang = angleTouches(ev.touches[0]!, ev.touches[1]!);
+      let delta = ang - lastAngle;
+      while (delta > Math.PI) delta -= Math.PI * 2;
+      while (delta < -Math.PI) delta += Math.PI * 2;
+      lastAngle = ang;
+      if (Math.abs(delta) > 1e-4) {
+        this.host!.applyTouchRotate(delta);
+      }
+    };
+
+    const onEnd = (ev: TouchEvent) => {
+      if (ev.touches.length < 2) {
+        lastAngle = null;
+        active = false;
+        this.rotateMode = false;
+      } else {
+        lastAngle = angleTouches(ev.touches[0]!, ev.touches[1]!);
+      }
+    };
+
+    window.addEventListener('touchstart', onStart, { signal: sig, passive: true, capture: true });
+    window.addEventListener('touchmove', onMove, { signal: sig, passive: false, capture: true });
+    window.addEventListener('touchend', onEnd, { signal: sig, passive: true, capture: true });
+    window.addEventListener('touchcancel', onEnd, { signal: sig, passive: true, capture: true });
+  }
+
   private bindTapAffordance(sig: AbortSignal) {
     const el = this.tapAffordance;
     if (!el) return;
@@ -681,6 +756,13 @@ export class MobileControls {
         break;
       case 'map':
         if (down) host.toggleMap();
+        break;
+      case 'rotate-left':
+        // One tap = one home 90° step (threshold 0.22)
+        if (down) host.applyTouchRotate(0.25);
+        break;
+      case 'rotate-right':
+        if (down) host.applyTouchRotate(-0.25);
         break;
       default:
         break;
