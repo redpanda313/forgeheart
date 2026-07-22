@@ -336,6 +336,8 @@ export class ForgeHeartGame {
   private siteBuilder: SiteSession | null = null;
   private siteGhost: THREE.Group | null = null;
   private sitePropGhost: THREE.Group | null = null;
+  /** Accumulates two-finger twist before snapping home yaw 90°. */
+  private siteRotateAcc = 0;
   private velocity = new THREE.Vector3();
   private onGround = false;
   private keys = new Set<string>();
@@ -638,6 +640,7 @@ export class ForgeHeartGame {
     // Always attach: shows immediately on phones, or arms first-touch enable on other devices
     this.mobile.attach({
       applyTouchLook: (dx, dy) => this.applyTouchLook(dx, dy),
+      applyTouchRotate: (deltaRad) => this.applyTouchRotate(deltaRad),
       setFireHeld: (v) => this.setFireHeld(v),
       setPaused: (p) => this.setPaused(p),
       isPaused: () => this.isPaused(),
@@ -2082,6 +2085,38 @@ export class ForgeHeartGame {
   }
 
   /**
+   * Two-finger twist on the look pad → rotate site / aimed prop / room.
+   * Homes snap to 90° after enough twist; other sites rotate continuously.
+   */
+  applyTouchRotate(deltaRad: number) {
+    if (this.disposed || this.paused || !this.siteBuilder) return;
+    const s = this.siteBuilder;
+    const aimingItem =
+      (s.step === 'props' && !!s.activePropId) || (s.step === 'rooms' && !!s.activeRoomKind);
+
+    if (s.kind === 'home') {
+      this.siteRotateAcc += deltaRad;
+      // ~25° of twist triggers one 90° snap
+      const threshold = 0.45;
+      while (Math.abs(this.siteRotateAcc) >= threshold) {
+        const dir = this.siteRotateAcc > 0 ? 1 : -1;
+        this.nudgeSiteBuilderYaw(dir * 0.25);
+        this.siteRotateAcc -= dir * threshold;
+      }
+      return;
+    }
+
+    // Continuous rotate for stall / factory
+    if (aimingItem) {
+      s.placeYaw += deltaRad;
+      if (this.sitePropGhost) this.sitePropGhost.rotation.y = s.yaw + s.placeYaw;
+    } else {
+      s.yaw += deltaRad;
+      this.rebuildSiteGhost();
+    }
+  }
+
+  /**
    * Inject a keyboard code from on-screen controls so existing keydown/keyup handlers run.
    */
   injectKey(code: string, down: boolean) {
@@ -2242,6 +2277,18 @@ export class ForgeHeartGame {
     }
     if (fallback.startsWith('Map ·') || fallback.startsWith('Loading')) {
       return fallback;
+    }
+    if (this.siteBuilder) {
+      const s = this.siteBuilder;
+      if (s.step === 'site' && !s.sitePlaced) {
+        return s.kind === 'home'
+          ? 'Stick fly · drag look · two-finger twist rotates · open ENTRY face = front door'
+          : 'Stick fly · drag look · two-finger twist rotates the box';
+      }
+      if ((s.step === 'props' && s.activePropId) || (s.step === 'rooms' && s.activeRoomKind)) {
+        return 'Stick fly · drag look · two-finger twist rotates the aimed item';
+      }
+      return 'Stick fly · drag look · two-finger twist rotates · Pause';
     }
     if (this.gameMakerActive) {
       return 'Stick fly · drag look · Pause · tools in pause menu';
@@ -4822,6 +4869,7 @@ export class ForgeHeartGame {
     this.siteBuilder.sitePlaced = false;
     this.siteBuilder.placeYaw = 0;
     this.siteBuilder.interiorDecor = false;
+    this.siteRotateAcc = 0;
     if (opts.kind === 'home') {
       this.siteBuilder.yaw = snapHomeYaw(this.siteBuilder.yaw);
       this.hideLiveHomeBuild(true);
@@ -4850,16 +4898,21 @@ export class ForgeHeartGame {
           : opts.kind === 'home'
             ? 'home'
             : 'factory';
+    const mobileHint = this.mobile.enabled ? ' · two-finger twist rotates' : '';
     this.toast(
       opts.redesign
-        ? `Edit ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (cyan runner + ENTRY = front)' : ''}, Enter locks.`
-        : `Place ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (cyan runner + ENTRY = front)' : ''}, Enter/click locks.`,
+        ? `Edit ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (open ENTRY face = front)' : ''}${mobileHint}, Enter locks.`
+        : `Place ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (open ENTRY face = front)' : ''}${mobileHint}, Enter/click locks.`,
       5,
     );
     this.setHelp(
       opts.kind === 'home'
-        ? 'SITE · look / arrows aim · [/] rotate 90° · ENTRY runner = front door · Enter lock · Esc cancel'
-        : 'SITE · look / arrows aim box · [/] rotate · WASD fly · Enter lock · Esc cancel',
+        ? this.mobile.enabled
+          ? 'SITE · open ENTRY face = front door · two-finger twist rotates 90° · Enter lock'
+          : 'SITE · look / arrows aim · [/] rotate 90° · open ENTRY face = front door · Enter lock · Esc cancel'
+        : this.mobile.enabled
+          ? 'SITE · look / arrows aim · two-finger twist rotates · Enter lock · Esc cancel'
+          : 'SITE · look / arrows aim box · [/] rotate · WASD fly · Enter lock · Esc cancel',
     );
   }
 
@@ -5116,8 +5169,8 @@ export class ForgeHeartGame {
             ? 12
             : 16;
       const box = makeSelectionBox(boxSize, {
-        doorCue: s.kind === 'home',
-        doorLabel: 'ENTRY',
+        doorCue: true,
+        doorLabel: s.kind === 'home' ? 'ENTRY' : 'FRONT',
       });
       const look = this.siteLookPoint();
       box.position.set(look.x, 0.05, look.z);
@@ -5559,16 +5612,20 @@ export class ForgeHeartGame {
       if (sub) {
         sub.textContent =
           s.kind === 'home'
-            ? 'Aim the box with look or arrows. [/] rotates 90° — cyan runner + ENTRY arch show the front door. Enter locks.'
-            : 'Aim the selection box with look or arrow keys. [/] rotates it. Enter/click locks. R to move again later.';
+            ? `The blank box has an open ENTRY face — that is the front door. [/] rotates 90°.${this.mobile.enabled ? ' On phone: two-finger twist rotates.' : ''} Enter locks.`
+            : `Aim the selection box with look or arrow keys. [/] rotates it.${this.mobile.enabled ? ' On phone: two-finger twist rotates.' : ''} Enter/click locks. R to move again later.`;
       }
       const p = document.createElement('p');
       p.className = 'stall-wizard-hint';
       p.textContent = s.sitePlaced
         ? `Site ${s.plotX.toFixed(0)}, ${s.plotZ.toFixed(0)} · press R to move`
         : s.kind === 'home'
-          ? 'Green = valid · cyan runner + ENTRY = front door · [/] rotate 90°'
-          : 'Green = valid · red = too far · arrows nudge · [/] rotate';
+          ? this.mobile.enabled
+            ? 'Open ENTRY face = front door · two-finger twist rotates 90°'
+            : 'Open ENTRY face = front door · [/] rotate 90°'
+          : this.mobile.enabled
+            ? 'Green = valid · two-finger twist rotates'
+            : 'Green = valid · red = too far · arrows nudge · [/] rotate';
       body.appendChild(p);
     } else if (s.step === 'structure') {
       if (s.kind === 'stall') {

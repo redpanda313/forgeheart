@@ -208,26 +208,77 @@ export function makeSelectionBox(
 ): THREE.Group {
   const g = new THREE.Group();
   g.name = 'SiteSelectionBox';
-  const fill = new THREE.Mesh(
-    new THREE.BoxGeometry(size, 0.06, size),
-    new THREE.MeshStandardMaterial({
-      color: 0x66cc88,
-      transparent: true,
-      opacity: 0.22,
-      depthWrite: false,
-    }),
-  );
-  fill.position.y = 0.04;
-  g.add(fill);
-  const edges = new THREE.LineSegments(
-    new THREE.EdgesGeometry(new THREE.BoxGeometry(size, 0.2, size)),
-    new THREE.LineBasicMaterial({ color: 0xa8ffcc }),
-  );
-  edges.position.y = 0.12;
-  g.add(edges);
+  const half = size * 0.5;
+  const doorW = Math.min(4.2, size * 0.36);
+  const showDoor = !!opts?.doorCue;
+
+  const fillMat = new THREE.MeshStandardMaterial({
+    color: 0x66cc88,
+    transparent: true,
+    opacity: 0.22,
+    depthWrite: false,
+  });
+  if (showDoor) {
+    // Floor with a clear notch on +Z so the doorway reads as an opening in the box
+    const depth = size - 0.9;
+    const main = new THREE.Mesh(new THREE.BoxGeometry(size, 0.06, depth), fillMat);
+    main.position.set(0, 0.04, -0.45);
+    g.add(main);
+    const sideW = (size - doorW) / 2;
+    for (const sx of [-1, 1]) {
+      const wing = new THREE.Mesh(new THREE.BoxGeometry(sideW, 0.06, 0.9), fillMat);
+      wing.position.set(sx * (doorW / 2 + sideW / 2), 0.04, half - 0.45);
+      g.add(wing);
+    }
+    // Bright entry apron in the notch
+    const apron = new THREE.Mesh(
+      new THREE.BoxGeometry(doorW * 0.95, 0.08, 1.35),
+      new THREE.MeshStandardMaterial({
+        color: 0x4af0ff,
+        emissive: 0x00b8e0,
+        emissiveIntensity: 1.25,
+        transparent: true,
+        opacity: 0.92,
+        depthWrite: false,
+      }),
+    );
+    apron.position.set(0, 0.07, half - 0.55);
+    apron.userData.doorCue = true;
+    g.add(apron);
+  } else {
+    const fill = new THREE.Mesh(new THREE.BoxGeometry(size, 0.06, size), fillMat);
+    fill.position.y = 0.04;
+    g.add(fill);
+  }
+
+  // Edge rails — leave +Z open when showing a doorway
+  const edgeMat = new THREE.MeshStandardMaterial({
+    color: 0xa8ffcc,
+    emissive: 0x226644,
+    emissiveIntensity: 0.35,
+  });
+  const railH = 0.22;
+  const railY = 0.14;
+  const addRail = (w: number, d: number, x: number, z: number) => {
+    const r = new THREE.Mesh(new THREE.BoxGeometry(w, railH, d), edgeMat);
+    r.position.set(x, railY, z);
+    g.add(r);
+  };
+  addRail(size, 0.16, 0, -half); // back (−Z)
+  addRail(0.16, size, -half, 0); // left
+  addRail(0.16, size, half, 0); // right
+  if (showDoor) {
+    const side = (size - doorW) / 2;
+    addRail(side, 0.2, -half + side / 2, half); // front left of door
+    addRail(side, 0.2, half - side / 2, half); // front right of door
+  } else {
+    addRail(size, 0.16, 0, half);
+  }
+
   // Corner posts
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
+      if (showDoor && sz > 0) continue; // front corners replaced by door posts
       const post = new THREE.Mesh(
         new THREE.BoxGeometry(0.18, 1.4, 0.18),
         new THREE.MeshStandardMaterial({
@@ -240,26 +291,41 @@ export function makeSelectionBox(
       g.add(post);
     }
   }
-  if (opts?.doorCue) {
-    // Bright +Z face band so facing reads even before the arch
-    const face = new THREE.Mesh(
-      new THREE.BoxGeometry(size * 0.92, 0.14, 0.55),
-      new THREE.MeshStandardMaterial({
-        color: 0xffb020,
-        emissive: 0xff6600,
-        emissiveIntensity: 1.15,
-        transparent: true,
-        opacity: 0.95,
-        depthWrite: false,
-      }),
-    );
-    face.position.set(0, 0.16, size * 0.48);
-    face.userData.doorCue = true;
-    g.add(face);
-    addFrontDoorCue(g, size * 0.48, {
-      doorW: Math.min(3.6, size * 0.32),
-      label: opts.doorLabel ?? 'ENTRY',
+
+  if (showDoor) {
+    // Doorway is the blank box's +Z face — tall open frame + outbound arrow
+    const doorMat = new THREE.MeshStandardMaterial({
+      color: 0xffc84a,
+      emissive: 0xff7700,
+      emissiveIntensity: 1.2,
+      transparent: true,
+      opacity: 0.98,
+      depthWrite: false,
+    });
+    const postH = 3.4;
+    for (const sx of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.35, postH, 0.35), doorMat);
+      post.position.set(sx * (doorW / 2), postH / 2, half);
+      post.userData.doorCue = true;
+      g.add(post);
+    }
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.7, 0.35, 0.35), doorMat);
+    lintel.position.set(0, postH, half);
+    lintel.userData.doorCue = true;
+    g.add(lintel);
+    // Outbound chevrons through the opening
+    for (let i = 0; i < 3; i++) {
+      const chev = new THREE.Mesh(new THREE.ConeGeometry(0.65, 1.0, 3), doorMat);
+      chev.rotation.x = Math.PI / 2;
+      chev.position.set(0, 0.35, half - 0.2 + i * 1.05);
+      chev.userData.doorCue = true;
+      g.add(chev);
+    }
+    addFrontDoorCue(g, half, {
+      doorW,
+      label: opts?.doorLabel ?? 'ENTRY',
       loud: true,
+      y: 0.02,
     });
   }
   return g;

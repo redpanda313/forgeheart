@@ -74,6 +74,11 @@ export function isMobileBrowser(): boolean {
 export type MobileInputHost = {
   /** Apply look delta in CSS pixels (positive dx = look right, dy = look down). */
   applyTouchLook(dx: number, dy: number): void;
+  /**
+   * Two-finger twist on the look pad (radians). Positive = CCW.
+   * Used to rotate the site / aimed prop while the site builder is open.
+   */
+  applyTouchRotate(deltaRad: number): void;
   setFireHeld(v: boolean): void;
   setPaused(p: boolean): void;
   isPaused(): boolean;
@@ -124,6 +129,10 @@ export class MobileControls {
   private lookLast = { x: 0, y: 0 };
   private lookStart = { x: 0, y: 0 };
   private lookMoved = false;
+  /** Active look-pad pointers for one-finger look / two-finger twist. */
+  private lookPointers = new Map<number, { x: number; y: number }>();
+  private rotateLastAngle: number | null = null;
+  private rotateMode = false;
 
   private fireHeld = false;
   private attackHoldTimer: number | null = null;
@@ -308,6 +317,9 @@ export class MobileControls {
     this.resetStickVisual();
     this.stickPointerId = null;
     this.lookPointerId = null;
+    this.lookPointers.clear();
+    this.rotateLastAngle = null;
+    this.rotateMode = false;
     this.clearAttackHold();
     if (this.fireHeld) {
       this.fireHeld = false;
@@ -426,9 +438,25 @@ export class MobileControls {
     const el = this.lookPad;
     if (!el) return;
 
+    const angleOf = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+      Math.atan2(b.y - a.y, b.x - a.x);
+
+    const syncRotateAnchor = () => {
+      if (this.lookPointers.size < 2) {
+        this.rotateLastAngle = null;
+        this.rotateMode = false;
+        return;
+      }
+      const pts = [...this.lookPointers.values()];
+      this.rotateLastAngle = angleOf(pts[0]!, pts[1]!);
+      this.rotateMode = true;
+      // Cancel pending one-finger tap once twist starts
+      this.lookMoved = true;
+      this.lookPointerId = null;
+    };
+
     const onDown = (ev: PointerEvent) => {
       if (!this.host || this.host.isDisposed() || !this.visible || !this.active) return;
-      if (this.lookPointerId != null) return;
       if (ev.button !== 0 && ev.pointerType === 'mouse') return;
       const t = ev.target as HTMLElement | null;
       if (
@@ -440,18 +468,51 @@ export class MobileControls {
       }
       ev.preventDefault();
       ev.stopPropagation();
+      this.lookPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      try {
+        el.setPointerCapture(ev.pointerId);
+      } catch {
+        /* ignore */
+      }
+
+      if (this.lookPointers.size >= 2) {
+        syncRotateAnchor();
+        return;
+      }
+
+      // Single-finger look / tap
       this.lookPointerId = ev.pointerId;
       this.lookLast.x = ev.clientX;
       this.lookLast.y = ev.clientY;
       this.lookStart.x = ev.clientX;
       this.lookStart.y = ev.clientY;
       this.lookMoved = false;
-      el.setPointerCapture(ev.pointerId);
+      this.rotateMode = false;
+      this.rotateLastAngle = null;
     };
 
     const onMove = (ev: PointerEvent) => {
-      if (ev.pointerId !== this.lookPointerId || !this.host) return;
+      if (!this.lookPointers.has(ev.pointerId) || !this.host) return;
       ev.preventDefault();
+      this.lookPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+      if (this.lookPointers.size >= 2) {
+        if (!this.rotateMode || this.rotateLastAngle == null) syncRotateAnchor();
+        const pts = [...this.lookPointers.values()];
+        const ang = angleOf(pts[0]!, pts[1]!);
+        let delta = ang - (this.rotateLastAngle ?? ang);
+        // Wrap to [-π, π]
+        while (delta > Math.PI) delta -= Math.PI * 2;
+        while (delta < -Math.PI) delta += Math.PI * 2;
+        this.rotateLastAngle = ang;
+        if (Math.abs(delta) > 1e-4) {
+          this.host.applyTouchRotate(delta);
+        }
+        return;
+      }
+
+      // One-finger look
+      if (ev.pointerId !== this.lookPointerId) return;
       const dx = ev.clientX - this.lookLast.x;
       const dy = ev.clientY - this.lookLast.y;
       this.lookLast.x = ev.clientX;
@@ -468,17 +529,37 @@ export class MobileControls {
     };
 
     const onUp = (ev: PointerEvent) => {
-      if (ev.pointerId !== this.lookPointerId) return;
-      const wasTap = !this.lookMoved;
-      this.lookPointerId = null;
+      if (!this.lookPointers.has(ev.pointerId)) return;
+      const wasPrimary = ev.pointerId === this.lookPointerId;
+      const wasTap = wasPrimary && !this.lookMoved && !this.rotateMode;
+      this.lookPointers.delete(ev.pointerId);
       try {
         el.releasePointerCapture(ev.pointerId);
       } catch {
         /* ignore */
       }
-      // Short tap on world (not a look-drag) → interact when in range
-      if (wasTap && this.active && this.host && !this.host.isDisposed()) {
-        this.host.tryInteract();
+
+      if (this.lookPointers.size >= 2) {
+        syncRotateAnchor();
+      } else if (this.lookPointers.size === 1) {
+        // Fall back to single-finger look with remaining finger
+        this.rotateMode = false;
+        this.rotateLastAngle = null;
+        const [id, pt] = [...this.lookPointers.entries()][0]!;
+        this.lookPointerId = id;
+        this.lookLast.x = pt.x;
+        this.lookLast.y = pt.y;
+        this.lookStart.x = pt.x;
+        this.lookStart.y = pt.y;
+        this.lookMoved = true; // don't treat as tap after a pinch
+      } else {
+        this.lookPointerId = null;
+        this.rotateMode = false;
+        this.rotateLastAngle = null;
+        // Short tap on world (not a look-drag / twist) → interact when in range
+        if (wasTap && this.active && this.host && !this.host.isDisposed()) {
+          this.host.tryInteract();
+        }
       }
     };
 
