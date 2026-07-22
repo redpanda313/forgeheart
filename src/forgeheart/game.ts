@@ -891,9 +891,10 @@ export class ForgeHeartGame {
             const t = e.target as HTMLElement | null;
             if (t?.closest?.('#stall-wizard')) return;
             const sb = this.siteBuilder;
-            // Only confirm when aiming a site box or a prop — not while browsing menus
+            // Only confirm when aiming a site box or a prop/room — not while browsing menus
             if (sb.step === 'structure' || sb.step === 'finalize') return;
             if (sb.step === 'props' && !sb.activePropId) return;
+            if (sb.step === 'rooms' && !sb.activeRoomKind) return;
             this.siteBuilderConfirmAction();
             return;
           }
@@ -1413,20 +1414,20 @@ export class ForgeHeartGame {
         this.siteBuilderConfirmAction();
         return true;
       }
+      // [ ] / = /- rotate: item yaw while aiming a prop/room, else the site shell
       if (code === 'BracketRight' || code === 'Equal' || code === 'NumpadAdd') {
-        this.siteBuilder.yaw += 0.25;
-        this.rebuildSiteGhost();
+        this.nudgeSiteBuilderYaw(0.25);
         return true;
       }
       if (code === 'BracketLeft' || code === 'Minus' || code === 'NumpadSubtract') {
-        this.siteBuilder.yaw -= 0.25;
-        this.rebuildSiteGhost();
+        this.nudgeSiteBuilderYaw(-0.25);
         return true;
       }
       if (code === 'KeyR' && this.siteBuilder.step === 'site') {
         this.siteBuilder.sitePlaced = false;
         this.rebuildSiteGhost();
         this.refreshSiteBuilderUi();
+        this.setHelp('SITE · look aims box · arrows nudge · [/] rotate · Enter lock');
         return true;
       }
       if (code === 'Backspace' && this.siteBuilder.step === 'props' && this.siteBuilder.props.length) {
@@ -1435,6 +1436,20 @@ export class ForgeHeartGame {
         this.refreshSiteBuilderUi();
         return true;
       }
+      // Hold arrows / IJKL to nudge aim — swallow so other maker tools don't steal them
+      if (
+        code === 'ArrowLeft' ||
+        code === 'ArrowRight' ||
+        code === 'ArrowUp' ||
+        code === 'ArrowDown' ||
+        code === 'KeyI' ||
+        code === 'KeyJ' ||
+        code === 'KeyK' ||
+        code === 'KeyL'
+      ) {
+        return true;
+      }
+      return false;
     }
 
     // Purchase placement session overrides normal maker tools
@@ -1846,6 +1861,7 @@ export class ForgeHeartGame {
     // Site builder owns the ghost — hide default Game Maker prefab preview
     if (this.siteBuilder) {
       this.cityEditor.updateGhost(null, 0);
+      this.nudgeSiteBuilderAim(dt);
       this.tickSiteBuilderGhost();
       const sb = this.siteBuilder;
       if (this.locEl) {
@@ -1853,15 +1869,19 @@ export class ForgeHeartGame {
           sb.step === 'site'
             ? 'Site builder · aim selection box'
             : sb.step === 'props' && sb.activePropId
-              ? `Aiming · ${sb.activePropId.replace(/_/g, ' ')}`
-              : `Site builder · ${sb.step}`;
+              ? `Aiming · ${sb.activePropId.replace(/_/g, ' ')} · [/] rotate`
+              : sb.step === 'rooms' && sb.activeRoomKind
+                ? `Aiming room · [/] rotate`
+                : `Site builder · ${sb.step}`;
       }
       this.weaponEl.textContent =
         sb.step === 'props' && sb.activePropId
           ? 'AIM PROP'
-          : sb.step === 'site'
-            ? 'SITE'
-            : 'BUILD';
+          : sb.step === 'rooms' && sb.activeRoomKind
+            ? 'AIM ROOM'
+            : sb.step === 'site'
+              ? 'SITE'
+              : 'BUILD';
       this.animateEditorFx(dt);
       return;
     }
@@ -4786,9 +4806,10 @@ export class ForgeHeartGame {
       plazaX: opts.kind === 'home' ? (home?.plotX ?? anchor.x) : dist!.x,
       plazaZ: opts.kind === 'home' ? (home?.plotZ ?? anchor.z) : dist!.z,
     });
-    // Always start with selection box on the plaza (editable / movable)
+    // Always start with selection box so the player can aim/nudge the plot
     this.siteBuilder.step = 'site';
-    if (!opts.redesign) this.siteBuilder.sitePlaced = false;
+    this.siteBuilder.sitePlaced = false;
+    this.siteBuilder.placeYaw = 0;
     this.enterGameMaker();
     // Suppress default Game Maker prefab ghost
     this.makerTool = 'select';
@@ -4812,12 +4833,12 @@ export class ForgeHeartGame {
             : 'factory';
     this.toast(
       opts.redesign
-        ? `Edit ${label} — look to move the selection box, Enter locks it. Only upgrades cost more.`
-        : `Place ${label} — look to aim the empty selection box, Enter/click to lock the site.`,
+        ? `Edit ${label} — look or arrows move the box, [/] rotates, Enter locks.`
+        : `Place ${label} — look or arrows move the box, [/] rotates, Enter/click locks.`,
       5,
     );
     this.setHelp(
-      'SITE · look aims box · WASD fly · Enter/click lock · [/] rotate · Esc cancel',
+      'SITE · look / arrows aim box · [/] rotate · WASD fly · Enter lock · Esc cancel',
     );
   }
 
@@ -4878,9 +4899,10 @@ export class ForgeHeartGame {
     const origin = this.makerRay.ray.origin;
     const dir = this.makerRay.ray.direction;
     const planeY = 0.08;
+    // Prefer ground-plane hit; allow a wide aim distance for high fly cams
     if (Math.abs(dir.y) > 1e-4) {
       const t = (planeY - origin.y) / dir.y;
-      if (t > 0.25 && t < 450) {
+      if (t > 0.1 && t < 800) {
         const p = origin.clone().addScaledVector(dir, t);
         p.y = planeY;
         return p;
@@ -4890,11 +4912,80 @@ export class ForgeHeartGame {
     d.y = 0;
     if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
     else d.normalize();
+    // Horizontal look: drop a point ahead of the camera on the deck
+    const ahead = Math.min(40, Math.max(8, Math.abs(origin.y) * 1.2));
     return new THREE.Vector3(
-      this.camera.position.x + d.x * 14,
+      this.camera.position.x + d.x * ahead,
       planeY,
-      this.camera.position.z + d.z * 14,
+      this.camera.position.z + d.z * ahead,
     );
+  }
+
+  /** Rotate site shell, or the item being aimed (prop / room). */
+  private nudgeSiteBuilderYaw(delta: number) {
+    const s = this.siteBuilder;
+    if (!s) return;
+    const aimingItem =
+      (s.step === 'props' && !!s.activePropId) || (s.step === 'rooms' && !!s.activeRoomKind);
+    if (aimingItem) {
+      s.placeYaw += delta;
+      if (this.sitePropGhost) {
+        this.sitePropGhost.rotation.y = s.yaw + s.placeYaw;
+      }
+      return;
+    }
+    s.yaw += delta;
+    this.rebuildSiteGhost();
+  }
+
+  /** Arrow-key nudge for selection box / aimed item on the ground plane. */
+  private nudgeSiteBuilderAim(dt: number) {
+    const s = this.siteBuilder;
+    if (!s) return;
+    const aimingSite = s.step === 'site' && !s.sitePlaced && this.siteGhost;
+    const aimingItem =
+      ((s.step === 'props' && !!s.activePropId) || (s.step === 'rooms' && !!s.activeRoomKind)) &&
+      this.sitePropGhost;
+    if (!aimingSite && !aimingItem) return;
+
+    const left =
+      this.keys.has('ArrowLeft') || this.keys.has('KeyJ');
+    const right =
+      this.keys.has('ArrowRight') || this.keys.has('KeyL');
+    const forward =
+      this.keys.has('ArrowUp') || this.keys.has('KeyI');
+    const back =
+      this.keys.has('ArrowDown') || this.keys.has('KeyK');
+    if (!left && !right && !forward && !back) return;
+
+    const boost =
+      this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 2.8 : 1;
+    const speed = 14 * boost * dt;
+    const camFwd = new THREE.Vector3();
+    this.camera.getWorldDirection(camFwd);
+    camFwd.y = 0;
+    if (camFwd.lengthSq() < 1e-6) camFwd.set(0, 0, 1);
+    else camFwd.normalize();
+    const camRight = new THREE.Vector3().crossVectors(camFwd, new THREE.Vector3(0, 1, 0)).normalize();
+    const delta = new THREE.Vector3();
+    if (forward) delta.add(camFwd);
+    if (back) delta.sub(camFwd);
+    if (right) delta.add(camRight);
+    if (left) delta.sub(camRight);
+    if (delta.lengthSq() < 1e-8) return;
+    delta.normalize().multiplyScalar(speed);
+
+    const target = aimingSite ? this.siteGhost! : this.sitePropGhost!;
+    target.position.x += delta.x;
+    target.position.z += delta.z;
+    target.position.y = 0.05;
+    // Mark as manually steered so look-follow doesn't snap it away this frame
+    target.userData.manualAim = true;
+    if (aimingItem) {
+      const local = this.worldToSiteLocal(target.position.x, target.position.z);
+      target.userData.lx = local.lx;
+      target.userData.lz = local.lz;
+    }
   }
 
   private worldToSiteLocal(wx: number, wz: number): { lx: number; lz: number } {
@@ -4986,7 +5077,7 @@ export class ForgeHeartGame {
             : makeFactoryPropGhost(s.activePropId, this.skyCity.mats);
       const look = this.siteLookPoint();
       pg.position.copy(look);
-      pg.rotation.y = s.yaw;
+      pg.rotation.y = s.yaw + s.placeYaw;
       this.scene.add(pg);
       this.sitePropGhost = pg;
     }
@@ -4994,7 +5085,7 @@ export class ForgeHeartGame {
       const pg = makeShopPropGhost('planters', this.skyCity.mats);
       const look = this.siteLookPoint();
       pg.position.copy(look);
-      pg.rotation.y = s.yaw;
+      pg.rotation.y = s.yaw + s.placeYaw;
       this.scene.add(pg);
       this.sitePropGhost = pg;
     }
@@ -5006,14 +5097,18 @@ export class ForgeHeartGame {
     const look = this.siteLookPoint();
 
     if (s.step === 'site' && !s.sitePlaced && this.siteGhost) {
-      this.siteGhost.position.x = look.x;
-      this.siteGhost.position.z = look.z;
-      this.siteGhost.position.y = 0.05;
+      // Follow look unless arrows/IJKL just nudged the box
+      if (!this.siteGhost.userData.manualAim) {
+        this.siteGhost.position.x = look.x;
+        this.siteGhost.position.z = look.z;
+        this.siteGhost.position.y = 0.05;
+      }
+      this.siteGhost.userData.manualAim = false;
       this.siteGhost.rotation.y = s.yaw;
       const ok =
         s.kind === 'home'
-          ? isValidHomePlot(look.x, look.z, s.homeTier)
-          : isValidStallPlot(s.districtId, look.x, look.z);
+          ? isValidHomePlot(this.siteGhost.position.x, this.siteGhost.position.z, s.homeTier)
+          : isValidStallPlot(s.districtId, this.siteGhost.position.x, this.siteGhost.position.z);
       this.siteGhost.traverse((o) => {
         const m = o as THREE.Mesh;
         if (m.isMesh && m.material && !Array.isArray(m.material)) {
@@ -5032,11 +5127,17 @@ export class ForgeHeartGame {
       ((s.step === 'props' && s.activePropId) || (s.step === 'rooms' && s.activeRoomKind)) &&
       this.sitePropGhost
     ) {
-      this.sitePropGhost.position.x = look.x;
-      this.sitePropGhost.position.z = look.z;
-      this.sitePropGhost.position.y = 0.05;
-      this.sitePropGhost.rotation.y = s.yaw;
-      const local = this.worldToSiteLocal(look.x, look.z);
+      if (!this.sitePropGhost.userData.manualAim) {
+        this.sitePropGhost.position.x = look.x;
+        this.sitePropGhost.position.z = look.z;
+        this.sitePropGhost.position.y = 0.05;
+      }
+      this.sitePropGhost.userData.manualAim = false;
+      this.sitePropGhost.rotation.y = s.yaw + s.placeYaw;
+      const local = this.worldToSiteLocal(
+        this.sitePropGhost.position.x,
+        this.sitePropGhost.position.z,
+      );
       this.sitePropGhost.userData.lx = local.lx;
       this.sitePropGhost.userData.lz = local.lz;
       // Tint red if too far from site footprint
@@ -5080,7 +5181,7 @@ export class ForgeHeartGame {
       }
       s.plotX = px;
       s.plotZ = pz;
-      s.yaw = this.lookYaw();
+      // Keep the box's [/] rotation — do not snap to look yaw
       s.sitePlaced = true;
       s.step = 'structure';
       this.rebuildSiteGhost();
@@ -5123,8 +5224,9 @@ export class ForgeHeartGame {
         this.toast('Aim closer to your home footprint.', 2.5);
         return;
       }
-      s.rooms.push({ kind: s.activeRoomKind, lx, lz, yaw: s.yaw });
+      s.rooms.push({ kind: s.activeRoomKind, lx, lz, yaw: s.placeYaw });
       s.activeRoomKind = null;
+      s.placeYaw = 0;
       this.rebuildSiteGhost();
       this.refreshSiteBuilderUi();
       this.toast('Room placed.', 1.5);
@@ -5164,13 +5266,14 @@ export class ForgeHeartGame {
         return;
       }
       const placedName = s.activePropId.replace(/_/g, ' ');
-      s.props.push({ id: s.activePropId, lx, lz, yaw: 0 });
+      s.props.push({ id: s.activePropId, lx, lz, yaw: s.placeYaw });
       // Return to catalog so you can pick the next item (or Done)
       s.activePropId = null;
+      s.placeYaw = 0;
       this.rebuildSiteGhost();
       this.refreshSiteBuilderUi();
       this.toast(`Placed ${placedName} · pick another or Done placing`, 2.5);
-      this.setHelp('PROPS · pick from panel · look+Enter to place · Esc clears tool');
+      this.setHelp('PROPS · pick from panel · look+Enter · [/] rotate · Esc clears tool');
       return;
     }
 
@@ -5296,13 +5399,13 @@ export class ForgeHeartGame {
     if (s.step === 'site') {
       if (sub) {
         sub.textContent =
-          'Large empty selection box on the plaza. Fly it, then Enter or click to lock the location. R to move again.';
+          'Aim the selection box with look or arrow keys. [/] rotates it. Enter/click locks. R to move again later.';
       }
       const p = document.createElement('p');
       p.className = 'stall-wizard-hint';
       p.textContent = s.sitePlaced
         ? `Site ${s.plotX.toFixed(0)}, ${s.plotZ.toFixed(0)} · press R to move`
-        : 'Green = valid plaza reach · red = too far';
+        : 'Green = valid · red = too far · arrows nudge · [/] rotate';
       body.appendChild(p);
     } else if (s.step === 'structure') {
       if (s.kind === 'stall') {
@@ -5434,11 +5537,12 @@ export class ForgeHeartGame {
       const cap = homeRoomCap(s.homeTier);
       if (s.activeRoomKind) {
         if (sub) {
-          sub.textContent = 'AIMING room wing — look to place, Enter confirms, Esc cancels.';
+          sub.textContent =
+            'AIMING room wing — look or arrows move, [/] rotates, Enter confirms, Esc cancels.';
         }
         const hint = document.createElement('p');
         hint.className = 'stall-wizard-hint';
-        hint.textContent = `Placing: ${s.activeRoomKind.replace(/_/g, ' ')} · ${s.rooms.length}/${cap} rooms`;
+        hint.textContent = `Placing: ${s.activeRoomKind.replace(/_/g, ' ')} · ${s.rooms.length}/${cap} rooms · [/] rotate`;
         body.appendChild(hint);
         const cancelAim = document.createElement('button');
         cancelAim.type = 'button';
@@ -5446,6 +5550,7 @@ export class ForgeHeartGame {
         cancelAim.innerHTML = '<strong>Cancel aim</strong>';
         cancelAim.addEventListener('click', () => {
           s.activeRoomKind = null;
+          s.placeYaw = 0;
           this.rebuildSiteGhost();
           this.refreshSiteBuilderUi();
         });
@@ -5475,9 +5580,10 @@ export class ForgeHeartGame {
               return;
             }
             s.activeRoomKind = r.id;
+            s.placeYaw = 0;
             this.rebuildSiteGhost();
             this.refreshSiteBuilderUi();
-            this.toast(`Aim ${r.name} — look · Enter places`, 3);
+            this.toast(`Aim ${r.name} — look / arrows · [/] rotate · Enter places`, 3);
           });
           body.appendChild(btn);
         }
@@ -5499,11 +5605,11 @@ export class ForgeHeartGame {
       if (s.activePropId) {
         if (sub) {
           sub.textContent =
-            'AIMING — look to position the ghost, Enter/click places it, then you return to the list. Esc cancels this tool.';
+            'AIMING — look or arrows move it, [/] rotates, Enter/click places. Esc cancels the tool.';
         }
         const hint = document.createElement('p');
         hint.className = 'stall-wizard-hint';
-        hint.textContent = `Placing: ${s.activePropId.replace(/_/g, ' ')} · WASD fly · mouse look`;
+        hint.textContent = `Placing: ${s.activePropId.replace(/_/g, ' ')} · [/] rotate · arrows nudge`;
         body.appendChild(hint);
         const cancelAim = document.createElement('button');
         cancelAim.type = 'button';
@@ -5511,6 +5617,7 @@ export class ForgeHeartGame {
         cancelAim.innerHTML = '<strong>Cancel aim</strong><span class="hint">Back to prop list (Esc)</span>';
         cancelAim.addEventListener('click', () => {
           s.activePropId = null;
+          s.placeYaw = 0;
           this.rebuildSiteGhost();
           this.refreshSiteBuilderUi();
         });
@@ -5519,13 +5626,13 @@ export class ForgeHeartGame {
         placeNow.type = 'button';
         placeNow.className = 'stall-wizard-opt selected';
         placeNow.innerHTML =
-          '<strong>Place here</strong><span class="hint">Same as Enter — uses look aim</span>';
+          '<strong>Place here</strong><span class="hint">Same as Enter — current ghost pose</span>';
         placeNow.addEventListener('click', () => this.siteBuilderConfirmAction());
         body.appendChild(placeNow);
       } else {
         if (sub) {
           sub.textContent =
-            'Pick a decoration — that starts aim mode (look to position). After placing, pick again or Done placing.';
+            'Pick a decoration — aim with look/arrows, rotate with [/], then Enter. After placing, pick again or Done.';
         }
         const catalog =
           s.kind === 'stall'
@@ -5549,10 +5656,11 @@ export class ForgeHeartGame {
             ev.stopPropagation();
             if (!ok) return;
             s.activePropId = p.id;
+            s.placeYaw = 0;
             this.rebuildSiteGhost();
             this.refreshSiteBuilderUi();
-            this.toast(`Aim ${p.name} — look to move · Enter places · Esc cancels tool`, 3);
-            this.setHelp('AIM PROP · look positions ghost · Enter place · Esc back to list');
+            this.toast(`Aim ${p.name} — look/arrows · [/] rotate · Enter places`, 3);
+            this.setHelp('AIM PROP · look/arrows move · [/] rotate · Enter place · Esc back');
           });
           body.appendChild(btn);
         }
