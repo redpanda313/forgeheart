@@ -10,6 +10,7 @@ import {
   tryAutoAssembleFrame,
   convertLegacyFrames,
   makeLegacyAssembledFrame,
+  inventionFrameSlots,
 } from './frameAssembly';
 
 export type CurrencyId = 'brass' | 'aether';
@@ -3571,14 +3572,66 @@ export function playerBoardSpeedMul(inv: InventoryState): number {
 
 // ——— Light invention (constrained) ———
 
-const INVENT_NAMES = [
-  'Brassweave Coil',
-  'Skybound Alloy',
-  'Spore-Solder',
-  'Ironlace Filament',
-  'Saltglass Bead',
-  'Cloudspring Wire',
+/** Materials allowed at the invent desk — include gear/wire/fuel so slot-fit inventions are reachable. */
+export const INVENT_MATERIAL_IDS: CommodityId[] = [
+  'cloud_iron',
+  'scrap_brass',
+  'spore_silk',
+  'sky_salt',
+  'wire',
+  'polished_wire',
+  'gear_blank',
+  'fuel_cell',
 ];
+
+const INVENT_NAME_PREFIX: Partial<Record<CommodityId, string>> = {
+  gear_blank: 'Gear',
+  wire: 'Wire',
+  polished_wire: 'Gleam',
+  fuel_cell: 'Cell',
+  cloud_iron: 'Iron',
+  scrap_brass: 'Brass',
+  spore_silk: 'Silk',
+  sky_salt: 'Salt',
+  glass_pane: 'Glass',
+};
+
+const INVENT_NAME_SUFFIX: Partial<Record<CommodityId, string>> = {
+  gear_blank: 'works',
+  wire: 'filament',
+  polished_wire: 'lace',
+  fuel_cell: 'core',
+  cloud_iron: 'plate',
+  scrap_brass: 'coil',
+  spore_silk: 'weave',
+  sky_salt: 'crystal',
+  glass_pane: 'lens',
+};
+
+function inventNameFromMats(a: CommodityId, b: CommodityId, index: number): string {
+  const left = INVENT_NAME_PREFIX[a] ?? COMMODITIES[a].name.split(/\s+/).pop() ?? 'Proto';
+  const right = INVENT_NAME_SUFFIX[b] ?? COMMODITIES[b].name.split(/\s+/).pop()?.toLowerCase() ?? 'part';
+  const base = `${left}${right.charAt(0).toUpperCase()}${right.slice(1)}`;
+  return index > 0 ? `${base} ${index + 1}` : base;
+}
+
+/** Human-readable frame slots an invention can fill (for UI toasts). */
+export function inventSlotBlurb(a: CommodityId, b: CommodityId): string {
+  const slots = inventionFrameSlots({
+    inputs: [
+      { id: a, n: 1 },
+      { id: b, n: 1 },
+    ],
+  });
+  const labels: Record<string, string> = {
+    chassis: 'Chassis',
+    mechanisms: 'Mechanisms',
+    power: 'Power',
+    wiring: 'Wiring',
+    personality: 'Personality',
+  };
+  return slots.map((s) => labels[s] ?? s).join(' · ');
+}
 
 export function inventCustomRecipe(
   inv: InventoryState,
@@ -3592,6 +3645,9 @@ export function inventCustomRecipe(
     };
   }
   if (a === b) return { ok: false, msg: 'Pick two different materials.' };
+  if (!INVENT_MATERIAL_IDS.includes(a) || !INVENT_MATERIAL_IDS.includes(b)) {
+    return { ok: false, msg: 'Those materials can’t be prototyped at this desk.' };
+  }
   if (getQty(inv, a) < 2 || getQty(inv, b) < 2) {
     return { ok: false, msg: 'Need 2 of each input material to prototype.' };
   }
@@ -3604,11 +3660,7 @@ export function inventCustomRecipe(
   removeItem(inv, a, 2);
   removeItem(inv, b, 2);
   inv.brass -= labFee;
-  const name =
-    INVENT_NAMES[inv.customRecipes.length % INVENT_NAMES.length]! +
-    (inv.customRecipes.length >= INVENT_NAMES.length
-      ? ` ${inv.customRecipes.length + 1}`
-      : '');
+  const name = inventNameFromMats(a, b, inv.customRecipes.length);
   // Quality rises with bay level & prior inventions (premium plazas pay more)
   const quality = Math.min(3, 1 + Math.floor(inv.bayLevel / 4) + (inv.customRecipes.length >= 4 ? 1 : 0));
   const sellValue = Math.round(
@@ -3626,10 +3678,11 @@ export function inventCustomRecipe(
   };
   inv.customRecipes.push(recipe);
   inv.inventionsMade = (inv.inventionsMade ?? 0) + 1;
+  const slotBlurb = inventSlotBlurb(a, b);
   return {
     ok: true,
     recipe,
-    msg: `Invented ${name} (Q${quality}, sells ~${sellValue}b)! Craft → stock multi-plaza stalls — premium districts pay invent bonus.`,
+    msg: `Invented ${name} (Q${quality}, ~${sellValue}b). Fits frame slots: ${slotBlurb}. Craft → assemble or stock stalls.`,
   };
 }
 
