@@ -33,6 +33,7 @@ export type CityInteractKind =
   | 'city_robot'
   | 'ferry_training'
   | 'harvest'
+  | 'flower_pick'
   | 'broker'
   | 'city_stall'
   | 'craft_bench'
@@ -1043,6 +1044,45 @@ export function buildSkyCity(): SkyCityBuilt {
       });
     }
 
+    // Plaza flower patches — personality ingredients for frame assembly
+    {
+      const flowerPool: CommodityId[] =
+        d.role === 'harbor'
+          ? ['bloom_harbor', 'bloom_sky', 'flower_gift']
+          : d.role === 'premium'
+            ? ['bloom_aether', 'bloom_sky', 'bloom_brass']
+            : d.role === 'industrial'
+              ? ['bloom_brass', 'bloom_spore', 'flower_gift']
+              : ['bloom_sky', 'bloom_spore', 'bloom_brass', 'flower_gift'];
+      const fx = cx + sz * 0.18;
+      const fz = cz - sz * 0.2;
+      const fm = new THREE.Mesh(
+        new THREE.SphereGeometry(0.35, 8, 8),
+        new THREE.MeshStandardMaterial({
+          color: 0xe8a0c8,
+          emissive: 0x884466,
+          emissiveIntensity: 0.35,
+        }),
+      );
+      fm.position.set(fx, 0.55, fz);
+      addMesh(fm);
+      const fl = labelSprite('FLOWERS');
+      fl.position.set(fx, 1.8, fz);
+      fl.scale.set(2.4, 0.45, 1);
+      addMesh(fl);
+      interactables.push({
+        id: `flowers_${d.id}`,
+        kind: 'flower_pick',
+        position: new THREE.Vector3(fx, 0.5, fz),
+        radius: 2.8,
+        mesh: fm,
+        label: 'Pick plaza flowers (personality)',
+        districtId: d.id,
+        harvestPool: flowerPool,
+        harvestName: `${d.name} blooms`,
+      });
+    }
+
     // Vendors on market / premium / mixed plazas
     if (d.role === 'market' || d.role === 'premium' || d.role === 'mixed') {
       VENDORS.forEach((v, i) => {
@@ -1975,7 +2015,7 @@ export function buildSkyCity(): SkyCityBuilt {
       position: buyMark.position.clone(),
       radius: 2.5,
       mesh: buyMark,
-      label: 'Buy work robot · 120b (from broker stock)',
+      label: 'Buy work robot · 120b (assembled frame or broker)',
       districtId: d.id,
     });
   }

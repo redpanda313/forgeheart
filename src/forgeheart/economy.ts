@@ -5,6 +5,13 @@
  * Local-only; server later.
  */
 
+import type { AssembledFrame } from './frameAssembly';
+import {
+  tryAutoAssembleFrame,
+  convertLegacyFrames,
+  makeLegacyAssembledFrame,
+} from './frameAssembly';
+
 export type CurrencyId = 'brass' | 'aether';
 
 export type CommodityId =
@@ -25,7 +32,12 @@ export type CommodityId =
   | 'elias_medallion'
   | 'flower_gift'
   | 'brass_charm'
-  | 'silk_scarf';
+  | 'silk_scarf'
+  | 'bloom_brass'
+  | 'bloom_sky'
+  | 'bloom_spore'
+  | 'bloom_harbor'
+  | 'bloom_aether';
 
 export interface CommodityDef {
   id: CommodityId;
@@ -143,6 +155,46 @@ export const COMMODITIES: Record<CommodityId, CommodityDef> = {
     baseSell: 130,
     stack: 8,
   },
+  bloom_brass: {
+    id: 'bloom_brass',
+    name: 'Brass Petals',
+    baseBuy: 10,
+    baseSell: 6,
+    stack: 40,
+    harvestable: true,
+  },
+  bloom_sky: {
+    id: 'bloom_sky',
+    name: 'Skyblooms',
+    baseBuy: 12,
+    baseSell: 7,
+    stack: 40,
+    harvestable: true,
+  },
+  bloom_spore: {
+    id: 'bloom_spore',
+    name: 'Spore Lilies',
+    baseBuy: 14,
+    baseSell: 8,
+    stack: 40,
+    harvestable: true,
+  },
+  bloom_harbor: {
+    id: 'bloom_harbor',
+    name: 'Harbor Roses',
+    baseBuy: 16,
+    baseSell: 9,
+    stack: 40,
+    harvestable: true,
+  },
+  bloom_aether: {
+    id: 'bloom_aether',
+    name: 'Aether Orchids',
+    baseBuy: 22,
+    baseSell: 12,
+    stack: 30,
+    harvestable: true,
+  },
 };
 
 export const COMMODITY_LIST = Object.values(COMMODITIES);
@@ -239,7 +291,7 @@ export const PROGRAM_NODE_DEFS: {
   { id: 'craft_wire', name: 'Craft Wire', blurb: '2 scrap → wire', category: 'craft' },
   { id: 'craft_gear', name: 'Craft Gear Blank', blurb: 'iron + scrap → gear', category: 'craft' },
   { id: 'craft_kit', name: 'Craft Repair Kit', blurb: 'wire + scrap → kit', category: 'craft' },
-  { id: 'craft_frame', name: 'Craft Robot Frame', blurb: 'gears · wire · fuel · iron', category: 'craft' },
+  { id: 'craft_frame', name: 'Assemble Robot Frame', blurb: 'auto-fill five slots from stock', category: 'craft' },
   { id: 'craft_speed_tool', name: 'Craft Rivet Spanner', blurb: 'gear · wire · iron → tool', category: 'craft' },
   { id: 'craft_haul_pack', name: 'Craft Haul Pack', blurb: 'silk + scrap → pack', category: 'craft' },
   {
@@ -250,8 +302,8 @@ export const PROGRAM_NODE_DEFS: {
   },
   {
     id: 'craft_fine_frame',
-    name: 'Craft Masterwork Frame',
-    blurb: 'Fine craft · top fair price · Q2',
+    name: 'Assemble Fine Frame',
+    blurb: 'Auto-fill slots preferring polished / silk parts',
     category: 'craft',
   },
   {
@@ -384,16 +436,14 @@ export const PROGRAM_NODE_DEFS: {
   },
 ];
 
-/** Map craft program nodes → recipe ids */
+/** Map craft program nodes → recipe ids (frame assembly handled separately) */
 export const PROGRAM_CRAFT_RECIPE: Partial<Record<ProgramNodeKind, string>> = {
   craft_wire: 'wire_from_scrap',
   craft_gear: 'gear_blank',
   craft_kit: 'repair_kit',
-  craft_frame: 'basic_frame',
   craft_speed_tool: 'speed_tool',
   craft_haul_pack: 'haul_pack',
   craft_polished_wire: 'polished_wire',
-  craft_fine_frame: 'fine_frame',
 };
 
 /** Commodity for sell_* / buy_* program nodes */
@@ -522,6 +572,15 @@ export interface WorkerState {
   kind?: 'human' | 'robot';
   /** Elias spirit host — human-parity stats + map marker */
   hasMedallion?: boolean;
+  /** Assembled frame identity when this robot was powered from a chassis */
+  frameId?: string | null;
+  frameName?: string | null;
+  frameQuality?: number;
+  /** Multipliers from frame (robots only) */
+  frameSpeedMul?: number;
+  frameWorkMul?: number;
+  frameHarvestMul?: number;
+  frameProgramBonus?: number;
 }
 
 /** Player-placed commercial / cosmetic props from purchase→Game Maker */
@@ -617,6 +676,8 @@ export interface StallState {
   shelf: Partial<Record<CommodityId, number>>;
   /** Invented goods on shelf by recipe id */
   customShelf: Record<string, number>;
+  /** Assembled robot frames on display (unique named chassis) */
+  frameShelf: AssembledFrame[];
   /** Player ask price per commodity (brass). Missing → fair price default. */
   asks: Partial<Record<CommodityId, number>>;
   /** Auto-pull from inventory each tick if shelf empty (optional modes) */
@@ -1138,6 +1199,8 @@ export interface InventoryState {
   inventionsMade: number;
   /** Units of invented goods sold via stalls / vendors */
   inventionsSold: number;
+  /** Assembled robot frames (slot-built chassis with unique names) */
+  assembledFrames: AssembledFrame[];
   /** Bonded storage — resources track (North Observatory) */
   storageResourcesLevel: number;
   /** Bonded storage — crafted goods (Clocktower) */
@@ -1231,6 +1294,7 @@ export function emptyInventory(starterBrass = 40): InventoryState {
     cityWorkshopLeased: false,
     inventionsMade: 0,
     inventionsSold: 0,
+    assembledFrames: [],
     storageResourcesLevel: 0,
     storageCraftedLevel: 0,
     storageInventionsLevel: 0,
@@ -1320,23 +1384,48 @@ export function buyRobotWorker(inv: InventoryState): { ok: boolean; msg: string;
   if (inv.workers.length >= max) {
     return { ok: false, msg: `Bay full (${inv.workers.length}/${max}). Expand for more slots.` };
   }
-  if (inv.brokerFrameStock < 1 && getQty(inv, 'basic_frame') < 1) {
-    return { ok: false, msg: 'Broker has no frames in stock. Sell frames first, or craft one.' };
+  if (!inv.assembledFrames) inv.assembledFrames = [];
+  const hasFrame = inv.assembledFrames.length > 0;
+  const hasBroker = (inv.brokerFrameStock ?? 0) > 0;
+  if (!hasFrame && !hasBroker) {
+    return { ok: false, msg: 'Need an assembled frame (workbench) or broker stock.' };
   }
   if (inv.brass < ROBOT_BUY_COST) {
     return { ok: false, msg: `Need ${ROBOT_BUY_COST} brass to buy a work robot.` };
   }
   inv.brass -= ROBOT_BUY_COST;
-  if (inv.brokerFrameStock > 0) inv.brokerFrameStock -= 1;
-  else removeItem(inv, 'basic_frame', 1);
-  const w = makeRobotWorker(`R-${inv.workers.length + 1}`);
+  let frame: AssembledFrame | null = null;
+  if (hasBroker && !hasFrame) {
+    inv.brokerFrameStock -= 1;
+  } else if (hasBroker && hasFrame) {
+    // Prefer player's best assembled chassis when both available
+    inv.assembledFrames.sort((a, b) => b.quality - a.quality);
+    frame = inv.assembledFrames.shift() ?? null;
+  } else {
+    inv.assembledFrames.sort((a, b) => b.quality - a.quality);
+    frame = inv.assembledFrames.shift() ?? null;
+  }
+  const w = makeRobotWorker(frame?.name?.replace(/\s*Frame$/i, '') || `R-${inv.workers.length + 1}`);
+  if (frame) applyFrameToWorker(w, frame);
   inv.workers.push(w);
   inv.laborerHired = true;
+  const q = frame ? ` · ${frame.name} (Q${frame.quality.toFixed(2)})` : ' · broker chassis';
   return {
     ok: true,
     worker: w,
-    msg: `Bought work robot ${w.name} (−${ROBOT_BUY_COST}). Slower than humans unless hosting Elias's medallion.`,
+    msg: `Powered work robot ${w.name}${q} (−${ROBOT_BUY_COST} brass).`,
   };
+}
+
+export function applyFrameToWorker(w: WorkerState, frame: AssembledFrame) {
+  w.frameId = frame.id;
+  w.frameName = frame.name;
+  w.frameQuality = frame.quality;
+  w.frameSpeedMul = frame.speedMul;
+  w.frameWorkMul = frame.workMul;
+  w.frameHarvestMul = frame.harvestMul;
+  w.frameProgramBonus = frame.programNodeBonus;
+  w.payGrade = Math.max(w.payGrade ?? 0, frame.payGradeBonus);
 }
 
 export function makeRobotWorker(name: string, id?: string): WorkerState {
@@ -1353,6 +1442,13 @@ export function makeRobotWorker(name: string, id?: string): WorkerState {
     harvestSiteId: null,
     kind: 'robot',
     hasMedallion: false,
+    frameId: null,
+    frameName: null,
+    frameQuality: 1,
+    frameSpeedMul: 0.85,
+    frameWorkMul: 1.35,
+    frameHarvestMul: 0.85,
+    frameProgramBonus: 0,
   };
 }
 
@@ -1474,6 +1570,7 @@ export function emptyStall(): StallState {
     open: false,
     shelf: {},
     customShelf: {},
+    frameShelf: [],
     asks: {},
     autoFrames: true,
     autoHarvest: false,
@@ -1824,12 +1921,16 @@ export const STORAGE_CRAFTED_IDS: readonly CommodityId[] = [
   'glass_pane',
   'fuel_cell',
   'gear_blank',
-  'basic_frame',
   'repair_kit',
   'speed_tool',
   'haul_pack',
   'polished_wire',
-  'fine_frame',
+  'bloom_brass',
+  'bloom_sky',
+  'bloom_spore',
+  'bloom_harbor',
+  'bloom_aether',
+  'flower_gift',
 ];
 
 export const STORAGE_MAX_LEVEL = 3;
@@ -2072,18 +2173,6 @@ export const RECIPES: Recipe[] = [
     needsBay: true,
   },
   {
-    id: 'basic_frame',
-    name: 'Build Basic Robot Frame',
-    inputs: [
-      { id: 'gear_blank', n: 2 },
-      { id: 'wire', n: 2 },
-      { id: 'fuel_cell', n: 1 },
-      { id: 'cloud_iron', n: 3 },
-    ],
-    output: { id: 'basic_frame', n: 1 },
-    needsBay: true,
-  },
-  {
     id: 'speed_tool',
     name: 'Forge Rivet Spanner',
     inputs: [
@@ -2112,18 +2201,6 @@ export const RECIPES: Recipe[] = [
       { id: 'sky_salt', n: 1 },
     ],
     output: { id: 'polished_wire', n: 1 },
-    needsBay: true,
-  },
-  {
-    id: 'fine_frame',
-    name: 'Build Masterwork Frame',
-    inputs: [
-      { id: 'basic_frame', n: 1 },
-      { id: 'polished_wire', n: 2 },
-      { id: 'gear_blank', n: 1 },
-      { id: 'fuel_cell', n: 1 },
-    ],
-    output: { id: 'fine_frame', n: 1 },
     needsBay: true,
   },
 ];
@@ -2397,6 +2474,12 @@ export function applyProgramNodeResult(
     return { ok: true, msg: `${name} returned to bay` };
   }
 
+  // ——— Slot frame assembly (replaces fixed basic/fine recipes) ———
+  if (node === 'craft_frame' || node === 'craft_fine_frame') {
+    const r = tryAutoAssembleFrame(inv, node === 'craft_fine_frame');
+    return finish({ ok: r.ok, msg: `${name}: ${r.msg}` });
+  }
+
   // ——— Craft any workbench recipe ———
   const recipeId = PROGRAM_CRAFT_RECIPE[node];
   if (recipeId) {
@@ -2508,7 +2591,7 @@ export function applyProgramNodeResult(
 
   // ——— Stock player stall ———
   if (node === 'stock_stall_frame') {
-    return finish(stockStallFromInv(inv, 'basic_frame', 1, name));
+    return finish(stockAssembledFrameOnStall(inv, name));
   }
   if (node === 'stock_stall_wire') {
     return finish(stockStallFromInv(inv, 'wire', 3, name));
@@ -2660,6 +2743,29 @@ export function stockStallFromInv(
   return {
     ok: true,
     msg: `${who} stall with ${qty}× ${COMMODITIES[id].name} @ ${ask}b ask`,
+  };
+}
+
+/** Move one assembled frame from bay stock onto a stall display. */
+export function stockAssembledFrameOnStall(
+  inv: InventoryState,
+  workerName?: string,
+  stallRef?: StallState,
+): { ok: boolean; msg: string } {
+  const stall = stallRef ?? inv.stall;
+  if (!stall.owned) return { ok: false, msg: `${workerName ?? 'You'}: lease a stall first` };
+  if (!inv.assembledFrames) inv.assembledFrames = [];
+  if (!stall.frameShelf) stall.frameShelf = [];
+  if (inv.assembledFrames.length < 1) {
+    return { ok: false, msg: `${workerName ?? 'You'}: no assembled frames to stock` };
+  }
+  inv.assembledFrames.sort((a, b) => b.sellValue - a.sellValue);
+  const frame = inv.assembledFrames.shift()!;
+  stall.frameShelf.push(frame);
+  const who = workerName ? `${workerName} stocked` : 'Stocked';
+  return {
+    ok: true,
+    msg: `${who} ${frame.name} on stall (~${frame.sellValue}b)`,
   };
 }
 
@@ -2884,19 +2990,23 @@ export function stallLineDemand(inv: InventoryState, id: CommodityId) {
 
 /** Pull one unit from inv into shelf if auto modes set and shelf empty of that line */
 function autoRestockShelf(inv: InventoryState, stall: StallState) {
-  if (stall.autoFrames && (stall.shelf.basic_frame ?? 0) < 1 && getQty(inv, 'basic_frame') > 0) {
-    removeItem(inv, 'basic_frame', 1);
-    stall.shelf.basic_frame = (stall.shelf.basic_frame ?? 0) + 1;
-    if (stall.asks.basic_frame == null) {
-      stall.asks.basic_frame = fairStallPrice('basic_frame', inv);
-    }
+  if (!stall.frameShelf) stall.frameShelf = [];
+  if (!inv.assembledFrames) inv.assembledFrames = [];
+  if (stall.autoFrames && stall.frameShelf.length < 1 && inv.assembledFrames.length > 0) {
+    inv.assembledFrames.sort((a, b) => b.sellValue - a.sellValue);
+    const frame = inv.assembledFrames.shift()!;
+    stall.frameShelf.push(frame);
   }
-  if (stall.autoFrames && (stall.shelf.fine_frame ?? 0) < 1 && getQty(inv, 'fine_frame') > 0) {
-    removeItem(inv, 'fine_frame', 1);
-    stall.shelf.fine_frame = (stall.shelf.fine_frame ?? 0) + 1;
-    if (stall.asks.fine_frame == null) {
-      stall.asks.fine_frame = fairStallPrice('fine_frame', inv);
-    }
+  // Migrate legacy commodity frame shelf → assembled display
+  if ((stall.shelf.basic_frame ?? 0) > 0) {
+    const n = stall.shelf.basic_frame!;
+    delete stall.shelf.basic_frame;
+    for (let i = 0; i < n; i++) stall.frameShelf.push(makeLegacyAssembledFrame(inv, 'basic'));
+  }
+  if ((stall.shelf.fine_frame ?? 0) > 0) {
+    const n = stall.shelf.fine_frame!;
+    delete stall.shelf.fine_frame;
+    for (let i = 0; i < n; i++) stall.frameShelf.push(makeLegacyAssembledFrame(inv, 'fine'));
   }
   if (stall.autoWire && (stall.shelf.wire ?? 0) < 1 && getQty(inv, 'wire') > 0) {
     removeItem(inv, 'wire', 1);
@@ -2983,12 +3093,30 @@ export function tickStallState(
     }
   }
 
+  // Assembled frames — high ticket when quality is strong
+  if (!stall.frameShelf) stall.frameShelf = [];
+  if (stall.frameShelf.length > 0 && Math.random() < 0.38) {
+    stall.frameShelf.sort((a, b) => b.sellValue - a.sellValue);
+    const frame = stall.frameShelf.shift()!;
+    const price = Math.round(frame.sellValue * (0.92 + inventBonus * 0.08));
+    inv.brass += price;
+    stall.sales += 1;
+    stall.earned += price;
+    inv.framesSold += 1;
+    notePeakBrass(inv);
+    stall.lastDemand = frame.quality >= 1.35 ? 'Hot' : 'Steady';
+    return {
+      ok: true,
+      msg: `${label} sold ${frame.name} @ ${price}b · sales ${stall.sales}`,
+    };
+  }
+
   const ids = (Object.keys(stall.shelf) as CommodityId[]).filter(
     (id) => (stall.shelf[id] ?? 0) > 0,
   );
-  if (ids.length === 0 && inventIds.length === 0) {
+  if (ids.length === 0 && inventIds.length === 0 && stall.frameShelf.length === 0) {
     stall.lastDemand = 'Dead';
-    return { ok: false, msg: `${label} empty — stock goods or inventions.` };
+    return { ok: false, msg: `${label} empty — stock goods, frames, or inventions.` };
   }
   if (ids.length === 0) return { ok: false };
 
@@ -3148,31 +3276,39 @@ export function isRobotWorker(w: WorkerState): boolean {
   return w.kind === 'robot';
 }
 
-/** Robots slower unless medallion; humans baseline. */
+/** Robots slower unless medallion / high-quality frame; humans baseline. */
 export function workerMoveSpeed(w: WorkerState): number {
   let s = 3.2;
   if (w.hasBoard) s += 2.4;
-  if (isRobotWorker(w) && !w.hasMedallion) s *= 0.65;
+  if (isRobotWorker(w)) {
+    if (w.hasMedallion) s *= 1.05;
+    else s *= Math.max(0.55, Math.min(1.15, w.frameSpeedMul ?? 0.85));
+  }
   return s;
 }
 
 export function workerWorkMul(w: WorkerState): number {
   let mul = w.hasSpeedTool ? 0.55 : 1;
   // Higher mul = slower work timer in agents
-  if (isRobotWorker(w) && !w.hasMedallion) mul *= 1.55;
+  if (isRobotWorker(w) && !w.hasMedallion) {
+    mul *= Math.max(0.5, Math.min(1.7, w.frameWorkMul ?? 1.35));
+  }
   return mul;
 }
 
 export function workerHarvestQty(w: WorkerState): number {
   let n = w.hasHaulPack ? 2 + Math.floor(Math.random() * 2) : 1;
-  if (isRobotWorker(w) && !w.hasMedallion) n = Math.max(1, Math.floor(n * 0.65));
+  if (isRobotWorker(w) && !w.hasMedallion) {
+    const hm = w.frameHarvestMul ?? 0.85;
+    n = Math.max(1, Math.floor(n * hm + (hm > 1.1 ? Math.random() : 0)));
+  }
   return n;
 }
 
-/** Max useful program nodes — robots capped unless medallion. */
+/** Max useful program nodes — robots capped unless medallion / fine frame. */
 export function workerMaxProgramNodes(w: WorkerState): number {
   if (!isRobotWorker(w) || w.hasMedallion) return 8;
-  return 3;
+  return 3 + Math.max(0, w.frameProgramBonus ?? 0);
 }
 
 /** Apply result when agent completes a work node */
@@ -3331,17 +3467,22 @@ export function sellFrameToBroker(inv: InventoryState): {
   msg: string;
   gained: number;
 } {
-  if (getQty(inv, 'basic_frame') < 1) {
-    return { ok: false, msg: 'No Basic Robot Frames to sell. Craft one at your bay.', gained: 0 };
+  if (!inv.assembledFrames) inv.assembledFrames = [];
+  if (inv.assembledFrames.length < 1) {
+    return { ok: false, msg: 'No assembled frames to sell. Build one at the workbench slots.', gained: 0 };
   }
-  removeItem(inv, 'basic_frame', 1);
-  inv.brass += FRAME_BROKER_PRICE;
+  // Sell the highest-value chassis first
+  inv.assembledFrames.sort((a, b) => b.sellValue - a.sellValue);
+  const frame = inv.assembledFrames.shift()!;
+  const gained = Math.max(FRAME_BROKER_PRICE, frame.sellValue);
+  inv.brass += gained;
   inv.framesSold += 1;
   inv.brokerFrameStock = Math.min(12, (inv.brokerFrameStock ?? 0) + 1);
+  notePeakBrass(inv);
   return {
     ok: true,
-    gained: FRAME_BROKER_PRICE,
-    msg: `Sold Basic Robot Frame for ${FRAME_BROKER_PRICE} brass. On display at broker (${inv.brokerFrameStock}). Buy as a work robot anytime.`,
+    gained,
+    msg: `Sold ${frame.name} for ${gained} brass. Broker stock ${inv.brokerFrameStock}.`,
   };
 }
 
@@ -3602,13 +3743,13 @@ export const VENDORS: VendorDef[] = [
       'gear_blank',
       'wire',
       'fuel_cell',
-      'basic_frame',
-      'fine_frame',
       'repair_kit',
       'speed_tool',
       'polished_wire',
+      'bloom_brass',
+      'bloom_sky',
     ],
-    greeting: 'Bring me scrap. I’ll pay fair — for scrap. Frames too, if they’re built right.',
+    greeting: 'Bring me scrap. I’ll pay fair — for scrap. Flowers for personality cores, too.',
   },
   {
     id: 'sela',
@@ -3679,6 +3820,7 @@ function stallToSave(s: StallState) {
     open: s.open,
     shelf: { ...s.shelf },
     customShelf: { ...(s.customShelf ?? {}) },
+    frameShelf: (s.frameShelf ?? []).map((f) => ({ ...f, slots: { ...f.slots } })),
     asks: { ...s.asks },
     autoFrames: s.autoFrames,
     autoHarvest: s.autoHarvest,
@@ -3706,6 +3848,12 @@ function stallFromSave(s: Partial<StallState> | undefined): StallState {
   base.shelf = s.shelf && typeof s.shelf === 'object' ? { ...s.shelf } : {};
   base.customShelf =
     s.customShelf && typeof s.customShelf === 'object' ? { ...s.customShelf } : {};
+  base.frameShelf = Array.isArray((s as StallState).frameShelf)
+    ? ((s as StallState).frameShelf as AssembledFrame[]).map((f) => ({
+        ...f,
+        slots: { ...f.slots },
+      }))
+    : [];
   base.asks = s.asks && typeof s.asks === 'object' ? { ...s.asks } : {};
   base.autoFrames = s.autoFrames !== false;
   base.autoHarvest = !!s.autoHarvest;
@@ -3832,6 +3980,10 @@ export function invToSave(inv: InventoryState) {
     cityWorkshopLeased: inv.cityWorkshopLeased,
     inventionsMade: inv.inventionsMade ?? 0,
     inventionsSold: inv.inventionsSold ?? 0,
+    assembledFrames: (inv.assembledFrames ?? []).map((f) => ({
+      ...f,
+      slots: { ...f.slots },
+    })),
     storageResourcesLevel: inv.storageResourcesLevel ?? 0,
     storageCraftedLevel: inv.storageCraftedLevel ?? 0,
     storageInventionsLevel: inv.storageInventionsLevel ?? 0,
@@ -3888,6 +4040,13 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
           : null,
       kind: w.kind === 'robot' ? 'robot' : 'human',
       hasMedallion: !!w.hasMedallion,
+      frameId: w.frameId ? String(w.frameId) : null,
+      frameName: w.frameName ? String(w.frameName) : null,
+      frameQuality: typeof w.frameQuality === 'number' ? w.frameQuality : undefined,
+      frameSpeedMul: typeof w.frameSpeedMul === 'number' ? w.frameSpeedMul : undefined,
+      frameWorkMul: typeof w.frameWorkMul === 'number' ? w.frameWorkMul : undefined,
+      frameHarvestMul: typeof w.frameHarvestMul === 'number' ? w.frameHarvestMul : undefined,
+      frameProgramBonus: typeof w.frameProgramBonus === 'number' ? w.frameProgramBonus : undefined,
     }));
   } else if (o.laborerHired) {
     // Migrate Phase 1 single laborer
@@ -3951,6 +4110,14 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
   inv.cityWorkshopLeased = !!o.cityWorkshopLeased;
   inv.inventionsMade = typeof o.inventionsMade === 'number' ? o.inventionsMade : inv.customRecipes.length;
   inv.inventionsSold = typeof o.inventionsSold === 'number' ? o.inventionsSold : 0;
+  inv.assembledFrames = Array.isArray(o.assembledFrames)
+    ? (o.assembledFrames as AssembledFrame[]).map((f) => ({
+        ...f,
+        slots: { ...f.slots },
+      }))
+    : [];
+  // Migrate legacy commodity frames → assembled chassis
+  convertLegacyFrames(inv);
   inv.storageResourcesLevel =
     typeof o.storageResourcesLevel === 'number' ? Math.max(0, Math.min(STORAGE_MAX_LEVEL, o.storageResourcesLevel)) : 0;
   inv.storageCraftedLevel =
