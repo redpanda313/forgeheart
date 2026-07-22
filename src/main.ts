@@ -24,8 +24,6 @@ const pauseMenu = document.getElementById('pause-menu');
 const btnSave = document.getElementById('btn-save') as HTMLButtonElement | null;
 const btnResume = document.getElementById('btn-resume') as HTMLButtonElement | null;
 const btnTitle = document.getElementById('btn-title') as HTMLButtonElement | null;
-const btnGameMaker = document.getElementById('btn-game-maker') as HTMLButtonElement | null;
-const btnExitMaker = document.getElementById('btn-exit-maker') as HTMLButtonElement | null;
 
 let game: ForgeHeartGame | null = null;
 let running = false;
@@ -231,32 +229,6 @@ document.querySelectorAll('[data-bay-tab]').forEach((el) => {
 document.getElementById('bay-open-programs')?.addEventListener('click', () => {
   (game as { openProgramPublic?: () => void } | null)?.openProgramPublic?.();
 });
-
-btnGameMaker?.addEventListener('click', () => {
-  if (!game) return;
-  game.enterGameMaker();
-  pauseMenu?.classList.add('hidden');
-  syncMakerButtons();
-});
-
-btnExitMaker?.addEventListener('click', () => {
-  if (!game) return;
-  game.exitGameMaker();
-  pauseMenu?.classList.add('hidden');
-  syncMakerButtons();
-});
-
-function syncMakerButtons() {
-  const active = game?.isGameMakerActive?.() ?? false;
-  if (btnGameMaker) btnGameMaker.classList.toggle('hidden', active);
-  if (btnExitMaker) btnExitMaker.classList.toggle('hidden', !active);
-}
-
-// Keep pause buttons in sync with maker state
-const pauseObserver = () => {
-  if (pauseMenu && !pauseMenu.classList.contains('hidden')) syncMakerButtons();
-};
-setInterval(pauseObserver, 400);
 
 btnTitle?.addEventListener('click', () => {
   if (!game) return;

@@ -179,7 +179,7 @@
         </div>
       </div>
       <!-- Outside #hud so it can sit top-right of the full game view -->
-      <div id="nav-compass" class="nav-compass hidden" aria-hidden="true">
+      <div id="nav-compass" class="nav-compass hidden" aria-hidden="true" role="button" tabindex="0" title="Open empire map" aria-label="Open empire map">
         <div class="nav-compass-face">
           <div class="nav-compass-fwd" title="Facing">▲</div>
           <div class="nav-compass-rim" aria-hidden="true"></div>
@@ -205,6 +205,7 @@
             <span class="nav-legend-lab">WORK</span>
             <span id="nav-work-dist" class="nav-legend-dist">—</span>
           </div>
+          <div class="nav-compass-map-hint" aria-hidden="true">TAP · MAP</div>
         </div>
       </div>
       <div id="shop-panel" class="shop-panel hidden"></div>
@@ -476,8 +477,6 @@
           <div class="pause-actions">
             <button type="button" id="btn-save">SAVE PROGRESS</button>
             <button type="button" id="btn-resume">RESUME</button>
-            <button type="button" id="btn-game-maker">GAME MAKER MODE</button>
-            <button type="button" id="btn-exit-maker" class="hidden">EXIT GAME MAKER</button>
             <button type="button" id="btn-title">TITLE SCREEN</button>
           </div>
           <p class="pause-hint">
