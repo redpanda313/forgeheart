@@ -90,8 +90,87 @@ export function defaultStallLayout(x = 0, z = 0): StallLayout {
   };
 }
 
+/**
+ * Front-door / facing cue on the local +Z edge (rotates with site yaw).
+ * Used on the empty selection box while aiming a home plot.
+ */
+export function addFrontDoorCue(
+  parent: THREE.Group,
+  doorZ: number,
+  opts?: { doorW?: number; label?: string },
+): THREE.Group {
+  const cue = new THREE.Group();
+  cue.name = 'FrontDoorCue';
+  cue.userData.doorCue = true;
+  const doorW = opts?.doorW ?? 2.4;
+  const label = opts?.label ?? 'DOOR';
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xffd878,
+    emissive: 0xcc8800,
+    emissiveIntensity: 0.75,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
+  });
+  // Threshold strip at the door line
+  const strip = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.6, 0.08, 0.35), mat);
+  strip.position.set(0, 0.08, doorZ);
+  strip.userData.doorCue = true;
+  cue.add(strip);
+  // Arrow pointing out through the door (+Z)
+  const tipZ = doorZ + 1.35;
+  const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.1, 1.1), mat);
+  shaft.position.set(0, 0.1, doorZ + 0.75);
+  shaft.userData.doorCue = true;
+  cue.add(shaft);
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.45, 0.85, 4), mat);
+  head.rotation.x = Math.PI / 2;
+  head.position.set(0, 0.12, tipZ);
+  head.userData.doorCue = true;
+  cue.add(head);
+  // Door posts
+  for (const sx of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.18, 2.2, 0.18), mat);
+    post.position.set(sx * (doorW / 2), 1.15, doorZ);
+    post.userData.doorCue = true;
+    cue.add(post);
+  }
+  const lintel = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.35, 0.22, 0.22), mat);
+  lintel.position.set(0, 2.25, doorZ);
+  lintel.userData.doorCue = true;
+  cue.add(lintel);
+  // Floating label
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 64;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = 'rgba(20,14,6,0.8)';
+  ctx.fillRect(0, 0, 256, 64);
+  ctx.fillStyle = '#ffe8a0';
+  ctx.font = 'bold 28px system-ui,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, 128, 32);
+  const spr = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: new THREE.CanvasTexture(c),
+      transparent: true,
+      depthWrite: false,
+    }),
+  );
+  spr.position.set(0, 2.9, doorZ + 0.15);
+  spr.scale.set(2.4, 0.6, 1);
+  spr.userData.doorCue = true;
+  cue.add(spr);
+  parent.add(cue);
+  return cue;
+}
+
 /** Large empty selection footprint for Game Maker site step */
-export function makeSelectionBox(size = 14): THREE.Group {
+export function makeSelectionBox(
+  size = 14,
+  opts?: { doorCue?: boolean; doorLabel?: string },
+): THREE.Group {
   const g = new THREE.Group();
   g.name = 'SiteSelectionBox';
   const fill = new THREE.Mesh(
@@ -125,6 +204,12 @@ export function makeSelectionBox(size = 14): THREE.Group {
       post.position.set(sx * (size * 0.48), 0.7, sz * (size * 0.48));
       g.add(post);
     }
+  }
+  if (opts?.doorCue) {
+    addFrontDoorCue(g, size * 0.48, {
+      doorW: Math.min(3.2, size * 0.28),
+      label: opts.doorLabel ?? 'DOOR',
+    });
   }
   return g;
 }

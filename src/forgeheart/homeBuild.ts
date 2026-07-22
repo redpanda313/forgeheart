@@ -9,6 +9,12 @@ import { buildEnterableShell } from './enterableBuilding';
 import type { Collider } from './level';
 import type { HomeLayout, HomeRoom, HomeRoomKind, HomeTier, SiteProp } from './economy';
 import { CITY_DISTRICTS } from './economy';
+import { addFrontDoorCue } from './stallBuild';
+
+/** Match skyCity floorPad walkable top so expansions stay solid underfoot. */
+const HOME_PAD_Y = 0.2;
+const HOME_PAD_THICK = 0.55;
+const HOME_PAD_TOP = HOME_PAD_Y + HOME_PAD_THICK / 2 + 0.12;
 
 export const HOME_TIERS: {
   id: HomeTier;
@@ -269,6 +275,39 @@ function addHomePropMesh(
   g.add(local);
 }
 
+/** Rotate an AABB around Y then translate into plot-local space. */
+function offsetYawCollider(c: Collider, lx: number, lz: number, yaw: number): Collider {
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  const corners = [
+    new THREE.Vector3(c.min.x, c.min.y, c.min.z),
+    new THREE.Vector3(c.max.x, c.min.y, c.min.z),
+    new THREE.Vector3(c.min.x, c.min.y, c.max.z),
+    new THREE.Vector3(c.max.x, c.min.y, c.max.z),
+    new THREE.Vector3(c.min.x, c.max.y, c.min.z),
+    new THREE.Vector3(c.max.x, c.max.y, c.min.z),
+    new THREE.Vector3(c.min.x, c.max.y, c.max.z),
+    new THREE.Vector3(c.max.x, c.max.y, c.max.z),
+  ].map((p) => {
+    const rx = p.x * cos - p.z * sin;
+    const rz = p.x * sin + p.z * cos;
+    return new THREE.Vector3(lx + rx, p.y, lz + rz);
+  });
+  const min = corners[0]!.clone();
+  const max = corners[0]!.clone();
+  for (const p of corners) {
+    min.min(p);
+    max.max(p);
+  }
+  return { min, max, kind: c.kind };
+}
+
+function roomLocalPoint(lx: number, lz: number, yaw: number, ox: number, oy: number, oz: number): THREE.Vector3 {
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  return new THREE.Vector3(lx + ox * cos - oz * sin, oy, lz + ox * sin + oz * cos);
+}
+
 function addRoomWing(
   g: THREE.Group,
   cols: Collider[],
@@ -289,6 +328,19 @@ function addRoomWing(
     wing.add(box(wood, 0.35, 1.2, 0.35, 2.2, 0.7, -2.2));
     wing.add(box(cloth, 1.2, 0.8, 1.2, 0, 0.55, 0));
     g.add(wing);
+    // Soft garden floor so expansions stay walkable
+    cols.push(
+      offsetYawCollider(
+        {
+          min: new THREE.Vector3(-2.75, 0, -2.75),
+          max: new THREE.Vector3(2.75, 0.18, 2.75),
+          kind: 'floor',
+        },
+        room.lx,
+        room.lz,
+        room.yaw,
+      ),
+    );
     return out;
   }
 
@@ -309,7 +361,7 @@ function addRoomWing(
   // Furniture cue by function
   if (room.kind === 'workshop') {
     wing.add(box(accent, 2.4, 0.95, 1.0, 0, 0.6, 1.4));
-    out.interactLocal = new THREE.Vector3(room.lx, 1.15, room.lz + 2.0);
+    out.interactLocal = roomLocalPoint(room.lx, room.lz, room.yaw, 0, 1.15, 2.0);
     out.interactKind = 'workshop';
   } else if (room.kind === 'invent_lab') {
     wing.add(box(accent, 2.0, 1.1, 1.2, 0, 0.7, 1.2));
@@ -324,7 +376,7 @@ function addRoomWing(
       ),
     );
     wing.children[wing.children.length - 1]!.position.set(0.8, 1.5, 1.0);
-    out.interactLocal = new THREE.Vector3(room.lx, 1.15, room.lz + 1.9);
+    out.interactLocal = roomLocalPoint(room.lx, room.lz, room.yaw, 0, 1.15, 1.9);
     out.interactKind = 'invent_lab';
   } else if (room.kind === 'gallery') {
     wing.add(box(wood, 2.8, 1.6, 0.2, 0, 1.2, -2.2));
@@ -333,13 +385,9 @@ function addRoomWing(
     wing.add(box(wood, 1.6, 0.45, 0.8, 1.2, 0.4, -1.0));
   }
   g.add(wing);
-  // Rough local colliders (world transform later)
+  // Match mesh yaw — previous code only translated and ignored room.yaw
   for (const c of shell.colliders) {
-    cols.push({
-      min: c.min.clone().add(new THREE.Vector3(room.lx, 0, room.lz)),
-      max: c.max.clone().add(new THREE.Vector3(room.lx, 0, room.lz)),
-      kind: c.kind,
-    });
+    cols.push(offsetYawCollider(c, room.lx, room.lz, room.yaw));
   }
   return out;
 }
@@ -376,11 +424,11 @@ export function buildHomeVisual(mats: Mats, layout: HomeLayout): HomeVisualBuilt
     metalness: 0.05,
   });
 
-  // Island pad grows with tier
-  g.add(box(woodM, tier.padW, 0.18, tier.padD, 0, 0.09, 0));
+  // Island pad grows with tier — thick walkable deck (replaces stale hub pad)
+  g.add(box(woodM, tier.padW, HOME_PAD_THICK, tier.padD, 0, HOME_PAD_Y, 0));
   cols.push({
-    min: new THREE.Vector3(-tier.padW / 2, 0, -tier.padD / 2),
-    max: new THREE.Vector3(tier.padW / 2, 0.18, tier.padD / 2),
+    min: new THREE.Vector3(-tier.padW / 2 - 0.15, HOME_PAD_Y - HOME_PAD_THICK / 2 - 0.08, -tier.padD / 2 - 0.15),
+    max: new THREE.Vector3(tier.padW / 2 + 0.15, HOME_PAD_TOP, tier.padD / 2 + 0.15),
     kind: 'floor',
   });
 
@@ -390,7 +438,16 @@ export function buildHomeVisual(mats: Mats, layout: HomeLayout): HomeVisualBuilt
     label: layout.tier === 'island' ? 'YOUR ISLAND' : 'YOUR HOME',
   });
   // Scale main shell roughly with pad (cottage uses default size)
-  const scale = layout.tier === 'cottage' ? 1 : layout.tier === 'house' ? 1.15 : layout.tier === 'manor' ? 1.35 : layout.tier === 'estate' ? 1.55 : 1.75;
+  const scale =
+    layout.tier === 'cottage'
+      ? 1
+      : layout.tier === 'house'
+        ? 1.15
+        : layout.tier === 'manor'
+          ? 1.35
+          : layout.tier === 'estate'
+            ? 1.55
+            : 1.75;
   main.group.scale.set(scale, 1, scale);
   g.add(main.group);
   for (const c of main.colliders) {
@@ -400,6 +457,10 @@ export function buildHomeVisual(mats: Mats, layout: HomeLayout): HomeVisualBuilt
       kind: c.kind,
     });
   }
+
+  // Front door faces local +Z — cue rotates with site yaw so aim/build is clear
+  const doorZ = main.doorWorld.z * scale;
+  addFrontDoorCue(g, doorZ, { doorW: 2.4 * scale, label: 'DOOR' });
 
   const roomInteracts: { kind: HomeRoomKind; local: THREE.Vector3 }[] = [];
   const rooms = layout.rooms?.length
@@ -431,7 +492,7 @@ export function buildHomeVisual(mats: Mats, layout: HomeLayout): HomeVisualBuilt
   return {
     group: g,
     colliders: cols,
-    interactLocal: new THREE.Vector3(0, 1.2, tier.padD * 0.28),
+    interactLocal: new THREE.Vector3(0, 1.2, doorZ),
     roomInteracts,
   };
 }

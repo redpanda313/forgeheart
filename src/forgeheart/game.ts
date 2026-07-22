@@ -264,6 +264,7 @@ import {
   homeRoomCap,
   homeRoomCost,
   homePropCost,
+  homeTierDef,
   apartmentAnchorXZ,
 } from './homeBuild';
 import {
@@ -4833,12 +4834,14 @@ export class ForgeHeartGame {
             : 'factory';
     this.toast(
       opts.redesign
-        ? `Edit ${label} — look or arrows move the box, [/] rotates, Enter locks.`
-        : `Place ${label} — look or arrows move the box, [/] rotates, Enter/click locks.`,
+        ? `Edit ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (gold DOOR marks the front)' : ''}, Enter locks.`
+        : `Place ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (gold DOOR marks the front)' : ''}, Enter/click locks.`,
       5,
     );
     this.setHelp(
-      'SITE · look / arrows aim box · [/] rotate · WASD fly · Enter lock · Esc cancel',
+      opts.kind === 'home'
+        ? 'SITE · look / arrows aim · [/] rotate · gold DOOR = front · Enter lock · Esc cancel'
+        : 'SITE · look / arrows aim box · [/] rotate · WASD fly · Enter lock · Esc cancel',
     );
   }
 
@@ -5027,7 +5030,16 @@ export class ForgeHeartGame {
 
     // Pure selection box while choosing site location (no building preview)
     if (s.step === 'site' && !s.sitePlaced) {
-      const box = makeSelectionBox(s.kind === 'home' ? 18 : s.kind === 'stall' ? 12 : 16);
+      const boxSize =
+        s.kind === 'home'
+          ? Math.max(14, homeTierDef(s.homeTier).padW * 0.85)
+          : s.kind === 'stall'
+            ? 12
+            : 16;
+      const box = makeSelectionBox(boxSize, {
+        doorCue: s.kind === 'home',
+        doorLabel: 'DOOR',
+      });
       const look = this.siteLookPoint();
       box.position.set(look.x, 0.05, look.z);
       box.rotation.y = s.yaw;
@@ -5110,6 +5122,7 @@ export class ForgeHeartGame {
           ? isValidHomePlot(this.siteGhost.position.x, this.siteGhost.position.z, s.homeTier)
           : isValidStallPlot(s.districtId, this.siteGhost.position.x, this.siteGhost.position.z);
       this.siteGhost.traverse((o) => {
+        if (o.userData?.doorCue) return;
         const m = o as THREE.Mesh;
         if (m.isMesh && m.material && !Array.isArray(m.material)) {
           const mat = m.material as THREE.MeshStandardMaterial;
@@ -5399,13 +5412,17 @@ export class ForgeHeartGame {
     if (s.step === 'site') {
       if (sub) {
         sub.textContent =
-          'Aim the selection box with look or arrow keys. [/] rotates it. Enter/click locks. R to move again later.';
+          s.kind === 'home'
+            ? 'Aim the box with look or arrows. [/] rotates — the gold DOOR arch shows where the front door faces. Enter locks.'
+            : 'Aim the selection box with look or arrow keys. [/] rotates it. Enter/click locks. R to move again later.';
       }
       const p = document.createElement('p');
       p.className = 'stall-wizard-hint';
       p.textContent = s.sitePlaced
         ? `Site ${s.plotX.toFixed(0)}, ${s.plotZ.toFixed(0)} · press R to move`
-        : 'Green = valid · red = too far · arrows nudge · [/] rotate';
+        : s.kind === 'home'
+          ? 'Green = valid · gold DOOR = front entrance · [/] rotate'
+          : 'Green = valid · red = too far · arrows nudge · [/] rotate';
       body.appendChild(p);
     } else if (s.step === 'structure') {
       if (s.kind === 'stall') {
@@ -8779,16 +8796,11 @@ export class ForgeHeartGame {
   private syncHomeVisuals() {
     if (!this.skyCity?.apartmentGroup) return;
     const g = this.skyCity.apartmentGroup;
-    // Keep the door marker (player_home) — remove prior build meshes
-    const keep = new Set(
-      this.skyCity.interactables
-        .filter((x) => x.id === 'player_home' || x.id.startsWith('home_'))
-        .map((x) => x.mesh),
-    );
+    // Keep only the manage-door marker — drop prior build + old room marks
+    const doorMesh = this.skyCity.interactables.find((x) => x.id === 'player_home')?.mesh;
     for (const child of [...g.children]) {
-      if (!keep.has(child)) g.remove(child);
+      if (child !== doorMesh) g.remove(child);
     }
-    // Drop old home room interactables
     this.skyCity.interactables = this.skyCity.interactables.filter(
       (x) => x.kind !== 'home_workshop' && x.kind !== 'home_invent',
     );
@@ -8841,6 +8853,7 @@ export class ForgeHeartGame {
 
     if (this.spatialGrid) {
       this.colliders = this.spatialGrid.getAll() as Collider[];
+      perfStats.colliderCount = this.spatialGrid.count;
     }
   }
 

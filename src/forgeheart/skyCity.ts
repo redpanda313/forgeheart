@@ -1377,9 +1377,10 @@ export function buildSkyCity(): SkyCityBuilt {
   apartmentGroup.name = 'PlayerApartment';
   hubGroup.add(apartmentGroup);
   {
+    // Visual underlay only — walkable deck + walls come from syncHomeVisuals
+    // (player_home chunk). A fixed pad collider here went stale on expand/relocate.
     const home = floorPad(mats, 22, 18, apartmentPos.x, DECK_Y, apartmentPos.z, 0x6a5f50);
     addMesh(home.mesh);
-    addCol(home.col);
     // Same residential island cluster — short wind hop to plaza center
     windSkyway(apartmentPos.x, apartmentPos.z, residential.x, residential.z, {
       arch: 4,
