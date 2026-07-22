@@ -681,6 +681,8 @@ export interface StallState {
   frameShelf: AssembledFrame[];
   /** Player ask price per commodity (brass). Missing → fair price default. */
   asks: Partial<Record<CommodityId, number>>;
+  /** Player ask price per invention recipe id. Missing → fair invention price. */
+  customAsks: Record<string, number>;
   /** Auto-pull from inventory each tick if shelf empty (optional modes) */
   autoFrames: boolean;
   autoHarvest: boolean;
@@ -1573,6 +1575,7 @@ export function emptyStall(): StallState {
     customShelf: {},
     frameShelf: [],
     asks: {},
+    customAsks: {},
     autoFrames: true,
     autoHarvest: false,
     autoWire: false,
@@ -2776,6 +2779,7 @@ export function stockInventionOnStall(
   recipeId: string,
   qty = 1,
   stallRef?: StallState,
+  inventBonus = 1,
 ): { ok: boolean; msg: string } {
   const stall = stallRef ?? inv.stall;
   if (!stall.owned) return { ok: false, msg: 'Lease a stall first.' };
@@ -2787,9 +2791,13 @@ export function stockInventionOnStall(
   if (inv.customStock[recipeId]! <= 0) delete inv.customStock[recipeId];
   if (!stall.customShelf) stall.customShelf = {};
   stall.customShelf[recipeId] = (stall.customShelf[recipeId] ?? 0) + qty;
+  if (!stall.customAsks) stall.customAsks = {};
+  if (stall.customAsks[recipeId] == null) {
+    stall.customAsks[recipeId] = fairInventionAsk(recipe, inventBonus);
+  }
   return {
     ok: true,
-    msg: `Stocked ${qty}× ${recipe.name} on stall (invented goods sell best at premium plazas).`,
+    msg: `Stocked ${qty}× ${recipe.name} @ ${stall.customAsks[recipeId]}b ask (invented goods sell best at premium plazas).`,
   };
 }
 
@@ -2895,23 +2903,38 @@ export function setStallAsk(
   };
 }
 
-/** Apply price policy to every stocked shelf line */
+/** Apply price policy to every stocked shelf line (goods + inventions). */
 export function applyShelfPricePolicy(
   inv: InventoryState,
   policy: 'deal' | 'fair' | 'premium',
+  stall: StallState = inv.stall,
+  inventBonus = 1,
 ): { ok: boolean; msg: string } {
-  if (!inv.stall.owned) return { ok: false, msg: 'Lease a stall first.' };
-  const ids = (Object.keys(inv.stall.shelf) as CommodityId[]).filter(
-    (id) => (inv.stall.shelf[id] ?? 0) > 0,
+  if (!stall.owned) return { ok: false, msg: 'Lease a stall first.' };
+  const ids = (Object.keys(stall.shelf) as CommodityId[]).filter(
+    (id) => (stall.shelf[id] ?? 0) > 0,
   );
-  if (ids.length === 0) return { ok: false, msg: 'Shelf empty — nothing to price.' };
+  const inventIds = Object.keys(stall.customShelf ?? {}).filter(
+    (k) => (stall.customShelf[k] ?? 0) > 0,
+  );
+  if (ids.length === 0 && inventIds.length === 0) {
+    return { ok: false, msg: 'Shelf empty — nothing to price.' };
+  }
   const mul = policy === 'deal' ? 0.85 : policy === 'premium' ? 1.18 : 1;
   for (const id of ids) {
     const fair = fairStallPrice(id, inv);
-    inv.stall.asks[id] = clampStallAsk(id, Math.round(fair * mul), inv);
+    stall.asks[id] = clampStallAsk(id, Math.round(fair * mul), inv);
+  }
+  if (!stall.customAsks) stall.customAsks = {};
+  for (const rid of inventIds) {
+    const recipe = inv.customRecipes.find((r) => r.id === rid);
+    if (!recipe) continue;
+    const fair = fairInventionAsk(recipe, inventBonus);
+    stall.customAsks[rid] = clampInventionAsk(recipe, Math.round(fair * mul), inventBonus);
   }
   const label = policy === 'deal' ? 'deals (−15%)' : policy === 'premium' ? 'premium (+18%)' : 'fair';
-  return { ok: true, msg: `Shelf priced at ${label} · ${ids.length} lines` };
+  const n = ids.length + inventIds.length;
+  return { ok: true, msg: `Shelf priced at ${label} · ${n} lines` };
 }
 
 export function nudgeStallAsk(
@@ -2922,6 +2945,66 @@ export function nudgeStallAsk(
 ): { ok: boolean; msg: string; ask: number } {
   const cur = getStallAsk(inv, id, stall);
   return setStallAsk(inv, id, cur + delta, stall);
+}
+
+/** Fair shelf ask for a custom invention (sell value × invent bonus × quality). */
+export function fairInventionAsk(recipe: CustomRecipe, inventBonus = 1): number {
+  const q = recipe.quality ?? 1;
+  return Math.max(1, Math.round(recipe.sellValue * inventBonus * (0.95 + q * 0.08)));
+}
+
+export function clampInventionAsk(
+  recipe: CustomRecipe,
+  price: number,
+  inventBonus = 1,
+): number {
+  const fair = fairInventionAsk(recipe, inventBonus);
+  const min = Math.max(1, Math.round(fair * STALL_ASK_MIN_MUL));
+  const max = Math.max(min, Math.round(fair * STALL_ASK_MAX_MUL));
+  return Math.max(min, Math.min(max, Math.round(price)));
+}
+
+export function getInventionAsk(
+  stall: StallState,
+  recipe: CustomRecipe,
+  inventBonus = 1,
+): number {
+  if (!stall.customAsks) stall.customAsks = {};
+  const fair = fairInventionAsk(recipe, inventBonus);
+  const raw = stall.customAsks[recipe.id];
+  if (typeof raw === 'number' && raw >= 1) {
+    return clampInventionAsk(recipe, raw, inventBonus);
+  }
+  return fair;
+}
+
+export function setInventionAsk(
+  stall: StallState,
+  recipe: CustomRecipe,
+  price: number,
+  inventBonus = 1,
+): { ok: boolean; msg: string; ask: number } {
+  if (!stall.owned) return { ok: false, msg: 'Lease a stall first.', ask: 0 };
+  if (!stall.customAsks) stall.customAsks = {};
+  const ask = clampInventionAsk(recipe, price, inventBonus);
+  stall.customAsks[recipe.id] = ask;
+  const fair = fairInventionAsk(recipe, inventBonus);
+  const d = stallDemandInfo(ask, fair, recipe.quality ?? 1);
+  return {
+    ok: true,
+    ask,
+    msg: `${recipe.name} ask ${ask}b · fair ${fair}b · demand ${d.label}`,
+  };
+}
+
+export function nudgeInventionAsk(
+  stall: StallState,
+  recipe: CustomRecipe,
+  delta: number,
+  inventBonus = 1,
+): { ok: boolean; msg: string; ask: number } {
+  const cur = getInventionAsk(stall, recipe, inventBonus);
+  return setInventionAsk(stall, recipe, cur + delta, inventBonus);
 }
 
 export function resolveStallHaggle(
@@ -3027,11 +3110,16 @@ function autoRestockShelf(inv: InventoryState, stall: StallState) {
   }
   if (stall.autoInvent) {
     if (!stall.customShelf) stall.customShelf = {};
+    if (!stall.customAsks) stall.customAsks = {};
     for (const rid of Object.keys(inv.customStock)) {
       if ((inv.customStock[rid] ?? 0) > 0 && (stall.customShelf[rid] ?? 0) < 1) {
         inv.customStock[rid]!--;
         if (inv.customStock[rid]! <= 0) delete inv.customStock[rid];
         stall.customShelf[rid] = (stall.customShelf[rid] ?? 0) + 1;
+        if (stall.customAsks[rid] == null) {
+          const recipe = inv.customRecipes.find((r) => r.id === rid);
+          if (recipe) stall.customAsks[rid] = fairInventionAsk(recipe);
+        }
         break;
       }
     }
@@ -3078,18 +3166,32 @@ export function tickStallState(
     const recipe = inv.customRecipes.find((r) => r.id === rid);
     if (recipe) {
       const q = recipe.quality ?? 1;
-      const price = Math.round(recipe.sellValue * inventBonus * (0.95 + q * 0.08));
+      const fair = fairInventionAsk(recipe, inventBonus);
+      const ask = getInventionAsk(stall, recipe, inventBonus);
+      const d = stallDemandInfo(ask, fair, q);
+      const inventSaleChance = Math.min(0.95, 0.35 + d.factor * 0.5 * demandMul);
+      if (Math.random() > inventSaleChance) {
+        stall.lastDemand = d.label;
+        return {
+          ok: false,
+          msg:
+            d.label === 'Dead' || d.label === 'Slow'
+              ? `${label}: invention browsers left — ${recipe.name} priced high (${d.label}).`
+              : undefined,
+        };
+      }
       stall.customShelf[rid]!--;
       if (stall.customShelf[rid]! <= 0) delete stall.customShelf[rid];
-      inv.brass += price;
+      inv.brass += ask;
       stall.sales += 1;
-      stall.earned += price;
+      stall.earned += ask;
       inv.inventionsSold = (inv.inventionsSold ?? 0) + 1;
       notePeakBrass(inv);
-      stall.lastDemand = inventBonus >= 1.4 ? 'Hot' : 'Steady';
+      stall.lastDemand = d.label;
+      const vs = ask === fair ? 'fair' : ask < fair ? 'deal' : 'premium';
       return {
         ok: true,
-        msg: `${label} sold invention ${recipe.name} @ ${price}b · sales ${stall.sales}`,
+        msg: `${label} sold invention ${recipe.name} @ ${ask}b (${vs} · ${d.label}) · sales ${stall.sales}`,
       };
     }
   }
@@ -3875,6 +3977,7 @@ function stallToSave(s: StallState) {
     customShelf: { ...(s.customShelf ?? {}) },
     frameShelf: (s.frameShelf ?? []).map((f) => ({ ...f, slots: { ...f.slots } })),
     asks: { ...s.asks },
+    customAsks: { ...(s.customAsks ?? {}) },
     autoFrames: s.autoFrames,
     autoHarvest: s.autoHarvest,
     autoWire: s.autoWire,
@@ -3908,6 +4011,10 @@ function stallFromSave(s: Partial<StallState> | undefined): StallState {
       }))
     : [];
   base.asks = s.asks && typeof s.asks === 'object' ? { ...s.asks } : {};
+  base.customAsks =
+    (s as StallState).customAsks && typeof (s as StallState).customAsks === 'object'
+      ? { ...(s as StallState).customAsks }
+      : {};
   base.autoFrames = s.autoFrames !== false;
   base.autoHarvest = !!s.autoHarvest;
   base.autoWire = !!s.autoWire;

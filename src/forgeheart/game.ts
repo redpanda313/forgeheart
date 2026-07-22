@@ -160,6 +160,10 @@ import {
   setStallAsk,
   getStallAsk,
   fairStallPrice,
+  nudgeInventionAsk,
+  setInventionAsk,
+  getInventionAsk,
+  fairInventionAsk,
   productQuality,
   stallDemandInfo,
   resolveStallHaggle,
@@ -8451,11 +8455,48 @@ export class ForgeHeartGame {
         for (const [rid, n] of inventEntries) {
           const recipe = this.inv.customRecipes.find((r) => r.id === rid);
           if (!recipe) continue;
-          const est = Math.round(recipe.sellValue * (dist?.inventBonus ?? 1));
-          const row = document.createElement('div');
-          row.className = 'stall-price-card';
-          row.innerHTML = `<div class="stall-price-head"><strong>Invent · ${recipe.name}</strong><span>×${n} · ~${est}b @ ${label}</span></div>`;
-          shelf.appendChild(row);
+          const inventBonus = dist?.inventBonus ?? 1;
+          const fair = fairInventionAsk(recipe, inventBonus);
+          const ask = getInventionAsk(stall, recipe, inventBonus);
+          const q = recipe.quality ?? 1;
+          const d = stallDemandInfo(ask, fair, q);
+          const card = document.createElement('div');
+          card.className = 'stall-price-card';
+          card.innerHTML = `
+            <div class="stall-price-head">
+              <strong>Invent · ${recipe.name}</strong>
+              <span>×${n} · Q${q} · demand <em>${d.label}</em></span>
+            </div>
+            <div class="stall-price-row">
+              <span class="craft-hint">Fair ${fair}b${inventBonus !== 1 ? ` · ×${inventBonus}` : ''}</span>
+              <div class="stall-price-btns"></div>
+            </div>`;
+          const btns = card.querySelector('.stall-price-btns')!;
+          const mk = (lab: string, delta: number | 'fair') => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = lab;
+            b.addEventListener('click', () => {
+              const r =
+                delta === 'fair'
+                  ? setInventionAsk(stall, recipe, fair, inventBonus)
+                  : nudgeInventionAsk(stall, recipe, delta, inventBonus);
+              this.stallLog(r.msg);
+              writeSlot(this.activeSlot, this.buildSaveData());
+              this.fillStallPanel();
+            });
+            btns.appendChild(b);
+          };
+          mk('−5', -5);
+          mk('−1', -1);
+          const mid = document.createElement('span');
+          mid.className = 'stall-ask-val';
+          mid.textContent = `${ask}b ask`;
+          btns.appendChild(mid);
+          mk('+1', 1);
+          mk('+5', 5);
+          mk('Fair', 'fair');
+          shelf.appendChild(card);
         }
       }
     }
@@ -8514,11 +8555,12 @@ export class ForgeHeartGame {
         const have = this.inv.customStock[cr.id] ?? 0;
         const b = document.createElement('button');
         b.type = 'button';
-        const est = Math.round(cr.sellValue * (dist?.inventBonus ?? 1));
-        b.textContent = `Invent ${cr.name} ×1 (have ${have} · ~${est}b here)`;
+        const inventBonus = dist?.inventBonus ?? 1;
+        const fair = fairInventionAsk(cr, inventBonus);
+        b.textContent = `Invent ${cr.name} ×1 (have ${have} · fair ${fair}b)`;
         b.disabled = have < 1;
         b.addEventListener('click', () => {
-          const r = stockInventionOnStall(this.inv, cr.id, 1, stall);
+          const r = stockInventionOnStall(this.inv, cr.id, 1, stall, inventBonus);
           this.stallLog(r.msg);
           if (r.ok) {
             this.audio.playPickup();
