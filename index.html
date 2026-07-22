@@ -151,29 +151,40 @@
               </div>
               <svg id="city-map-svg" class="city-map-svg" xmlns="http://www.w3.org/2000/svg"></svg>
             </div>
-            <aside class="city-map-side">
-              <div class="city-map-legend">
-                <div><span class="ml home"></span> Home</div>
-                <div><span class="ml work"></span> Workshop</div>
-                <div><span class="ml reef"></span> Harvest reef</div>
-                <div><span class="ml stall"></span> Stall / market</div>
-                <div><span class="ml sky"></span> Wind skyway</div>
-                <div><span class="ml route"></span> Route guide</div>
-                <div><span class="ml you"></span> You</div>
-                <div><span class="ml crew"></span> Crew</div>
-                <div><span class="ml attn"></span> Needs attention</div>
+            <aside class="city-map-side" id="city-map-side">
+              <button
+                type="button"
+                id="city-map-side-toggle"
+                class="city-map-side-toggle"
+                aria-expanded="false"
+                title="Show or hide place list"
+              >
+                Places
+              </button>
+              <div class="city-map-side-main">
+                <div class="city-map-legend">
+                  <div><span class="ml home"></span> Home</div>
+                  <div><span class="ml work"></span> Workshop</div>
+                  <div><span class="ml reef"></span> Harvest reef</div>
+                  <div><span class="ml stall"></span> Stall / market</div>
+                  <div><span class="ml sky"></span> Wind skyway</div>
+                  <div><span class="ml route"></span> Route guide</div>
+                  <div><span class="ml you"></span> You</div>
+                  <div><span class="ml crew"></span> Crew</div>
+                  <div><span class="ml attn"></span> Needs attention</div>
+                </div>
+                <p id="city-map-detail" class="city-map-detail">Click a plaza or pin</p>
+                <p id="city-map-attn" class="city-map-attn craft-hint"></p>
+                <div class="city-map-filters" id="city-map-filters">
+                  <button type="button" data-map-filter="all" class="active">All</button>
+                  <button type="button" data-map-filter="district">Plazas</button>
+                  <button type="button" data-map-filter="harvest">Reefs</button>
+                  <button type="button" data-map-filter="stall">Stalls</button>
+                  <button type="button" data-map-filter="service">Services</button>
+                  <button type="button" data-map-filter="crew">Crew</button>
+                </div>
+                <div id="city-map-places" class="city-map-places"></div>
               </div>
-              <p id="city-map-detail" class="city-map-detail">Click a plaza or pin</p>
-              <p id="city-map-attn" class="city-map-attn craft-hint"></p>
-              <div class="city-map-filters" id="city-map-filters">
-                <button type="button" data-map-filter="all" class="active">All</button>
-                <button type="button" data-map-filter="district">Plazas</button>
-                <button type="button" data-map-filter="harvest">Reefs</button>
-                <button type="button" data-map-filter="stall">Stalls</button>
-                <button type="button" data-map-filter="service">Services</button>
-                <button type="button" data-map-filter="crew">Crew</button>
-              </div>
-              <div id="city-map-places" class="city-map-places"></div>
             </aside>
           </div>
         </div>
