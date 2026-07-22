@@ -53,6 +53,8 @@ export type SiteSession = {
   activePropId: string | null;
   /** Local yaw for the item currently being aimed (prop / room wing) */
   placeYaw: number;
+  /** Home-only: placing décor inside the shell (walls go translucent) */
+  interiorDecor: boolean;
 };
 
 export function defaultSiteSession(opts: {
@@ -121,6 +123,7 @@ export function defaultSiteSession(opts: {
           : [],
     activePropId: null,
     placeYaw: 0,
+    interiorDecor: false,
   };
 }
 

@@ -266,6 +266,8 @@ import {
   homePropCost,
   homeTierDef,
   apartmentAnchorXZ,
+  snapHomeYaw,
+  setHomeStructureTranslucent,
 } from './homeBuild';
 import {
   type SiteSession,
@@ -4540,6 +4542,14 @@ export class ForgeHeartGame {
       this.openBay();
       return true;
     }
+    if (it.kind === 'home_decorate') {
+      if (!this.inv.apartmentOwned) {
+        this.toast('Buy a sky apartment deed first.', 3);
+        return true;
+      }
+      this.beginHomeInteriorDecor();
+      return true;
+    }
     if (it.kind === 'hire_board') {
       if (!this.inv.cityWorkshopLeased && !this.inv.parcelLeased) {
         this.toast('Lease the city workshop before hiring crew.', 3);
@@ -4811,6 +4821,14 @@ export class ForgeHeartGame {
     this.siteBuilder.step = 'site';
     this.siteBuilder.sitePlaced = false;
     this.siteBuilder.placeYaw = 0;
+    this.siteBuilder.interiorDecor = false;
+    if (opts.kind === 'home') {
+      this.siteBuilder.yaw = snapHomeYaw(this.siteBuilder.yaw);
+      this.hideLiveHomeBuild(true);
+      this.wipeHomeChildInteracts();
+      this.spatialGrid?.removeChunk('player_home');
+      if (this.spatialGrid) this.colliders = this.spatialGrid.getAll() as Collider[];
+    }
     this.enterGameMaker();
     // Suppress default Game Maker prefab ghost
     this.makerTool = 'select';
@@ -4834,18 +4852,61 @@ export class ForgeHeartGame {
             : 'factory';
     this.toast(
       opts.redesign
-        ? `Edit ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (gold DOOR marks the front)' : ''}, Enter locks.`
-        : `Place ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (gold DOOR marks the front)' : ''}, Enter/click locks.`,
+        ? `Edit ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (cyan runner + ENTRY = front)' : ''}, Enter locks.`
+        : `Place ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (cyan runner + ENTRY = front)' : ''}, Enter/click locks.`,
       5,
     );
     this.setHelp(
       opts.kind === 'home'
-        ? 'SITE · look / arrows aim · [/] rotate · gold DOOR = front · Enter lock · Esc cancel'
+        ? 'SITE · look / arrows aim · [/] rotate 90° · ENTRY runner = front door · Enter lock · Esc cancel'
         : 'SITE · look / arrows aim box · [/] rotate · WASD fly · Enter lock · Esc cancel',
     );
   }
 
-  private clearSiteBuilderVisuals() {
+  /** Place decorations inside the living shell — walls go see-through while aiming. */
+  private beginHomeInteriorDecor() {
+    if (!this.inv.apartmentOwned) {
+      this.toast('Buy a sky apartment deed first.', 3);
+      return;
+    }
+    const home = ensureDefaultHomeLayout(this.inv);
+    this.closeStall();
+    this.closeStorageOffice();
+    this.siteBuilder = defaultSiteSession({
+      kind: 'home',
+      districtId: 'residential',
+      redesign: true,
+      applyUpgrade: false,
+      baseCost: 0,
+      home,
+      plazaX: home.plotX,
+      plazaZ: home.plotZ,
+    });
+    this.siteBuilder.step = 'props';
+    this.siteBuilder.sitePlaced = true;
+    this.siteBuilder.interiorDecor = true;
+    this.siteBuilder.yaw = snapHomeYaw(home.yaw);
+    this.siteBuilder.placeYaw = 0;
+    this.siteBuilder.activePropId = null;
+    this.enterGameMaker();
+    this.makerTool = 'select';
+    this.cityEditor?.updateGhost(null, 0);
+    this.clearCityGhost();
+    setHomeStructureTranslucent(this.skyCity?.apartmentGroup, true);
+    this.refreshHomeEditPhysics();
+    this.rebuildSiteGhost();
+    this.refreshSiteBuilderUi();
+    this.toast('Interior décor — walls translucent. Pick an item, aim inside, Enter places.', 5);
+    this.setHelp('INTERIOR · pick décor · aim inside · [/] rotate · Enter place · Esc done');
+    // Nudge camera toward interior
+    const cos = Math.cos(home.yaw);
+    const sin = Math.sin(home.yaw);
+    this.camera.position.set(home.plotX - sin * 2, Math.max(this.camera.position.y, 3.2), home.plotZ - cos * 2);
+  }
+
+  private clearSiteBuilderVisuals(opts?: { restoreHome?: boolean }) {
+    const wasHome = this.siteBuilder?.kind === 'home';
+    const restoreHome = opts?.restoreHome !== false;
     if (this.siteGhost) {
       this.scene.remove(this.siteGhost);
       this.siteGhost = null;
@@ -4854,15 +4915,17 @@ export class ForgeHeartGame {
       this.scene.remove(this.sitePropGhost);
       this.sitePropGhost = null;
     }
+    setHomeStructureTranslucent(this.skyCity?.apartmentGroup, false);
     this.siteBuilder = null;
     const panel = document.getElementById('stall-wizard');
     panel?.classList.add('hidden');
     panel?.setAttribute('aria-hidden', 'true');
+    if (wasHome && restoreHome) this.syncHomeVisuals();
   }
 
   private cancelSiteBuilder() {
     if (!this.siteBuilder) return;
-    this.clearSiteBuilderVisuals();
+    this.clearSiteBuilderVisuals({ restoreHome: true });
     if (this.gameMakerActive) this.exitGameMaker();
     this.toast('Build cancelled.', 2);
   }
@@ -4930,6 +4993,22 @@ export class ForgeHeartGame {
     if (!s) return;
     const aimingItem =
       (s.step === 'props' && !!s.activePropId) || (s.step === 'rooms' && !!s.activeRoomKind);
+    if (s.kind === 'home') {
+      // 90° snaps keep door gaps clear with AABB colliders
+      const step = Math.PI / 2;
+      const dir = delta >= 0 ? step : -step;
+      if (aimingItem) {
+        s.placeYaw = snapHomeYaw(s.placeYaw + dir);
+        if (this.sitePropGhost) {
+          this.sitePropGhost.rotation.y = s.yaw + s.placeYaw;
+        }
+        return;
+      }
+      s.yaw = snapHomeYaw(s.yaw + dir);
+      this.rebuildSiteGhost();
+      this.refreshHomeEditPhysics();
+      return;
+    }
     if (aimingItem) {
       s.placeYaw += delta;
       if (this.sitePropGhost) {
@@ -5038,7 +5117,7 @@ export class ForgeHeartGame {
             : 16;
       const box = makeSelectionBox(boxSize, {
         doorCue: s.kind === 'home',
-        doorLabel: 'DOOR',
+        doorLabel: 'ENTRY',
       });
       const look = this.siteLookPoint();
       box.position.set(look.x, 0.05, look.z);
@@ -5053,14 +5132,23 @@ export class ForgeHeartGame {
     if (s.kind === 'stall') {
       const built = buildStallVisual(this.skyCity.mats, sessionStallLayout(s));
       root = built.group;
+    } else if (s.kind === 'home' && s.interiorDecor) {
+      // Rebuild live home from session so new décor appears; walls stay translucent
+      this.rebuildLiveHomeFromSession();
+      setHomeStructureTranslucent(this.skyCity.apartmentGroup, true);
+      this.refreshHomeEditPhysics();
+      root = new THREE.Group();
+      root.name = 'InteriorDecorAnchor';
     } else if (s.kind === 'home') {
-      const built = buildHomeVisual(this.skyCity.mats, sessionHomeLayout(s));
+      const built = buildHomeVisual(this.skyCity.mats, sessionHomeLayout(s), { loudDoorCue: true });
       root = built.group;
+      this.refreshHomeEditPhysics();
     } else {
       const built = buildFactoryVisual(this.skyCity.mats, sessionFactoryLayout(s));
       root = built.group;
     }
     root.traverse((o) => {
+      if (o.userData?.doorCue) return;
       const m = o as THREE.Mesh;
       if (m.isMesh && m.material) {
         const mats = Array.isArray(m.material) ? m.material : [m.material];
@@ -5094,7 +5182,33 @@ export class ForgeHeartGame {
       this.sitePropGhost = pg;
     }
     if (s.step === 'rooms' && s.activeRoomKind) {
-      const pg = makeShopPropGhost('planters', this.skyCity.mats);
+      // Room-sized ghost box (not a planter)
+      const pg = new THREE.Group();
+      const shell = new THREE.Mesh(
+        new THREE.BoxGeometry(8.5, 2.6, 7.5),
+        new THREE.MeshStandardMaterial({
+          color: 0x88ccee,
+          transparent: true,
+          opacity: 0.35,
+          depthWrite: false,
+        }),
+      );
+      shell.position.y = 1.4;
+      pg.add(shell);
+      const doorBand = new THREE.Mesh(
+        new THREE.BoxGeometry(2.6, 0.2, 0.4),
+        new THREE.MeshStandardMaterial({
+          color: 0xffc84a,
+          emissive: 0xff8800,
+          emissiveIntensity: 1,
+          transparent: true,
+          opacity: 0.95,
+          depthWrite: false,
+        }),
+      );
+      doorBand.position.set(0, 0.2, 3.9);
+      doorBand.userData.doorCue = true;
+      pg.add(doorBand);
       const look = this.siteLookPoint();
       pg.position.copy(look);
       pg.rotation.y = s.yaw + s.placeYaw;
@@ -5122,7 +5236,16 @@ export class ForgeHeartGame {
           ? isValidHomePlot(this.siteGhost.position.x, this.siteGhost.position.z, s.homeTier)
           : isValidStallPlot(s.districtId, this.siteGhost.position.x, this.siteGhost.position.z);
       this.siteGhost.traverse((o) => {
-        if (o.userData?.doorCue) return;
+        if (o.userData?.doorCue) {
+          const m = o as THREE.Mesh;
+          if (m.isMesh && m.material && !Array.isArray(m.material)) {
+            const mat = m.material as THREE.MeshStandardMaterial;
+            if (mat.emissiveIntensity != null) {
+              mat.emissiveIntensity = 0.75 + Math.sin(performance.now() * 0.006) * 0.55;
+            }
+          }
+          return;
+        }
         const m = o as THREE.Mesh;
         if (m.isMesh && m.material && !Array.isArray(m.material)) {
           const mat = m.material as THREE.MeshStandardMaterial;
@@ -5154,7 +5277,7 @@ export class ForgeHeartGame {
       this.sitePropGhost.userData.lx = local.lx;
       this.sitePropGhost.userData.lz = local.lz;
       // Tint red if too far from site footprint
-      const reach = s.kind === 'home' ? 22 : 9;
+      const reach = s.kind === 'home' ? (s.interiorDecor ? 4.2 : homeTierDef(s.homeTier).padW * 0.55) : 9;
       const far = Math.hypot(local.lx, local.lz) > reach;
       this.sitePropGhost.traverse((o) => {
         const m = o as THREE.Mesh;
@@ -5195,6 +5318,7 @@ export class ForgeHeartGame {
       s.plotX = px;
       s.plotZ = pz;
       // Keep the box's [/] rotation — do not snap to look yaw
+      if (s.kind === 'home') s.yaw = snapHomeYaw(s.yaw);
       s.sitePlaced = true;
       s.step = 'structure';
       this.rebuildSiteGhost();
@@ -5205,18 +5329,20 @@ export class ForgeHeartGame {
 
     if (s.step === 'rooms' && s.activeRoomKind) {
       const cost = homeRoomCost(s.activeRoomKind);
-      if (!this.canAffordSiteCharge(cost)) {
+      // Repositioning an existing room is free (already paid)
+      const replacing = s.rooms.some((r) => r.kind === s.activeRoomKind);
+      if (!replacing && !this.canAffordSiteCharge(cost)) {
         this.toast(`Cannot afford this room (${cost}b).`, 2.5);
         return;
       }
       const cap = homeRoomCap(s.homeTier);
-      if (s.rooms.length >= cap) {
+      const countWithout = s.rooms.filter((r) => r.kind !== s.activeRoomKind).length;
+      if (!replacing && s.rooms.length >= cap) {
         this.toast(`${s.homeTier} holds at most ${cap} rooms — expand the home first.`, 3);
         return;
       }
-      if (s.rooms.some((r) => r.kind === s.activeRoomKind)) {
-        this.toast('That room type is already on your home.', 2.5);
-        return;
+      if (replacing && countWithout >= cap) {
+        /* ok — swapping in place */
       }
       let lx: number;
       let lz: number;
@@ -5233,16 +5359,23 @@ export class ForgeHeartGame {
         lx = local.lx;
         lz = local.lz;
       }
-      if (Math.hypot(lx, lz) > 22) {
+      const padReach = homeTierDef(s.homeTier).padW * 0.55;
+      if (Math.hypot(lx, lz) > padReach) {
         this.toast('Aim closer to your home footprint.', 2.5);
         return;
       }
-      s.rooms.push({ kind: s.activeRoomKind, lx, lz, yaw: s.placeYaw });
+      s.rooms = s.rooms.filter((r) => r.kind !== s.activeRoomKind);
+      s.rooms.push({
+        kind: s.activeRoomKind,
+        lx,
+        lz,
+        yaw: snapHomeYaw(s.placeYaw),
+      });
       s.activeRoomKind = null;
       s.placeYaw = 0;
       this.rebuildSiteGhost();
       this.refreshSiteBuilderUi();
-      this.toast('Room placed.', 1.5);
+      this.toast(replacing ? 'Room moved.' : 'Room placed.', 1.5);
       return;
     }
 
@@ -5273,20 +5406,33 @@ export class ForgeHeartGame {
         lx = local.lx;
         lz = local.lz;
       }
-      const reach = s.kind === 'home' ? 22 : 10;
+      const reach =
+        s.kind === 'home'
+          ? s.interiorDecor
+            ? 4.2
+            : homeTierDef(s.homeTier).padW * 0.55
+          : 10;
       if (Math.hypot(lx, lz) > reach) {
-        this.toast('Aim closer to your site footprint.', 2.5);
+        this.toast(
+          s.interiorDecor ? 'Aim inside the home shell.' : 'Aim closer to your site footprint.',
+          2.5,
+        );
         return;
       }
       const placedName = s.activePropId.replace(/_/g, ' ');
-      s.props.push({ id: s.activePropId, lx, lz, yaw: s.placeYaw });
+      s.props.push({
+        id: s.activePropId,
+        lx,
+        lz,
+        yaw: s.kind === 'home' ? snapHomeYaw(s.placeYaw) : s.placeYaw,
+        interior: !!s.interiorDecor,
+      });
       // Return to catalog so you can pick the next item (or Done)
       s.activePropId = null;
       s.placeYaw = 0;
       this.rebuildSiteGhost();
       this.refreshSiteBuilderUi();
-      this.toast(`Placed ${placedName} · pick another or Done placing`, 2.5);
-      this.setHelp('PROPS · pick from panel · look+Enter · [/] rotate · Esc clears tool');
+      this.toast(`Placed ${placedName}.`, 1.2);
       return;
     }
 
@@ -5413,7 +5559,7 @@ export class ForgeHeartGame {
       if (sub) {
         sub.textContent =
           s.kind === 'home'
-            ? 'Aim the box with look or arrows. [/] rotates — the gold DOOR arch shows where the front door faces. Enter locks.'
+            ? 'Aim the box with look or arrows. [/] rotates 90° — cyan runner + ENTRY arch show the front door. Enter locks.'
             : 'Aim the selection box with look or arrow keys. [/] rotates it. Enter/click locks. R to move again later.';
       }
       const p = document.createElement('p');
@@ -5421,7 +5567,7 @@ export class ForgeHeartGame {
       p.textContent = s.sitePlaced
         ? `Site ${s.plotX.toFixed(0)}, ${s.plotZ.toFixed(0)} · press R to move`
         : s.kind === 'home'
-          ? 'Green = valid · gold DOOR = front entrance · [/] rotate'
+          ? 'Green = valid · cyan runner + ENTRY = front door · [/] rotate 90°'
           : 'Green = valid · red = too far · arrows nudge · [/] rotate';
       body.appendChild(p);
     } else if (s.step === 'structure') {
@@ -5582,12 +5728,12 @@ export class ForgeHeartGame {
           btn.className = 'stall-wizard-opt';
           const have = s.rooms.some((x) => x.kind === r.id);
           const full = s.rooms.length >= cap && !have;
-          const ok = !have && !full && this.canAffordSiteCharge(r.cost);
+          const ok = (!have && !full && this.canAffordSiteCharge(r.cost)) || have;
           if (!ok) {
             btn.disabled = true;
             btn.classList.add('unaffordable');
           }
-          btn.innerHTML = `<strong>${r.name} · ${r.cost}b${have ? ' · ✓' : ''}</strong><span class="hint">${r.blurb}${have ? ' · already placed' : full ? ' · room cap' : ok ? ' · click to aim' : ' · cannot afford'}</span>`;
+          btn.innerHTML = `<strong>${r.name} · ${r.cost}b${have ? ' · ✓' : ''}</strong><span class="hint">${r.blurb}${have ? ' · click to move' : full ? ' · room cap' : ok ? ' · click to aim' : ' · cannot afford'}</span>`;
           btn.addEventListener('click', () => {
             if (!ok) return;
             if (r.id === 'living') {
@@ -5596,11 +5742,20 @@ export class ForgeHeartGame {
               this.refreshSiteBuilderUi();
               return;
             }
+            if (have) {
+              // Pick up for reposition — remove from layout until re-placed
+              s.rooms = s.rooms.filter((x) => x.kind !== r.id);
+            }
             s.activeRoomKind = r.id;
             s.placeYaw = 0;
             this.rebuildSiteGhost();
             this.refreshSiteBuilderUi();
-            this.toast(`Aim ${r.name} — look / arrows · [/] rotate · Enter places`, 3);
+            this.toast(
+              have
+                ? `Move ${r.name} — look / arrows · [/] rotate 90° · Enter places`
+                : `Aim ${r.name} — look / arrows · [/] rotate 90° · Enter places`,
+              3,
+            );
           });
           body.appendChild(btn);
         }
@@ -5621,8 +5776,9 @@ export class ForgeHeartGame {
     } else if (s.step === 'props') {
       if (s.activePropId) {
         if (sub) {
-          sub.textContent =
-            'AIMING — look or arrows move it, [/] rotates, Enter/click places. Esc cancels the tool.';
+          sub.textContent = s.interiorDecor
+            ? 'INTERIOR aim — walls are translucent. Look/arrows move, [/] rotates, Enter places.'
+            : 'AIMING — look or arrows move it, [/] rotates, Enter/click places. Esc cancels the tool.';
         }
         const hint = document.createElement('p');
         hint.className = 'stall-wizard-hint';
@@ -5648,8 +5804,9 @@ export class ForgeHeartGame {
         body.appendChild(placeNow);
       } else {
         if (sub) {
-          sub.textContent =
-            'Pick a decoration — aim with look/arrows, rotate with [/], then Enter. After placing, pick again or Done.';
+          sub.textContent = s.interiorDecor
+            ? 'Interior décor — pick an item to place inside. Walls stay see-through until you finish.'
+            : 'Pick a decoration — aim with look/arrows, rotate with [/], then Enter. After placing, pick again or Done.';
         }
         const catalog =
           s.kind === 'stall'
@@ -5720,11 +5877,11 @@ export class ForgeHeartGame {
     }
     if (s.kind === 'home') {
       const layout = sessionHomeLayout(s);
-      const r = finalizeHomeBuild(this.inv, layout, { redesign: s.redesign });
+      const r = finalizeHomeBuild(this.inv, layout, { redesign: s.redesign || s.interiorDecor });
       this.toast(r.msg, 4);
       if (!r.ok) return;
       this.brass = this.inv.brass;
-      this.clearSiteBuilderVisuals();
+      this.clearSiteBuilderVisuals({ restoreHome: false });
       if (this.gameMakerActive) this.exitGameMaker();
       this.syncHomeVisuals();
       this.audio.playPickup();
@@ -8796,14 +8953,13 @@ export class ForgeHeartGame {
   private syncHomeVisuals() {
     if (!this.skyCity?.apartmentGroup) return;
     const g = this.skyCity.apartmentGroup;
+    setHomeStructureTranslucent(g, false);
     // Keep only the manage-door marker — drop prior build + old room marks
     const doorMesh = this.skyCity.interactables.find((x) => x.id === 'player_home')?.mesh;
     for (const child of [...g.children]) {
       if (child !== doorMesh) g.remove(child);
     }
-    this.skyCity.interactables = this.skyCity.interactables.filter(
-      (x) => x.kind !== 'home_workshop' && x.kind !== 'home_invent',
-    );
+    this.wipeHomeChildInteracts();
     this.spatialGrid?.removeChunk('player_home');
 
     if (!this.inv.apartmentOwned) {
@@ -8812,7 +8968,8 @@ export class ForgeHeartGame {
     }
     g.visible = true;
     const layout = ensureDefaultHomeLayout(this.inv);
-    const built = buildHomeVisual(this.skyCity.mats, layout);
+    layout.yaw = snapHomeYaw(layout.yaw);
+    const built = buildHomeVisual(this.skyCity.mats, layout, { loudDoorCue: false });
     built.group.position.set(layout.plotX, 0, layout.plotZ);
     built.group.rotation.y = layout.yaw;
     g.add(built.group);
@@ -8828,17 +8985,75 @@ export class ForgeHeartGame {
       door.label = `${tierName} · improve / expand`;
     }
 
+    this.installHomeChildInteracts(layout, built);
+
+    if (this.spatialGrid) {
+      this.colliders = this.spatialGrid.getAll() as Collider[];
+      perfStats.colliderCount = this.spatialGrid.count;
+    }
+  }
+
+  private hideLiveHomeBuild(hide: boolean) {
+    const g = this.skyCity?.apartmentGroup;
+    if (!g) return;
+    for (const child of g.children) {
+      if (child.userData?.homeBuild || child.name === 'PlayerHomeBuild') {
+        child.visible = !hide;
+      }
+    }
+  }
+
+  /** Replace the live PlayerHomeBuild mesh from the active site session (interior décor). */
+  private rebuildLiveHomeFromSession() {
+    const s = this.siteBuilder;
+    if (!s || s.kind !== 'home' || !this.skyCity?.apartmentGroup) return;
+    const g = this.skyCity.apartmentGroup;
+    const doorMesh = this.skyCity.interactables.find((x) => x.id === 'player_home')?.mesh;
+    for (const child of [...g.children]) {
+      if (child === doorMesh) continue;
+      if (child.userData?.homeInteractMark) continue;
+      g.remove(child);
+    }
+    const layout = { ...sessionHomeLayout(s), built: true, yaw: snapHomeYaw(s.yaw) };
+    const built = buildHomeVisual(this.skyCity.mats, layout, { loudDoorCue: false });
+    built.group.position.set(layout.plotX, 0, layout.plotZ);
+    built.group.rotation.y = layout.yaw;
+    g.add(built.group);
+  }
+
+  private wipeHomeChildInteracts() {
+    if (!this.skyCity) return;
+    const drop = (k: string) =>
+      k === 'home_workshop' || k === 'home_invent' || k === 'home_decorate';
+    for (const it of this.skyCity.interactables) {
+      if (!drop(it.kind)) continue;
+      it.mesh.parent?.remove(it.mesh);
+    }
+    this.skyCity.interactables = this.skyCity.interactables.filter((x) => !drop(x.kind));
+  }
+
+  private installHomeChildInteracts(
+    layout: import('./economy').HomeLayout,
+    built: import('./homeBuild').HomeVisualBuilt,
+  ) {
+    if (!this.skyCity) return;
+    const g = this.skyCity.apartmentGroup;
+    // Deduped by kind — one workshop / invent / decorate marker
+    const seen = new Set<string>();
     for (const ri of built.roomInteracts) {
+      if (seen.has(ri.kind)) continue;
+      seen.add(ri.kind);
       const world = rotateLocal(ri.local, layout.yaw, layout.plotX, layout.plotZ);
       const mark = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 8, 8),
+        new THREE.SphereGeometry(0.28, 10, 10),
         new THREE.MeshStandardMaterial({
           color: ri.kind === 'invent_lab' ? 0x88e0ff : 0xc4a35a,
           emissive: ri.kind === 'invent_lab' ? 0x4488aa : 0xaa8800,
-          emissiveIntensity: 0.55,
+          emissiveIntensity: 0.7,
         }),
       );
       mark.position.copy(world);
+      mark.userData.homeInteractMark = true;
       g.add(mark);
       const kind = ri.kind === 'invent_lab' ? 'home_invent' : 'home_workshop';
       this.skyCity.interactables.push({
@@ -8851,6 +9066,56 @@ export class ForgeHeartGame {
       });
     }
 
+    const decorWorld = rotateLocal(built.decorateLocal, layout.yaw, layout.plotX, layout.plotZ);
+    const decorMark = new THREE.Mesh(
+      new THREE.SphereGeometry(0.24, 10, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0xe8a0ff,
+        emissive: 0x8844aa,
+        emissiveIntensity: 0.65,
+      }),
+    );
+    decorMark.position.copy(decorWorld);
+    decorMark.userData.homeInteractMark = true;
+    g.add(decorMark);
+    this.skyCity.interactables.push({
+      id: 'home_decorate',
+      kind: 'home_decorate',
+      position: decorWorld.clone(),
+      radius: 2.6,
+      mesh: decorMark,
+      label: 'Decorate interior',
+    });
+  }
+
+  /**
+   * While editing a home, keep colliders + room interacts aligned with the
+   * session layout (not the last finalized build).
+   */
+  private refreshHomeEditPhysics() {
+    const s = this.siteBuilder;
+    if (!s || s.kind !== 'home' || !this.skyCity) return;
+    if (!s.sitePlaced && !s.interiorDecor) {
+      this.spatialGrid?.removeChunk('player_home');
+      this.wipeHomeChildInteracts();
+      if (this.spatialGrid) this.colliders = this.spatialGrid.getAll() as Collider[];
+      return;
+    }
+    const layout = { ...sessionHomeLayout(s), built: true, yaw: snapHomeYaw(s.yaw) };
+    const built = buildHomeVisual(this.skyCity.mats, layout, { loudDoorCue: false });
+    const cols = worldHomeColliders(built, layout.plotX, layout.plotZ, layout.yaw);
+    this.spatialGrid?.setChunk('player_home', cols);
+    this.wipeHomeChildInteracts();
+    this.installHomeChildInteracts(layout, built);
+    // Discard temporary mesh (ghost owns the preview)
+    built.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.geometry?.dispose();
+        const mats = Array.isArray(m.material) ? m.material : [m.material];
+        for (const mat of mats) mat?.dispose?.();
+      }
+    });
     if (this.spatialGrid) {
       this.colliders = this.spatialGrid.getAll() as Collider[];
       perfStats.colliderCount = this.spatialGrid.count;

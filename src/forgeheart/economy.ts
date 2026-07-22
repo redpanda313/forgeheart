@@ -696,6 +696,8 @@ export interface SiteProp {
   lx: number;
   lz: number;
   yaw: number;
+  /** True when placed via interior décor mode (inside the home shell) */
+  interior?: boolean;
 }
 
 export interface HomeRoom {
@@ -2079,16 +2081,54 @@ function normalizeHomeLayout(layout: HomeLayout): HomeLayout {
   }
   const cap = HOME_ROOM_CAP[tier] ?? 1;
   if (rooms.length > cap) rooms = rooms.slice(0, cap);
+  // Persist resolved wing positions + axis-aligned yaw (stable interacts / colliders)
+  rooms = resolveHomeRoomsForSave(rooms, tier);
+  const step = Math.PI / 2;
+  const yaw = Math.round((Number(layout.yaw) || 0) / step) * step;
   return {
     plotX: layout.plotX,
     plotZ: layout.plotZ,
-    yaw: layout.yaw,
+    yaw,
     tier,
     color: Math.max(0, Math.min(5, layout.color | 0)),
-    props: Array.isArray(layout.props) ? layout.props.map((p) => ({ ...p })) : [],
+    props: Array.isArray(layout.props)
+      ? layout.props.map((p) => ({
+          id: p.id,
+          lx: Number(p.lx) || 0,
+          lz: Number(p.lz) || 0,
+          yaw: Number(p.yaw) || 0,
+          interior: !!p.interior,
+        }))
+      : [],
     rooms,
     built: layout.built,
   };
+}
+
+/** Inline resolve so economy does not import homeBuild (avoid cycles via game). */
+function resolveHomeRoomsForSave(rooms: HomeRoom[], tier: HomeTier): HomeRoom[] {
+  const pad =
+    tier === 'island' ? 64 : tier === 'estate' ? 48 : tier === 'manor' ? 34 : tier === 'house' ? 22 : 14;
+  const list = rooms.map((r) => ({ ...r }));
+  const wings = list.filter((r) => r.kind !== 'living');
+  const step = Math.PI / 2;
+  for (const placed of list) {
+    if (placed.kind === 'living') {
+      placed.lx = 0;
+      placed.lz = 0;
+      placed.yaw = 0;
+      continue;
+    }
+    if (Math.abs(placed.lx) < 0.1 && Math.abs(placed.lz) < 0.1) {
+      const idx = wings.indexOf(placed);
+      const a = (idx / Math.max(1, wings.length)) * Math.PI * 2 - Math.PI / 2;
+      const rad = pad * 0.28;
+      placed.lx = Math.cos(a) * rad;
+      placed.lz = Math.sin(a) * rad;
+    }
+    placed.yaw = Math.round(placed.yaw / step) * step;
+  }
+  return list;
 }
 
 export function finalizeHomeBuild(
@@ -4486,7 +4526,13 @@ function homeLayoutToSave(L: HomeLayout | null | undefined) {
     yaw: L.yaw,
     tier: L.tier,
     color: L.color,
-    props: (L.props ?? []).map((p) => ({ ...p })),
+    props: (L.props ?? []).map((p) => ({
+      id: p.id,
+      lx: p.lx,
+      lz: p.lz,
+      yaw: p.yaw,
+      interior: !!p.interior,
+    })),
     rooms: (L.rooms ?? []).map((r) => ({ ...r })),
     built: !!L.built,
   };
@@ -4507,6 +4553,7 @@ function homeLayoutFromSave(raw: unknown): HomeLayout | null {
           lx: Number(p.lx) || 0,
           lz: Number(p.lz) || 0,
           yaw: Number(p.yaw) || 0,
+          interior: !!(p as SiteProp).interior,
         }))
       : [],
     rooms: Array.isArray(L.rooms)

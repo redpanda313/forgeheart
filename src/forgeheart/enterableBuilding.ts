@@ -28,11 +28,13 @@ function addBox(
   y: number,
   z: number,
   kind: 'floor' | 'solid',
+  opts?: { structureWall?: boolean },
 ) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   mesh.position.set(x, y, z);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
+  if (opts?.structureWall) mesh.userData.structureWall = true;
   g.add(mesh);
   cols.push({
     min: new THREE.Vector3(x - w / 2, y - h / 2, z - d / 2),
@@ -62,7 +64,8 @@ export function buildEnterableShell(
   const floorMat = mats.wood;
   const w = kind === 'shop' ? 8.5 : kind === 'office' ? 9 : 7;
   const d = kind === 'shop' ? 7.5 : kind === 'office' ? 8 : 6.2;
-  const doorW = kind === 'shop' ? 2.6 : 2.2;
+  // Slightly wide door gap so axis-aligned AABBs still leave an enterable opening
+  const doorW = kind === 'shop' ? 2.8 : 2.5;
   const floorH = kind === 'home' ? 2.85 : 3.0;
 
   for (let f = 0; f < floors; f++) {
@@ -70,21 +73,27 @@ export function buildEnterableShell(
     addBox(g, cols, floorMat, w, 0.22, d, 0, y0, 0, 'floor');
     const wh = floorH - 0.2;
     // Back + sides
-    addBox(g, cols, wallMat, w, wh, 0.3, 0, y0 + wh / 2, -d / 2, 'solid');
+    addBox(g, cols, wallMat, w, wh, 0.3, 0, y0 + wh / 2, -d / 2, 'solid', { structureWall: true });
     for (const sx of [-1, 1]) {
-      addBox(g, cols, wallMat, 0.3, wh, d, (sx * w) / 2, y0 + wh / 2, 0, 'solid');
+      addBox(g, cols, wallMat, 0.3, wh, d, (sx * w) / 2, y0 + wh / 2, 0, 'solid', {
+        structureWall: true,
+      });
     }
     // Front with door on ground floor
     if (f === 0) {
       const sideW = (w - doorW) / 2;
       for (const sx of [-1, 1]) {
         const cx = sx * (doorW / 2 + sideW / 2);
-        addBox(g, cols, wallMat, sideW, wh, 0.3, cx, y0 + wh / 2, d / 2, 'solid');
+        addBox(g, cols, wallMat, sideW, wh, 0.3, cx, y0 + wh / 2, d / 2, 'solid', {
+          structureWall: true,
+        });
       }
       // Lintel
-      addBox(g, cols, mats.brass, doorW + 0.25, 0.35, 0.35, 0, y0 + wh - 0.2, d / 2, 'solid');
+      addBox(g, cols, mats.brass, doorW + 0.25, 0.35, 0.35, 0, y0 + wh - 0.2, d / 2, 'solid', {
+        structureWall: true,
+      });
     } else {
-      addBox(g, cols, wallMat, w, wh, 0.3, 0, y0 + wh / 2, d / 2, 'solid');
+      addBox(g, cols, wallMat, w, wh, 0.3, 0, y0 + wh / 2, d / 2, 'solid', { structureWall: true });
     }
     // Simple furniture
     if (kind === 'home') {

@@ -49,7 +49,8 @@ export type CityInteractKind =
   | 'circuit_start'
   | 'player_home'
   | 'home_workshop'
-  | 'home_invent';
+  | 'home_invent'
+  | 'home_decorate';
 
 /** Plaza work a city chassis is assigned to while owned. */
 export type CityRobotJobId =

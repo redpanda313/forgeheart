@@ -92,76 +92,111 @@ export function defaultStallLayout(x = 0, z = 0): StallLayout {
 
 /**
  * Front-door / facing cue on the local +Z edge (rotates with site yaw).
- * Used on the empty selection box while aiming a home plot.
+ * Loud visuals for placement; keep userData.doorCue so validity tint skips them.
  */
 export function addFrontDoorCue(
   parent: THREE.Group,
   doorZ: number,
-  opts?: { doorW?: number; label?: string },
+  opts?: { doorW?: number; label?: string; y?: number; loud?: boolean },
 ): THREE.Group {
   const cue = new THREE.Group();
   cue.name = 'FrontDoorCue';
   cue.userData.doorCue = true;
   const doorW = opts?.doorW ?? 2.4;
-  const label = opts?.label ?? 'DOOR';
+  const label = opts?.label ?? 'ENTRY';
+  const y0 = opts?.y ?? 0.05;
+  const loud = opts?.loud !== false;
   const mat = new THREE.MeshStandardMaterial({
-    color: 0xffd878,
-    emissive: 0xcc8800,
-    emissiveIntensity: 0.75,
+    color: 0xffc84a,
+    emissive: 0xff8800,
+    emissiveIntensity: loud ? 1.1 : 0.65,
+    transparent: true,
+    opacity: 0.98,
+    depthWrite: false,
+  });
+  const matCyan = new THREE.MeshStandardMaterial({
+    color: 0x4af0ff,
+    emissive: 0x00aacc,
+    emissiveIntensity: loud ? 1.2 : 0.55,
     transparent: true,
     opacity: 0.95,
     depthWrite: false,
   });
-  // Threshold strip at the door line
-  const strip = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.6, 0.08, 0.35), mat);
-  strip.position.set(0, 0.08, doorZ);
-  strip.userData.doorCue = true;
-  cue.add(strip);
-  // Arrow pointing out through the door (+Z)
-  const tipZ = doorZ + 1.35;
-  const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.1, 1.1), mat);
-  shaft.position.set(0, 0.1, doorZ + 0.75);
-  shaft.userData.doorCue = true;
-  cue.add(shaft);
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.45, 0.85, 4), mat);
-  head.rotation.x = Math.PI / 2;
-  head.position.set(0, 0.12, tipZ);
-  head.userData.doorCue = true;
-  cue.add(head);
-  // Door posts
+
+  // Carpet runner from center to door — strongest facing cue
+  const runLen = Math.max(2.2, doorZ + 0.4);
+  const runner = new THREE.Mesh(
+    new THREE.BoxGeometry(Math.max(1.6, doorW * 0.85), 0.06, runLen),
+    matCyan,
+  );
+  runner.position.set(0, y0 + 0.04, doorZ - runLen / 2 + 0.2);
+  runner.userData.doorCue = true;
+  cue.add(runner);
+
+  // Chevrons along the runner pointing +Z
+  for (let i = 0; i < 3; i++) {
+    const chev = new THREE.Mesh(new THREE.ConeGeometry(0.55, 0.9, 3), mat);
+    chev.rotation.x = Math.PI / 2;
+    chev.position.set(0, y0 + 0.2, 0.8 + i * (runLen * 0.28));
+    chev.userData.doorCue = true;
+    cue.add(chev);
+  }
+
+  // Tall door frame
+  const postH = loud ? 3.2 : 2.2;
   for (const sx of [-1, 1]) {
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.18, 2.2, 0.18), mat);
-    post.position.set(sx * (doorW / 2), 1.15, doorZ);
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.28, postH, 0.28), mat);
+    post.position.set(sx * (doorW / 2 + 0.1), y0 + postH / 2, doorZ);
     post.userData.doorCue = true;
     cue.add(post);
   }
-  const lintel = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.35, 0.22, 0.22), mat);
-  lintel.position.set(0, 2.25, doorZ);
+  const lintel = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.7, 0.3, 0.3), mat);
+  lintel.position.set(0, y0 + postH, doorZ);
   lintel.userData.doorCue = true;
   cue.add(lintel);
-  // Floating label
-  const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 64;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = 'rgba(20,14,6,0.8)';
-  ctx.fillRect(0, 0, 256, 64);
-  ctx.fillStyle = '#ffe8a0';
-  ctx.font = 'bold 28px system-ui,sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, 128, 32);
-  const spr = new THREE.Sprite(
-    new THREE.SpriteMaterial({
-      map: new THREE.CanvasTexture(c),
-      transparent: true,
-      depthWrite: false,
-    }),
-  );
-  spr.position.set(0, 2.9, doorZ + 0.15);
-  spr.scale.set(2.4, 0.6, 1);
-  spr.userData.doorCue = true;
-  cue.add(spr);
+
+  // Big outbound arrow beyond the door
+  const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.16, 1.6), mat);
+  shaft.position.set(0, y0 + 0.2, doorZ + 1.1);
+  shaft.userData.doorCue = true;
+  cue.add(shaft);
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.75, 1.2, 4), mat);
+  head.rotation.x = Math.PI / 2;
+  head.position.set(0, y0 + 0.25, doorZ + 2.1);
+  head.userData.doorCue = true;
+  cue.add(head);
+
+  // Floating labels
+  const makeLabel = (text: string, y: number, scaleX: number) => {
+    const c = document.createElement('canvas');
+    c.width = 512;
+    c.height = 96;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = 'rgba(10,8,4,0.88)';
+    ctx.fillRect(0, 0, 512, 96);
+    ctx.strokeStyle = '#ffcc66';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(4, 4, 504, 88);
+    ctx.fillStyle = '#ffe8a0';
+    ctx.font = 'bold 48px system-ui,sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 256, 48);
+    const spr = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(c),
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    spr.position.set(0, y, doorZ + 0.35);
+    spr.scale.set(scaleX, scaleX * 0.22, 1);
+    spr.userData.doorCue = true;
+    cue.add(spr);
+  };
+  makeLabel(label, y0 + postH + 1.1, loud ? 4.2 : 2.8);
+  if (loud) makeLabel('FRONT →', y0 + postH + 0.45, 3.4);
+
   parent.add(cue);
   return cue;
 }
@@ -206,9 +241,25 @@ export function makeSelectionBox(
     }
   }
   if (opts?.doorCue) {
+    // Bright +Z face band so facing reads even before the arch
+    const face = new THREE.Mesh(
+      new THREE.BoxGeometry(size * 0.92, 0.14, 0.55),
+      new THREE.MeshStandardMaterial({
+        color: 0xffb020,
+        emissive: 0xff6600,
+        emissiveIntensity: 1.15,
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false,
+      }),
+    );
+    face.position.set(0, 0.16, size * 0.48);
+    face.userData.doorCue = true;
+    g.add(face);
     addFrontDoorCue(g, size * 0.48, {
-      doorW: Math.min(3.2, size * 0.28),
-      label: opts.doorLabel ?? 'DOOR',
+      doorW: Math.min(3.6, size * 0.32),
+      label: opts.doorLabel ?? 'ENTRY',
+      loud: true,
     });
   }
   return g;
