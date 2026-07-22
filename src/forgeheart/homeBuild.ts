@@ -9,6 +9,14 @@ import { buildEnterableShell } from './enterableBuilding';
 import type { Collider } from './level';
 import type { HomeLayout, HomeRoom, HomeRoomKind, HomeTier, SiteProp } from './economy';
 import { CITY_DISTRICTS } from './economy';
+import { addFrontDoorCue } from './stallBuild';
+
+/** Match skyCity floorPad walkable top so expansions stay solid underfoot. */
+const HOME_PAD_Y = 0.2;
+const HOME_PAD_THICK = 0.55;
+export const HOME_PAD_TOP = HOME_PAD_Y + HOME_PAD_THICK / 2 + 0.12;
+/** Shell first-floor top is ~0.23 — lift content so floors meet the pad. */
+export const HOME_CONTENT_Y = HOME_PAD_TOP - 0.23;
 
 export const HOME_TIERS: {
   id: HomeTier;
@@ -269,6 +277,106 @@ function addHomePropMesh(
   g.add(local);
 }
 
+/** Rotate an AABB around Y then translate into plot-local space. */
+function offsetYawCollider(c: Collider, lx: number, lz: number, yaw: number): Collider {
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  const corners = [
+    new THREE.Vector3(c.min.x, c.min.y, c.min.z),
+    new THREE.Vector3(c.max.x, c.min.y, c.min.z),
+    new THREE.Vector3(c.min.x, c.min.y, c.max.z),
+    new THREE.Vector3(c.max.x, c.min.y, c.max.z),
+    new THREE.Vector3(c.min.x, c.max.y, c.min.z),
+    new THREE.Vector3(c.max.x, c.max.y, c.min.z),
+    new THREE.Vector3(c.min.x, c.max.y, c.max.z),
+    new THREE.Vector3(c.max.x, c.max.y, c.max.z),
+  ].map((p) => {
+    const rx = p.x * cos - p.z * sin;
+    const rz = p.x * sin + p.z * cos;
+    return new THREE.Vector3(lx + rx, p.y, lz + rz);
+  });
+  const min = corners[0]!.clone();
+  const max = corners[0]!.clone();
+  for (const p of corners) {
+    min.min(p);
+    max.max(p);
+  }
+  return { min, max, kind: c.kind };
+}
+
+function roomLocalPoint(lx: number, lz: number, yaw: number, ox: number, oy: number, oz: number): THREE.Vector3 {
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  return new THREE.Vector3(lx + ox * cos - oz * sin, oy, lz + ox * sin + oz * cos);
+}
+
+/** Snap yaw to 90° so AABB wall colliders keep a clear door gap. */
+export function snapHomeYaw(yaw: number): number {
+  const step = Math.PI / 2;
+  return Math.round(yaw / step) * step;
+}
+
+/** Resolve wing positions (auto-ring if still at origin). Mutates a copy. */
+export function resolveHomeRooms(rooms: HomeRoom[], tier: HomeTier): HomeRoom[] {
+  const t = homeTierDef(tier);
+  const list = rooms.map((r) => ({ ...r }));
+  const wings = list.filter((r) => r.kind !== 'living');
+  for (const placed of list) {
+    if (placed.kind === 'living') {
+      placed.lx = 0;
+      placed.lz = 0;
+      placed.yaw = 0;
+      continue;
+    }
+    if (Math.abs(placed.lx) < 0.1 && Math.abs(placed.lz) < 0.1) {
+      const idx = wings.indexOf(placed);
+      const a = (idx / Math.max(1, wings.length)) * Math.PI * 2 - Math.PI / 2;
+      const rad = t.padW * 0.28;
+      placed.lx = Math.cos(a) * rad;
+      placed.lz = Math.sin(a) * rad;
+    }
+    placed.yaw = snapHomeYaw(placed.yaw);
+  }
+  return list;
+}
+
+/** Fade structure walls so interior décor aiming is visible. */
+export function setHomeStructureTranslucent(root: THREE.Object3D | null | undefined, on: boolean) {
+  if (!root) return;
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || !m.userData?.structureWall) return;
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    for (const mat of mats) {
+      const sm = mat as THREE.MeshStandardMaterial;
+      if (!('opacity' in sm)) continue;
+      if (on) {
+        if (sm.userData._homeOpaqueOpacity == null) {
+          sm.userData._homeOpaqueOpacity = sm.opacity ?? 1;
+          sm.userData._homeOpaqueDepth = sm.depthWrite;
+        }
+        sm.transparent = true;
+        sm.opacity = 0.22;
+        sm.depthWrite = false;
+      } else if (sm.userData._homeOpaqueOpacity != null) {
+        sm.opacity = sm.userData._homeOpaqueOpacity;
+        sm.depthWrite = !!sm.userData._homeOpaqueDepth;
+        sm.transparent = sm.opacity < 0.99;
+        delete sm.userData._homeOpaqueOpacity;
+        delete sm.userData._homeOpaqueDepth;
+      }
+    }
+  });
+}
+
+function liftCollider(c: Collider, dy: number): Collider {
+  return {
+    min: new THREE.Vector3(c.min.x, c.min.y + dy, c.min.z),
+    max: new THREE.Vector3(c.max.x, c.max.y + dy, c.max.z),
+    kind: c.kind,
+  };
+}
+
 function addRoomWing(
   g: THREE.Group,
   cols: Collider[],
@@ -277,6 +385,7 @@ function addRoomWing(
   wood: THREE.Material,
   accent: THREE.Material,
   cloth: THREE.Material,
+  contentY: number,
 ): { interactLocal?: THREE.Vector3; interactKind?: HomeRoomKind } {
   const wing = new THREE.Group();
   wing.position.set(room.lx, 0, room.lz);
@@ -289,6 +398,21 @@ function addRoomWing(
     wing.add(box(wood, 0.35, 1.2, 0.35, 2.2, 0.7, -2.2));
     wing.add(box(cloth, 1.2, 0.8, 1.2, 0, 0.55, 0));
     g.add(wing);
+    cols.push(
+      liftCollider(
+        offsetYawCollider(
+          {
+            min: new THREE.Vector3(-2.75, 0, -2.75),
+            max: new THREE.Vector3(2.75, 0.2, 2.75),
+            kind: 'floor',
+          },
+          room.lx,
+          room.lz,
+          room.yaw,
+        ),
+        contentY,
+      ),
+    );
     return out;
   }
 
@@ -306,10 +430,9 @@ function addRoomWing(
     label,
   });
   wing.add(shell.group);
-  // Furniture cue by function
   if (room.kind === 'workshop') {
     wing.add(box(accent, 2.4, 0.95, 1.0, 0, 0.6, 1.4));
-    out.interactLocal = new THREE.Vector3(room.lx, 1.15, room.lz + 2.0);
+    out.interactLocal = roomLocalPoint(room.lx, room.lz, room.yaw, 0, contentY + 1.15, 2.0);
     out.interactKind = 'workshop';
   } else if (room.kind === 'invent_lab') {
     wing.add(box(accent, 2.0, 1.1, 1.2, 0, 0.7, 1.2));
@@ -324,7 +447,7 @@ function addRoomWing(
       ),
     );
     wing.children[wing.children.length - 1]!.position.set(0.8, 1.5, 1.0);
-    out.interactLocal = new THREE.Vector3(room.lx, 1.15, room.lz + 1.9);
+    out.interactLocal = roomLocalPoint(room.lx, room.lz, room.yaw, 0, contentY + 1.15, 1.9);
     out.interactKind = 'invent_lab';
   } else if (room.kind === 'gallery') {
     wing.add(box(wood, 2.8, 1.6, 0.2, 0, 1.2, -2.2));
@@ -333,13 +456,10 @@ function addRoomWing(
     wing.add(box(wood, 1.6, 0.45, 0.8, 1.2, 0.4, -1.0));
   }
   g.add(wing);
-  // Rough local colliders (world transform later)
   for (const c of shell.colliders) {
-    cols.push({
-      min: c.min.clone().add(new THREE.Vector3(room.lx, 0, room.lz)),
-      max: c.max.clone().add(new THREE.Vector3(room.lx, 0, room.lz)),
-      kind: c.kind,
-    });
+    // Ground floor of wing is covered by home pad — keep upper floors + solids
+    if (c.kind === 'floor' && c.max.y < 1.0) continue;
+    cols.push(liftCollider(offsetYawCollider(c, room.lx, room.lz, room.yaw), contentY));
   }
   return out;
 }
@@ -349,14 +469,26 @@ export type HomeVisualBuilt = {
   colliders: Collider[];
   /** Door / manage interact */
   interactLocal: THREE.Vector3;
+  /** Interior décor interact (plot-local) */
+  decorateLocal: THREE.Vector3;
   /** Functional room interacts (local to plot) */
   roomInteracts: { kind: HomeRoomKind; local: THREE.Vector3 }[];
 };
 
+export type BuildHomeVisualOpts = {
+  /** Loud ENTRY cue (placement ghost). Built homes use a quieter mark. */
+  loudDoorCue?: boolean;
+};
+
 /** Build home at local origin (plot center). Caller sets group position/yaw. */
-export function buildHomeVisual(mats: Mats, layout: HomeLayout): HomeVisualBuilt {
+export function buildHomeVisual(
+  mats: Mats,
+  layout: HomeLayout,
+  opts?: BuildHomeVisualOpts,
+): HomeVisualBuilt {
   const g = new THREE.Group();
   g.name = 'PlayerHomeBuild';
+  g.userData.homeBuild = true;
   const cols: Collider[] = [];
   const tier = homeTierDef(layout.tier);
   const pal = HOME_COLORS[layout.color % HOME_COLORS.length]!;
@@ -376,62 +508,86 @@ export function buildHomeVisual(mats: Mats, layout: HomeLayout): HomeVisualBuilt
     metalness: 0.05,
   });
 
-  // Island pad grows with tier
-  g.add(box(woodM, tier.padW, 0.18, tier.padD, 0, 0.09, 0));
+  // Island pad grows with tier — thick walkable deck
+  g.add(box(woodM, tier.padW, HOME_PAD_THICK, tier.padD, 0, HOME_PAD_Y, 0));
   cols.push({
-    min: new THREE.Vector3(-tier.padW / 2, 0, -tier.padD / 2),
-    max: new THREE.Vector3(tier.padW / 2, 0.18, tier.padD / 2),
+    min: new THREE.Vector3(
+      -tier.padW / 2 - 0.15,
+      HOME_PAD_Y - HOME_PAD_THICK / 2 - 0.08,
+      -tier.padD / 2 - 0.15,
+    ),
+    max: new THREE.Vector3(tier.padW / 2 + 0.15, HOME_PAD_TOP, tier.padD / 2 + 0.15),
     kind: 'floor',
   });
+
+  const content = new THREE.Group();
+  content.name = 'HomeContent';
+  content.position.y = HOME_CONTENT_Y;
+  g.add(content);
+  const dy = HOME_CONTENT_Y;
 
   const main = buildEnterableShell('home', mats, {
     floors: tier.floors,
     color: pal.wood,
     label: layout.tier === 'island' ? 'YOUR ISLAND' : 'YOUR HOME',
   });
-  // Scale main shell roughly with pad (cottage uses default size)
-  const scale = layout.tier === 'cottage' ? 1 : layout.tier === 'house' ? 1.15 : layout.tier === 'manor' ? 1.35 : layout.tier === 'estate' ? 1.55 : 1.75;
+  const scale =
+    layout.tier === 'cottage'
+      ? 1
+      : layout.tier === 'house'
+        ? 1.15
+        : layout.tier === 'manor'
+          ? 1.35
+          : layout.tier === 'estate'
+            ? 1.55
+            : 1.75;
   main.group.scale.set(scale, 1, scale);
-  g.add(main.group);
+  content.add(main.group);
   for (const c of main.colliders) {
+    // Pad is the ground walk plane; keep upper floors + wall solids
+    if (c.kind === 'floor' && c.max.y < 1.0) continue;
     cols.push({
-      min: new THREE.Vector3(c.min.x * scale, c.min.y, c.min.z * scale),
-      max: new THREE.Vector3(c.max.x * scale, c.max.y, c.max.z * scale),
+      min: new THREE.Vector3(c.min.x * scale, c.min.y + dy, c.min.z * scale),
+      max: new THREE.Vector3(c.max.x * scale, c.max.y + dy, c.max.z * scale),
       kind: c.kind,
     });
   }
 
-  const roomInteracts: { kind: HomeRoomKind; local: THREE.Vector3 }[] = [];
-  const rooms = layout.rooms?.length
-    ? layout.rooms
-    : ([{ kind: 'living', lx: 0, lz: 0, yaw: 0 }] as HomeRoom[]);
+  const doorZ = main.doorWorld.z * scale;
+  addFrontDoorCue(content, doorZ, {
+    doorW: 2.6 * scale,
+    label: 'ENTRY',
+    loud: opts?.loudDoorCue !== false,
+    y: 0,
+  });
 
-  // Living is the main shell; other rooms become wings offset from center
+  const roomInteracts: { kind: HomeRoomKind; local: THREE.Vector3 }[] = [];
+  const rooms = resolveHomeRooms(
+    layout.rooms?.length ? layout.rooms : [{ kind: 'living', lx: 0, lz: 0, yaw: 0 }],
+    layout.tier,
+  );
+
   for (const room of rooms) {
     if (room.kind === 'living') continue;
-    const placed = { ...room };
-    // Auto-ring wings if still at origin
-    if (Math.abs(placed.lx) < 0.1 && Math.abs(placed.lz) < 0.1) {
-      const idx = rooms.filter((r) => r.kind !== 'living').indexOf(room);
-      const a = (idx / Math.max(1, rooms.length - 1)) * Math.PI * 2 - Math.PI / 2;
-      const rad = tier.padW * 0.28;
-      placed.lx = Math.cos(a) * rad;
-      placed.lz = Math.sin(a) * rad;
-    }
-    const info = addRoomWing(g, cols, placed, mats, woodM, accentM, clothM);
+    const info = addRoomWing(content, cols, room, mats, woodM, accentM, clothM, dy);
     if (info.interactLocal && info.interactKind) {
       roomInteracts.push({ kind: info.interactKind, local: info.interactLocal });
     }
   }
 
   for (const p of layout.props ?? []) {
-    addHomePropMesh(g, p.id, p.lx, p.lz, p.yaw, woodM, accentM, clothM);
+    addHomePropMesh(content, p.id, p.lx, p.lz, p.yaw, woodM, accentM, clothM);
   }
 
   return {
     group: g,
     colliders: cols,
-    interactLocal: new THREE.Vector3(0, 1.2, tier.padD * 0.28),
+    interactLocal: new THREE.Vector3(0, dy + 1.2, doorZ),
+    decorateLocal: new THREE.Vector3(
+      main.interiorSpot.x * scale,
+      dy + main.interiorSpot.y,
+      main.interiorSpot.z * scale,
+    ),
     roomInteracts,
   };
 }

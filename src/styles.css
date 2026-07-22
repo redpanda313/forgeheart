@@ -2429,6 +2429,7 @@ h1 {
 .mobile-controls.mobile-controls-dimmed .mobile-actions,
 .mobile-controls.mobile-controls-dimmed .mobile-look,
 .mobile-controls.mobile-controls-dimmed .mobile-util,
+.mobile-controls.mobile-controls-dimmed .mobile-site-rotate,
 .mobile-controls.mobile-controls-dimmed .mobile-tap-affordance {
   opacity: 0;
   pointer-events: none !important;
@@ -2548,6 +2549,27 @@ h1 {
   justify-content: flex-end;
   gap: 0.45rem;
   max-width: 240px;
+}
+
+.mobile-site-rotate {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  pointer-events: auto;
+}
+
+.mobile-site-rotate.hidden {
+  display: none !important;
+}
+
+.mobile-site-rotate .mobile-btn {
+  min-width: 52px;
+  min-height: 52px;
+  font-size: 1.35rem;
+  line-height: 1;
+  border-color: rgba(255, 200, 74, 0.95);
+  color: #ffe8a0;
 }
 
 .mobile-btn {
