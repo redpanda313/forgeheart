@@ -302,8 +302,8 @@ export const PROGRAM_NODE_DEFS: {
   },
   {
     id: 'craft_fine_frame',
-    name: 'Craft Masterwork Frame',
-    blurb: 'Fine craft · top fair price · Q2',
+    name: 'Assemble Fine Frame',
+    blurb: 'Auto-fill slots preferring polished / silk parts',
     category: 'craft',
   },
   {
