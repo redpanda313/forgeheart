@@ -2163,11 +2163,6 @@ export class ForgeHeartGame {
       const mode = this.gameMakerActive ? ' · maker' : '';
       label.textContent = `Slot ${this.activeSlot + 1} · ${lvl}${mode} · Esc to resume`;
     }
-    // Pause menu maker button visibility
-    const btnIn = document.getElementById('btn-game-maker');
-    const btnOut = document.getElementById('btn-exit-maker');
-    if (btnIn) btnIn.classList.toggle('hidden', this.gameMakerActive);
-    if (btnOut) btnOut.classList.toggle('hidden', !this.gameMakerActive);
 
     if (p) {
       if (this.makerPaletteOpen) this.setMakerPaletteOpen(false);
@@ -2303,8 +2298,8 @@ export class ForgeHeartGame {
     }
     if (this.megaCityActive) {
       return this.boardOwned || this.inv.playerBoard.owned
-        ? 'Stick · look · tap · Board · Bay · compass map · Jump · Pause'
-        : 'Stick · look · tap · Bay · compass map · Jump · Pause';
+        ? 'Stick · look · tap compass for map · Board · Bay · Jump · Pause'
+        : 'Stick · look · tap compass for map · Bay · Jump · Pause';
     }
     if (this.economyActive) {
       return this.boardOwned || this.inv.playerBoard.owned
@@ -2354,13 +2349,21 @@ export class ForgeHeartGame {
   private wireNavCompassTap() {
     const el = document.getElementById('nav-compass');
     if (!el || this.disposed) return;
+    const openMap = (ev: Event) => {
+      if (this.disposed || !this.megaCityActive) return;
+      // Desktop uses M; compass tap is the mobile map affordance (also works on desktop)
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.toggleCityMapFromMobile();
+    };
+    el.addEventListener('pointerup', openMap, { signal: this.sessionAbort.signal });
+    el.addEventListener('click', openMap, { signal: this.sessionAbort.signal });
     el.addEventListener(
-      'pointerdown',
+      'keydown',
       (ev) => {
-        if (!this.mobile.enabled || this.disposed) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        this.toggleCityMapFromMobile();
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          openMap(ev);
+        }
       },
       { signal: this.sessionAbort.signal },
     );
