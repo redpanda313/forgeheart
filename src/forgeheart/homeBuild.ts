@@ -476,7 +476,7 @@ export type HomeVisualBuilt = {
 };
 
 export type BuildHomeVisualOpts = {
-  /** Loud ENTRY cue (placement ghost). Built homes use a quieter mark. */
+  /** Show ENTRY doorway cue (site-builder ghost only). Omit/false on finalized homes. */
   loudDoorCue?: boolean;
 };
 
@@ -554,12 +554,15 @@ export function buildHomeVisual(
   }
 
   const doorZ = main.doorWorld.z * scale;
-  addFrontDoorCue(content, doorZ, {
-    doorW: 2.6 * scale,
-    label: 'ENTRY',
-    loud: opts?.loudDoorCue !== false,
-    y: 0,
-  });
+  // ENTRY arch only while aiming/placing — strip it after finalize
+  if (opts?.loudDoorCue) {
+    addFrontDoorCue(content, doorZ, {
+      doorW: 2.6 * scale,
+      label: 'ENTRY',
+      loud: true,
+      y: 0,
+    });
+  }
 
   const roomInteracts: { kind: HomeRoomKind; local: THREE.Vector3 }[] = [];
   const rooms = resolveHomeRooms(
