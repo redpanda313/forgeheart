@@ -398,6 +398,17 @@ function landmarkFromInteract(it: CityInteract): MapLandmark | null {
     case 'repair_job':
       // Covered by workshop hub pin
       return null;
+    case 'flower_pick':
+      return {
+        id: it.id,
+        kind: 'harvest',
+        label: 'Plaza flowers',
+        x,
+        z,
+        districtId: it.districtId,
+        tag: '❀',
+        blurb: it.label,
+      };
     case 'city_robot':
       // Map pin only while rogue/downed (marker mesh is shown then)
       if (!it.mesh.visible) return null;

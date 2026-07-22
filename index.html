@@ -229,17 +229,17 @@
         </div>
       </div>
       <div id="craft-panel" class="market-panel craft-panel hidden" aria-hidden="true">
-        <div class="market-card craft-card craft-card-wide">
+        <div class="market-card craft-card craft-card-wide craft-card-assembly">
           <header class="market-head">
             <div>
               <h3 id="craft-title">Bay Workbench</h3>
-              <p class="market-sub" id="craft-sub">Pick a filter · select a recipe · craft from the detail pane.</p>
+              <p class="market-sub" id="craft-sub">Recipes · or assemble a robot frame in five slots.</p>
             </div>
             <button type="button" id="craft-close" class="maker-close">×</button>
           </header>
           <p class="market-wallet" id="craft-wallet">Brass 0</p>
           <div id="craft-filters" class="ui-chips" role="tablist" aria-label="Recipe filters"></div>
-          <div class="craft-split">
+          <div id="craft-recipe-mode" class="craft-split">
             <div class="craft-list-col">
               <div id="craft-recipe-list" class="market-list craft-recipe-list"></div>
             </div>
@@ -254,8 +254,47 @@
               </div>
             </div>
           </div>
+          <div id="craft-frame-mode" class="craft-frame-mode hidden">
+            <div class="frame-parts-col">
+              <p class="frame-col-label">Parts</p>
+              <div id="frame-parts-list" class="frame-parts-list"></div>
+            </div>
+            <div class="frame-robot-col">
+              <p class="frame-col-label">Drop into the chassis</p>
+              <div id="frame-robot" class="frame-robot" aria-label="Robot frame slots">
+                <div class="frame-slot" data-frame-slot="power" data-place="power">
+                  <span class="frame-slot-label">Power</span>
+                  <span class="frame-slot-fill" data-slot-fill="power">Empty</span>
+                </div>
+                <div class="frame-slot" data-frame-slot="wiring" data-place="wiring">
+                  <span class="frame-slot-label">Wiring</span>
+                  <span class="frame-slot-fill" data-slot-fill="wiring">Empty</span>
+                </div>
+                <div class="frame-slot" data-frame-slot="chassis" data-place="chassis">
+                  <span class="frame-slot-label">Chassis</span>
+                  <span class="frame-slot-fill" data-slot-fill="chassis">Empty</span>
+                </div>
+                <div class="frame-slot" data-frame-slot="mechanisms" data-place="mechanisms">
+                  <span class="frame-slot-label">Mechanisms</span>
+                  <span class="frame-slot-fill" data-slot-fill="mechanisms">Empty</span>
+                </div>
+                <div class="frame-slot" data-frame-slot="personality" data-place="personality">
+                  <span class="frame-slot-label">Personality</span>
+                  <span class="frame-slot-fill" data-slot-fill="personality">Empty</span>
+                </div>
+              </div>
+            </div>
+            <div class="frame-preview-col">
+              <p class="frame-col-label">Preview</p>
+              <h4 id="frame-preview-name">—</h4>
+              <p id="frame-preview-stats" class="frame-preview-stats"></p>
+              <p id="frame-preview-reason" class="craft-detail-reason"></p>
+              <button type="button" id="frame-assemble-btn" class="craft-do-btn">Assemble frame</button>
+              <div id="frame-stock-list" class="frame-stock-list"></div>
+            </div>
+          </div>
           <p class="market-log" id="craft-log"></p>
-          <p class="craft-hint">Ready = craftable now. Frames sell at the Frame Broker (75 brass).</p>
+          <p class="craft-hint">Frames: drag parts into the five slots. Better parts → better names, sell price, and robots.</p>
         </div>
       </div>
       <div id="bay-panel" class="market-panel bay-panel hidden" aria-hidden="true">

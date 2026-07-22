@@ -63,6 +63,18 @@ import {
   type CityNpc,
   type CityRobotJobId,
 } from './skyCity';
+import {
+  assembleFrame,
+  canAssembleFrame,
+  evaluateFrameSlots,
+  FRAME_SLOT_IDS,
+  listPartsForSlot,
+  partRefLabel,
+  slotAccepts,
+  type FramePartRef,
+  type FrameSlotFill,
+  type FrameSlotId,
+} from './frameAssembly';
 import { SpatialColliderGrid } from './spatialGrid';
 import { CityStreamer } from './cityStreamer';
 import { perfStats } from './perfStats';
@@ -125,12 +137,14 @@ import {
   tickAllPassiveWorkers,
   applyHarvestSuccess,
   DEFAULT_HARVEST_POOL,
+  addItem,
   leaseStall,
   leaseCityStall,
   toggleStallOpen,
   toggleCityStallOpen,
   stockStallFromInv,
   stockInventionOnStall,
+  stockAssembledFrameOnStall,
   ensureCityStall,
   raiseWorkerPay,
   hireCost,
@@ -387,6 +401,10 @@ export class ForgeHeartGame {
   private craftFilter: 'ready' | 'basics' | 'tools' | 'frames' | 'invent' | 'all' = 'ready';
   /** Selected recipe id, or `custom:${id}` for inventions */
   private craftSelectedId: string | null = null;
+  /** Slot fill for robot frame assembly UI */
+  private frameSlots: FrameSlotFill = {};
+  private frameDragRef: FramePartRef | null = null;
+  private frameUiWired = false;
   private bayOpen = false;
   private boardShopOpen = false;
   private storageOpen = false;
@@ -4516,6 +4534,22 @@ export class ForgeHeartGame {
       });
       return true;
     }
+    if (it.kind === 'flower_pick') {
+      const pool = it.harvestPool?.length
+        ? it.harvestPool
+        : (['bloom_sky', 'bloom_brass', 'flower_gift'] as CommodityId[]);
+      const id = pool[Math.floor(Math.random() * pool.length)]!;
+      const n = 1 + (Math.random() < 0.35 ? 1 : 0);
+      if (!addItem(this.inv, id, n)) {
+        this.toast('Pack full for those blooms.', 2.5);
+        return true;
+      }
+      this.toast(`Picked ${n}× ${COMMODITIES[id].name} · personality for frames.`, 3);
+      this.audio.playPickup();
+      writeSlot(this.activeSlot, this.buildSaveData());
+      this.syncEconomyHud();
+      return true;
+    }
     if (it.kind === 'broker') {
       const r = sellFrameToBroker(this.inv);
       this.toast(r.msg, 3);
@@ -6299,6 +6333,7 @@ export class ForgeHeartGame {
     this.craftOpen = true;
     this.craftFilter = 'ready';
     this.craftSelectedId = null;
+    this.frameSlots = {};
     const panel = document.getElementById('craft-panel');
     const wallet = document.getElementById('craft-wallet');
     const log = document.getElementById('craft-log');
@@ -6309,10 +6344,11 @@ export class ForgeHeartGame {
     if (log) log.textContent = '';
     if (sub) {
       sub.textContent = this.inv.parcelLeased
-        ? 'Filter → select → craft. Ready shows what you can make now.'
+        ? 'Filter → craft · Frames tab = five-slot chassis assembly.'
         : 'Lease a bay at the Lease Office before crafting.';
     }
     this.wireCraftDoButton();
+    this.wireFrameAssemblyUi();
     this.fillCraftUi();
     panel?.classList.remove('hidden');
     panel?.setAttribute('aria-hidden', 'false');
@@ -6345,8 +6381,60 @@ export class ForgeHeartGame {
     );
   }
 
+  private wireFrameAssemblyUi() {
+    if (this.frameUiWired || this.disposed) return;
+    this.frameUiWired = true;
+    const assembleBtn = document.getElementById('frame-assemble-btn');
+    assembleBtn?.addEventListener(
+      'click',
+      () => {
+        if (this.disposed) return;
+        this.doAssembleFrame();
+      },
+      { signal: this.sessionAbort.signal },
+    );
+    for (const slot of FRAME_SLOT_IDS) {
+      const el = document.querySelector(`[data-frame-slot="${slot}"]`);
+      if (!el) continue;
+      el.addEventListener(
+        'dragover',
+        (ev) => {
+          ev.preventDefault();
+          el.classList.add('drag-over');
+        },
+        { signal: this.sessionAbort.signal },
+      );
+      el.addEventListener(
+        'dragleave',
+        () => el.classList.remove('drag-over'),
+        { signal: this.sessionAbort.signal },
+      );
+      el.addEventListener(
+        'drop',
+        (ev) => {
+          ev.preventDefault();
+          el.classList.remove('drag-over');
+          const ref = (ev as DragEvent).dataTransfer?.getData('text/plain') || this.frameDragRef;
+          if (!ref) return;
+          this.placeFramePart(slot, ref as FramePartRef);
+        },
+        { signal: this.sessionAbort.signal },
+      );
+      el.addEventListener(
+        'click',
+        () => {
+          // Click-to-clear a filled slot
+          if (this.frameSlots[slot]) {
+            this.frameSlots[slot] = null;
+            this.fillFrameAssemblyUi();
+          }
+        },
+        { signal: this.sessionAbort.signal },
+      );
+    }
+  }
+
   private recipeCategory(recipe: Recipe): 'basics' | 'tools' | 'frames' {
-    if (recipe.id === 'basic_frame' || recipe.id === 'fine_frame') return 'frames';
     if (
       recipe.id === 'speed_tool' ||
       recipe.id === 'haul_pack' ||
@@ -6398,12 +6486,22 @@ export class ForgeHeartGame {
   }
 
   private fillCraftUi() {
+    const recipeMode = document.getElementById('craft-recipe-mode');
+    const frameMode = document.getElementById('craft-frame-mode');
+    const frames = this.craftFilter === 'frames';
+    recipeMode?.classList.toggle('hidden', frames);
+    frameMode?.classList.toggle('hidden', !frames);
     this.fillCraftFilters();
-    this.fillCraftList();
-    this.fillCraftDetail();
+    if (frames) {
+      this.fillFrameAssemblyUi();
+    } else {
+      this.fillCraftList();
+      this.fillCraftDetail();
+    }
     const wallet = document.getElementById('craft-wallet');
     if (wallet) {
-      wallet.textContent = `Brass ${this.inv.brass} · ${bayLevelName(this.inv.bayLevel)}`;
+      const framesN = this.inv.assembledFrames?.length ?? 0;
+      wallet.textContent = `Brass ${this.inv.brass} · ${bayLevelName(this.inv.bayLevel)} · Frames ${framesN}`;
     }
   }
 
@@ -6413,12 +6511,13 @@ export class ForgeHeartGame {
     const entries = this.craftEntries();
     const readyN = entries.filter((e) => e.ready).length;
     const inventN = this.inv.customRecipes.length;
+    const framesN = this.inv.assembledFrames?.length ?? 0;
     type CraftFilter = 'ready' | 'basics' | 'tools' | 'frames' | 'invent' | 'all';
     const chips: { id: CraftFilter; label: string; disabled?: boolean }[] = [
       { id: 'ready', label: `Ready (${readyN})` },
       { id: 'basics', label: 'Basics' },
       { id: 'tools', label: 'Tools' },
-      { id: 'frames', label: 'Frames' },
+      { id: 'frames', label: framesN ? `Frames (${framesN})` : 'Frames' },
       { id: 'invent', label: inventN ? `Invent (${inventN})` : 'Invent', disabled: inventN === 0 },
       { id: 'all', label: 'All' },
     ];
@@ -6437,6 +6536,133 @@ export class ForgeHeartGame {
     }
   }
 
+  private placeFramePart(slot: FrameSlotId, ref: FramePartRef) {
+    if (!slotAccepts(this.inv, slot, ref)) {
+      const log = document.getElementById('craft-log');
+      if (log) log.textContent = `${partRefLabel(this.inv, ref)} doesn’t fit ${slot}.`;
+      return;
+    }
+    this.frameSlots[slot] = ref;
+    this.fillFrameAssemblyUi();
+  }
+
+  private fillFrameAssemblyUi() {
+    const partsEl = document.getElementById('frame-parts-list');
+    if (partsEl) {
+      partsEl.innerHTML = '';
+      const seen = new Set<string>();
+      for (const slot of FRAME_SLOT_IDS) {
+        for (const ref of listPartsForSlot(this.inv, slot)) {
+          if (seen.has(ref)) continue;
+          seen.add(ref);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'frame-part';
+          btn.draggable = true;
+          const label = partRefLabel(this.inv, ref);
+          const qty = ref.startsWith('custom:')
+            ? this.inv.customStock[ref.slice(7)] ?? 0
+            : this.inv.items[ref as CommodityId] ?? 0;
+          btn.innerHTML = `<span>${label}</span><span class="qty">×${qty}</span>`;
+          btn.title = `Drag onto a slot · used in ${FRAME_SLOT_IDS.filter((s) => slotAccepts(this.inv, s, ref)).join(', ')}`;
+          btn.addEventListener('dragstart', (ev) => {
+            this.frameDragRef = ref;
+            ev.dataTransfer?.setData('text/plain', ref);
+            ev.dataTransfer!.effectAllowed = 'copy';
+          });
+          btn.addEventListener('click', () => {
+            // Click-fill: place into first empty accepting slot
+            const target = FRAME_SLOT_IDS.find((s) => !this.frameSlots[s] && slotAccepts(this.inv, s, ref));
+            if (target) this.placeFramePart(target, ref);
+          });
+          partsEl.appendChild(btn);
+        }
+      }
+      if (!seen.size) {
+        const p = document.createElement('p');
+        p.className = 'craft-hint';
+        p.textContent = 'No parts yet — harvest, craft wire/gears/fuel, pick plaza flowers.';
+        partsEl.appendChild(p);
+      }
+    }
+
+    for (const slot of FRAME_SLOT_IDS) {
+      const fillEl = document.querySelector(`[data-slot-fill="${slot}"]`);
+      const slotEl = document.querySelector(`[data-frame-slot="${slot}"]`);
+      const ref = this.frameSlots[slot];
+      if (fillEl) {
+        fillEl.textContent = ref ? partRefLabel(this.inv, ref) : 'Empty';
+      }
+      slotEl?.classList.toggle('filled', !!ref);
+    }
+
+    const nameEl = document.getElementById('frame-preview-name');
+    const statsEl = document.getElementById('frame-preview-stats');
+    const reasonEl = document.getElementById('frame-preview-reason');
+    const assembleBtn = document.getElementById('frame-assemble-btn') as HTMLButtonElement | null;
+    const complete = FRAME_SLOT_IDS.every((s) => !!this.frameSlots[s]);
+    if (complete) {
+      const slots = {
+        chassis: this.frameSlots.chassis!,
+        mechanisms: this.frameSlots.mechanisms!,
+        power: this.frameSlots.power!,
+        wiring: this.frameSlots.wiring!,
+        personality: this.frameSlots.personality!,
+      };
+      const preview = evaluateFrameSlots(this.inv, slots);
+      if (nameEl) nameEl.textContent = preview.name;
+      if (statsEl) {
+        statsEl.textContent = `Sell ${preview.sellValue}b · Q${preview.quality.toFixed(2)} · speed ×${preview.speedMul.toFixed(2)} · harvest ×${preview.harvestMul.toFixed(2)} · program +${preview.programNodeBonus}`;
+      }
+      if (reasonEl) {
+        reasonEl.textContent = canAssembleFrame(this.inv, this.frameSlots)
+          ? 'Ready to assemble.'
+          : 'Missing stock for a duplicated part.';
+      }
+      if (assembleBtn) {
+        assembleBtn.disabled = !canAssembleFrame(this.inv, this.frameSlots);
+      }
+    } else {
+      if (nameEl) nameEl.textContent = 'Fill all five slots';
+      if (statsEl) statsEl.textContent = 'Power · Wiring · Chassis · Mechanisms · Personality (flowers)';
+      if (reasonEl) reasonEl.textContent = 'Drag parts from the list, or click a part to auto-place.';
+      if (assembleBtn) assembleBtn.disabled = true;
+    }
+
+    const stock = document.getElementById('frame-stock-list');
+    if (stock) {
+      stock.innerHTML = '';
+      const frames = this.inv.assembledFrames ?? [];
+      if (!frames.length) {
+        stock.textContent = 'No assembled frames in bay yet.';
+      } else {
+        const h = document.createElement('p');
+        h.className = 'frame-col-label';
+        h.textContent = `Bay frames (${frames.length})`;
+        stock.appendChild(h);
+        for (const f of [...frames].sort((a, b) => b.sellValue - a.sellValue).slice(0, 8)) {
+          const row = document.createElement('div');
+          row.textContent = `${f.name} · ${f.sellValue}b · Q${f.quality.toFixed(2)}`;
+          stock.appendChild(row);
+        }
+      }
+    }
+  }
+
+  private doAssembleFrame() {
+    const r = assembleFrame(this.inv, this.frameSlots);
+    const log = document.getElementById('craft-log');
+    if (log) log.textContent = r.msg;
+    if (r.ok) {
+      this.frameSlots = {};
+      this.audio.playPickup();
+      this.brass = this.inv.brass;
+      writeSlot(this.activeSlot, this.buildSaveData());
+      this.syncEconomyHud();
+    }
+    this.fillCraftUi();
+  }
+
   private filteredCraftEntries() {
     const all = this.craftEntries();
     switch (this.craftFilter) {
@@ -6447,7 +6673,7 @@ export class ForgeHeartGame {
       case 'tools':
         return all.filter((e) => e.kind === 'recipe' && this.recipeCategory(e.recipe!) === 'tools');
       case 'frames':
-        return all.filter((e) => e.kind === 'recipe' && this.recipeCategory(e.recipe!) === 'frames');
+        return [];
       case 'invent':
         return all.filter((e) => e.kind === 'custom');
       default:
@@ -6707,6 +6933,12 @@ export class ForgeHeartGame {
         row.appendChild(sell);
         invEl.appendChild(row);
       }
+      for (const f of this.inv.assembledFrames ?? []) {
+        const row = document.createElement('div');
+        row.className = 'bay-inv-row';
+        row.textContent = `Frame · ${f.name} · ${f.sellValue}b · Q${f.quality.toFixed(2)}`;
+        invEl.appendChild(row);
+      }
       if (this.inv.playerBoard.owned) {
         const row = document.createElement('div');
         row.className = 'bay-inv-row';
@@ -6756,7 +6988,8 @@ export class ForgeHeartGame {
           .join(' · ');
         const kindTag =
           w.kind === 'robot' ? (w.hasMedallion ? ' · ★ Elias host' : ' · ⚙ robot') : '';
-        card.innerHTML = `<strong>${w.name}</strong>${kindTag} · pay grade ${pg}
+        const frameTag = w.frameName ? ` · ${w.frameName} (Q${(w.frameQuality ?? 1).toFixed(2)})` : '';
+        card.innerHTML = `<strong>${w.name}</strong>${kindTag}${frameTag} · pay grade ${pg}
           <span class="bay-worker-status">Doing: ${assignment}</span>
           <span class="bay-worker-meta">Gear: ${gear || 'none'} · jobs done ${w.jobsDone ?? 0}</span>`;
         const actions = document.createElement('div');
@@ -8141,12 +8374,19 @@ export class ForgeHeartGame {
       shelf.innerHTML = '';
       const entries = Object.entries(stall.shelf).filter(([, n]) => (n ?? 0) > 0);
       const inventEntries = Object.entries(stall.customShelf ?? {}).filter(([, n]) => (n ?? 0) > 0);
+      const frameEntries = stall.frameShelf ?? [];
       if (!stall.owned) {
         shelf.innerHTML = '<p class="craft-hint">Lease the stall to stock a shelf.</p>';
-      } else if (entries.length === 0 && inventEntries.length === 0) {
+      } else if (entries.length === 0 && inventEntries.length === 0 && frameEntries.length === 0) {
         shelf.innerHTML =
-          '<p class="craft-hint">Shelf empty — stock goods/inventions below. Premium plazas pay invent bonus.</p>';
+          '<p class="craft-hint">Shelf empty — stock goods, assembled frames, or inventions.</p>';
       } else {
+        for (const f of frameEntries) {
+          const row = document.createElement('div');
+          row.className = 'stall-price-card';
+          row.innerHTML = `<div class="stall-price-head"><strong>${f.name}</strong><span>~${f.sellValue}b · Q${f.quality.toFixed(2)}</span></div>`;
+          shelf.appendChild(row);
+        }
         for (const [cid, n] of entries) {
           const id = cid as CommodityId;
           const fair = fairStallPrice(id, this.inv);
@@ -8206,15 +8446,33 @@ export class ForgeHeartGame {
       stockBtns.innerHTML = '';
       if (!stall.owned) return;
       const opts: { id: CommodityId; n: number; label: string }[] = [
-        { id: 'basic_frame', n: 1, label: 'Frame ×1' },
-        { id: 'fine_frame', n: 1, label: 'Masterwork ×1' },
         { id: 'polished_wire', n: 2, label: 'Polished wire ×2' },
         { id: 'wire', n: 3, label: 'Wire ×3' },
         { id: 'scrap_brass', n: 5, label: 'Scrap ×5' },
         { id: 'cloud_iron', n: 3, label: 'Iron ×3' },
         { id: 'gear_blank', n: 2, label: 'Gear ×2' },
         { id: 'repair_kit', n: 2, label: 'Kit ×2' },
+        { id: 'bloom_sky', n: 2, label: 'Skyblooms ×2' },
       ];
+      // Assembled frames
+      {
+        const b = document.createElement('button');
+        b.type = 'button';
+        const have = this.inv.assembledFrames?.length ?? 0;
+        b.textContent = `Assembled frame ×1 (have ${have})`;
+        b.disabled = have < 1;
+        b.addEventListener('click', () => {
+          const r = stockAssembledFrameOnStall(this.inv, undefined, stall);
+          this.stallLog(r.msg);
+          if (r.ok) {
+            this.audio.playPickup();
+            writeSlot(this.activeSlot, this.buildSaveData());
+          }
+          this.fillStallPanel();
+          this.syncEconomyHud();
+        });
+        stockBtns.appendChild(b);
+      }
       for (const o of opts) {
         const b = document.createElement('button');
         b.type = 'button';

@@ -1442,6 +1442,150 @@ h1 {
   color: #6a7a8a;
   line-height: 1.35;
 }
+
+/* Slot-based robot frame assembly */
+.craft-card-assembly {
+  width: min(780px, 97vw);
+}
+.craft-frame-mode {
+  display: grid;
+  grid-template-columns: 0.9fr 1.2fr 0.95fr;
+  gap: 0.65rem;
+  min-height: 14rem;
+}
+.craft-frame-mode.hidden {
+  display: none !important;
+}
+@media (max-width: 700px) {
+  .craft-frame-mode {
+    grid-template-columns: 1fr;
+  }
+}
+.frame-col-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #7a90a8;
+}
+.frame-parts-list {
+  max-height: 38vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+.frame-part {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid #2a4055;
+  background: #0c1826;
+  color: #d8e6f4;
+  font-size: 0.74rem;
+  cursor: grab;
+  text-align: left;
+}
+.frame-part:active {
+  cursor: grabbing;
+}
+.frame-part .qty {
+  color: #66ccaa;
+  flex-shrink: 0;
+}
+.frame-robot {
+  position: relative;
+  min-height: 220px;
+  border: 1px solid #2a4055;
+  background:
+    radial-gradient(circle at 50% 42%, #1a3048 0%, #0a1420 70%),
+    #081018;
+  display: grid;
+  grid-template-areas:
+    '. power .'
+    'wiring chassis mechanisms'
+    '. personality .';
+  grid-template-columns: 1fr 1.15fr 1fr;
+  grid-template-rows: 1fr 1.2fr 1fr;
+  gap: 0.4rem;
+  padding: 0.55rem;
+}
+.frame-slot[data-place='power'] {
+  grid-area: power;
+}
+.frame-slot[data-place='wiring'] {
+  grid-area: wiring;
+}
+.frame-slot[data-place='chassis'] {
+  grid-area: chassis;
+}
+.frame-slot[data-place='mechanisms'] {
+  grid-area: mechanisms;
+}
+.frame-slot[data-place='personality'] {
+  grid-area: personality;
+}
+.frame-slot {
+  border: 1px dashed #3a5870;
+  background: rgba(20, 40, 60, 0.65);
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 0.15rem;
+  min-height: 3.2rem;
+  transition: border-color 0.15s, background 0.15s;
+}
+.frame-slot.drag-over {
+  border-color: #88d0f0;
+  background: rgba(40, 80, 110, 0.75);
+}
+.frame-slot.filled {
+  border-style: solid;
+  border-color: #4a8a6a;
+}
+.frame-slot-label {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8aa0b8;
+}
+.frame-slot-fill {
+  font-size: 0.72rem;
+  color: #e8f0f8;
+  text-align: center;
+  line-height: 1.25;
+}
+.frame-preview-col {
+  border: 1px solid #2a4055;
+  background: #0a1828;
+  padding: 0.55rem 0.65rem;
+}
+.frame-preview-col h4 {
+  margin: 0.2rem 0 0.4rem;
+  color: #a8e0ff;
+  font-size: 0.9rem;
+  line-height: 1.25;
+}
+.frame-preview-stats {
+  margin: 0 0 0.5rem;
+  font-size: 0.72rem;
+  color: #9ab0c4;
+  line-height: 1.4;
+}
+.frame-stock-list {
+  margin-top: 0.55rem;
+  max-height: 8rem;
+  overflow: auto;
+  font-size: 0.68rem;
+  color: #8aa0b8;
+}
+.frame-stock-list div {
+  padding: 0.2rem 0;
+  border-bottom: 1px solid #1a2a3a;
+}
 .program-add-split {
   display: grid;
   grid-template-columns: 1fr 0.9fr;
