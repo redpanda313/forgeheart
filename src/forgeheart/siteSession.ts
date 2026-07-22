@@ -51,6 +51,8 @@ export type SiteSession = {
   props: SiteProp[];
   /** Active prop tool id (null = not placing) */
   activePropId: string | null;
+  /** Local yaw for the item currently being aimed (prop / room wing) */
+  placeYaw: number;
 };
 
 export function defaultSiteSession(opts: {
@@ -118,6 +120,7 @@ export function defaultSiteSession(opts: {
           ? [...(home!.props ?? [])]
           : [],
     activePropId: null,
+    placeYaw: 0,
   };
 }
 
