@@ -68,6 +68,7 @@ import {
   canAssembleFrame,
   evaluateFrameSlots,
   FRAME_SLOT_IDS,
+  inventionFrameSlots,
   listPartsForSlot,
   partRefLabel,
   slotAccepts,
@@ -128,6 +129,8 @@ import {
   equipWorkerBoard,
   equipWorkerTool,
   inventCustomRecipe,
+  INVENT_MATERIAL_IDS,
+  inventSlotBlurb,
   buyPlayerBoard,
   upgradePlayerBoard,
   sellCustomToVendor,
@@ -7091,7 +7094,7 @@ export class ForgeHeartGame {
         const intro = document.createElement('p');
         intro.className = 'craft-hint';
         intro.textContent =
-          'Market cycle: invent → craft at workbench → stock multi-plaza stalls (premium plazas pay invent bonus). Lab fee rises with each prototype.';
+          'Invent from two mats → craft → use in frame slots that match those mats (gear→Mechanisms, wire→Wiring, fuel→Power, metals→Chassis) or stock stalls.';
         invnEl.appendChild(intro);
         const row = document.createElement('div');
         row.className = 'bay-invent-row';
@@ -7099,14 +7102,7 @@ export class ForgeHeartGame {
         a.id = 'invent-a';
         const b = document.createElement('select');
         b.id = 'invent-b';
-        const mats: CommodityId[] = [
-          'cloud_iron',
-          'scrap_brass',
-          'spore_silk',
-          'sky_salt',
-          'wire',
-          'gear_blank',
-        ];
+        const mats: CommodityId[] = [...INVENT_MATERIAL_IDS];
         for (const id of mats) {
           for (const sel of [a, b]) {
             const o = document.createElement('option');
@@ -7115,7 +7111,17 @@ export class ForgeHeartGame {
             sel.appendChild(o);
           }
         }
-        b.selectedIndex = 1;
+        // Default to gear + wire so new players see Mechanisms + Wiring inventions
+        a.value = 'gear_blank';
+        b.value = 'wire';
+        const fitHint = document.createElement('p');
+        fitHint.className = 'craft-hint';
+        const syncFitHint = () => {
+          fitHint.textContent = `Will fit: ${inventSlotBlurb(a.value as CommodityId, b.value as CommodityId)}`;
+        };
+        a.addEventListener('change', syncFitHint);
+        b.addEventListener('change', syncFitHint);
+        syncFitHint();
         const go = document.createElement('button');
         go.type = 'button';
         go.textContent = 'Prototype invention (2 of each + lab fee)';
@@ -7140,11 +7146,22 @@ export class ForgeHeartGame {
         row.appendChild(b);
         row.appendChild(go);
         invnEl.appendChild(row);
+        invnEl.appendChild(fitHint);
         for (const cr of this.inv.customRecipes) {
           const d = document.createElement('div');
           d.className = 'bay-inv-row';
           const stock = this.inv.customStock[cr.id] ?? 0;
-          d.textContent = `Book: ${cr.name} Q${cr.quality ?? 1} · sells ~${cr.sellValue}b · stock ${stock} · ${cr.inputs
+          const slotLabels: Record<string, string> = {
+            chassis: 'Chassis',
+            mechanisms: 'Mechanisms',
+            power: 'Power',
+            wiring: 'Wiring',
+            personality: 'Personality',
+          };
+          const fits = inventionFrameSlots(cr)
+            .map((s) => slotLabels[s] ?? s)
+            .join(' · ');
+          d.textContent = `Book: ${cr.name} Q${cr.quality ?? 1} · ~${cr.sellValue}b · stock ${stock} · fits ${fits} · ${cr.inputs
             .map((i) => COMMODITIES[i.id].name)
             .join(' + ')}`;
           invnEl.appendChild(d);

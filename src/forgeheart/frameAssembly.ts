@@ -157,8 +157,7 @@ export function slotAccepts(inv: InventoryState, slot: FrameSlotId, ref: FramePa
     if (!recipe) return false;
     const stock = inv.customStock[recipe.id] ?? 0;
     if (stock < 1) return false;
-    // Inventions can feed Power (experimental supplies) or Chassis (body patents later → power for now)
-    return slot === 'power' || slot === 'chassis';
+    return inventionFitsSlot(recipe, slot);
   }
   if (getQty(inv, ref) < 1) return false;
   if (slot === 'chassis') return CHASSIS_PARTS.includes(ref);
@@ -167,6 +166,45 @@ export function slotAccepts(inv: InventoryState, slot: FrameSlotId, ref: FramePa
   if (slot === 'wiring') return WIRING_PARTS.includes(ref);
   if (slot === 'personality') return PERSONALITY_PARTS.includes(ref);
   return false;
+}
+
+/**
+ * Which frame slots an invention can fill — driven by the materials it was
+ * prototyped from (gear → mechanisms, wire → wiring, etc.).
+ */
+export function inventionFrameSlots(recipe: {
+  inputs: { id: CommodityId; n: number }[];
+}): FrameSlotId[] {
+  const slots = new Set<FrameSlotId>();
+  for (const inp of recipe.inputs) {
+    const id = inp.id;
+    if (id === 'gear_blank') slots.add('mechanisms');
+    if (id === 'wire' || id === 'polished_wire') slots.add('wiring');
+    if (id === 'fuel_cell') slots.add('power');
+    if (
+      id === 'cloud_iron' ||
+      id === 'scrap_brass' ||
+      id === 'spore_silk' ||
+      id === 'sky_salt' ||
+      id === 'glass_pane'
+    ) {
+      slots.add('chassis');
+    }
+    if (isFlowerCommodity(id)) slots.add('personality');
+  }
+  // Odd / pure-mat combos still usable as body or experimental power
+  if (slots.size === 0) {
+    slots.add('chassis');
+    slots.add('power');
+  }
+  return FRAME_SLOT_IDS.filter((s) => slots.has(s));
+}
+
+export function inventionFitsSlot(
+  recipe: { inputs: { id: CommodityId; n: number }[] },
+  slot: FrameSlotId,
+): boolean {
+  return inventionFrameSlots(recipe).includes(slot);
 }
 
 export function listPartsForSlot(inv: InventoryState, slot: FrameSlotId): FramePartRef[] {
@@ -184,12 +222,10 @@ export function listPartsForSlot(inv: InventoryState, slot: FrameSlotId): FrameP
   for (const id of pool) {
     if (getQty(inv, id) > 0) out.push(id);
   }
-  if (slot === 'power' || slot === 'chassis') {
-    for (const recipe of inv.customRecipes) {
-      if ((inv.customStock[recipe.id] ?? 0) > 0) {
-        out.push(`custom:${recipe.id}`);
-      }
-    }
+  // Inventions appear only in slots their ingredients qualify for
+  for (const recipe of inv.customRecipes) {
+    if ((inv.customStock[recipe.id] ?? 0) < 1) continue;
+    if (inventionFitsSlot(recipe, slot)) out.push(`custom:${recipe.id}`);
   }
   return out;
 }
