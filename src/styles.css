@@ -242,6 +242,16 @@ h1 {
   gap: 0.6rem;
   overflow-y: auto;
 }
+.city-map-side-toggle {
+  display: none;
+}
+.city-map-side-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-height: 0;
+  flex: 1;
+}
 .city-map-legend {
   display: flex;
   flex-direction: column;
@@ -2723,6 +2733,143 @@ h1 {
 
 .forgeheart-mobile .nav-compass-map-hint {
   display: block;
+}
+
+/* Portrait / narrow phones: map dominates; side panel is a slim bottom drawer */
+@media (max-width: 720px), ((max-height: 780px) and (orientation: portrait)) {
+  .city-map-panel {
+    align-items: stretch;
+    justify-content: stretch;
+    background: rgba(5, 10, 18, 0.88);
+  }
+  .city-map-card {
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+  .city-map-head {
+    padding: 0.45rem 0.65rem 0.35rem;
+    flex-shrink: 0;
+  }
+  .city-map-head h3 {
+    font-size: 0.85rem;
+    letter-spacing: 0.08em;
+  }
+  .city-map-sub {
+    display: none;
+  }
+  .city-map-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .city-map-canvas {
+    min-height: 52vh;
+  }
+  .city-map-tools {
+    top: 0.35rem;
+    left: 0.35rem;
+    right: 0.35rem;
+    max-width: none;
+  }
+  .city-map-tools button {
+    font-size: 0.7rem;
+    padding: 0.35rem 0.5rem;
+  }
+  .city-map-side {
+    border-left: none;
+    border-top: 1px solid rgba(196, 163, 90, 0.35);
+    padding: 0.35rem 0.55rem 0.55rem;
+    gap: 0.35rem;
+    max-height: none;
+    overflow: hidden;
+    background: rgba(8, 14, 22, 0.96);
+  }
+  .city-map-side-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    appearance: none;
+    border: 1px solid rgba(196, 163, 90, 0.45);
+    background: rgba(20, 32, 44, 0.95);
+    color: #f0e0b0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.45rem 0.65rem;
+    border-radius: 4px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .city-map-side-toggle::after {
+    content: '▴';
+    font-size: 0.85rem;
+    opacity: 0.85;
+  }
+  .city-map-side.expanded .city-map-side-toggle::after {
+    content: '▾';
+  }
+  /* Collapsed (default): only toggle + one-line detail */
+  .city-map-side:not(.expanded) .city-map-side-main {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+  .city-map-side:not(.expanded) .city-map-legend,
+  .city-map-side:not(.expanded) .city-map-filters,
+  .city-map-side:not(.expanded) .city-map-places,
+  .city-map-side:not(.expanded) .city-map-attn {
+    display: none !important;
+  }
+  .city-map-side:not(.expanded) .city-map-detail {
+    min-height: 0;
+    max-height: 2.6em;
+    overflow: hidden;
+    font-size: 0.68rem;
+    margin: 0;
+    opacity: 0.9;
+  }
+  /* Expanded drawer: ~40% height for list browsing */
+  .city-map-side.expanded {
+    max-height: min(42vh, 320px);
+    overflow: hidden;
+  }
+  .city-map-side.expanded .city-map-side-main {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .city-map-side.expanded .city-map-legend {
+    display: none; /* still hide bulky legend on phone */
+  }
+  .city-map-side.expanded .city-map-detail {
+    min-height: 0;
+    max-height: 3.2em;
+    overflow: auto;
+    font-size: 0.7rem;
+  }
+  .city-map-side.expanded .city-map-filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    gap: 0.3rem;
+    padding-bottom: 0.15rem;
+  }
+  .city-map-side.expanded .city-map-filters button {
+    flex: 0 0 auto;
+    font-size: 0.68rem;
+    padding: 0.32rem 0.55rem;
+  }
+  .city-map-side.expanded .city-map-places {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+  }
 }
 
 .mobile-title-hint {

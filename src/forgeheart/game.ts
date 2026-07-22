@@ -6296,6 +6296,19 @@ export class ForgeHeartGame {
       },
       { signal: sig },
     );
+    document.getElementById('city-map-side-toggle')?.addEventListener(
+      'click',
+      () => {
+        const side = document.getElementById('city-map-side');
+        const btn = document.getElementById('city-map-side-toggle');
+        if (!side || !btn) return;
+        const open = !side.classList.contains('expanded');
+        side.classList.toggle('expanded', open);
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        btn.textContent = open ? 'Places · hide' : 'Places';
+      },
+      { signal: sig },
+    );
     document.getElementById('city-map-filters')?.addEventListener(
       'click',
       (ev) => {
@@ -6485,13 +6498,23 @@ export class ForgeHeartGame {
     const panel = document.getElementById('city-map-panel');
     panel?.classList.remove('hidden');
     panel?.setAttribute('aria-hidden', 'false');
+    // Portrait phones start with places drawer collapsed so the map is large
+    const side = document.getElementById('city-map-side');
+    const sideBtn = document.getElementById('city-map-side-toggle');
+    side?.classList.remove('expanded');
+    sideBtn?.setAttribute('aria-expanded', 'false');
+    if (sideBtn) sideBtn.textContent = 'Places';
     this.refreshCityMap();
     try {
       this.controls.unlock();
     } catch {
       /* ignore */
     }
-    this.setHelp('Map · scroll zoom · drag pan · click route · M/Esc close');
+    this.setHelp(
+      this.mobile.enabled
+        ? 'Map · pinch/drag · Places for list · tap × to close'
+        : 'Map · scroll zoom · drag pan · click route · M/Esc close',
+    );
     this.syncMobileGameplay();
   }
 
