@@ -1169,11 +1169,26 @@ export function harvestBiomeForDistrict(districtId: string): HarvestBiome {
 }
 
 /** UI options for worker harvest assignment (empire reefs + mixed). */
-export function listHarvestSites(): { id: string | null; name: string; mats: CommodityId[] }[] {
+export function listHarvestSites(opts?: {
+  /** Market tutorial — only the training reef (no empire plazas). */
+  trainingOnly?: boolean;
+}): { id: string | null; name: string; mats: CommodityId[] }[] {
+  if (opts?.trainingOnly) {
+    const t = HARVEST_BIOMES.training;
+    return [
+      {
+        id: 'training',
+        name: t?.name ?? 'Training Cloud Reef',
+        mats: t ? [...t.mats] : [...DEFAULT_HARVEST_POOL],
+      },
+    ];
+  }
   const sites: { id: string | null; name: string; mats: CommodityId[] }[] = [
     { id: null, name: 'Any / mixed reefs', mats: [...DEFAULT_HARVEST_POOL] },
   ];
   for (const b of Object.values(HARVEST_BIOMES)) {
+    // Training reef is tutorial-only — hide from empire program UI
+    if (b.id === 'training') continue;
     sites.push({ id: b.id, name: b.name, mats: [...b.mats] });
   }
   return sites;

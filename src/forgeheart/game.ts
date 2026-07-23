@@ -4587,12 +4587,18 @@ export class ForgeHeartGame {
 
     this.cityInteractPrompt = null;
     let bestD = 3.5;
+    const cam = this.camera.position;
     for (const it of this.skyCity.interactables) {
       if (it.kind === 'workshop_chest' && !this.inv.cityWorkshopLeased) continue;
       // Hide non-prompt city robots (markers only show when rogue/downed)
       if (it.kind === 'city_robot' && !it.mesh.visible) continue;
-      const d = this.camera.position.distanceTo(it.position);
-      if (d < bestD && d <= it.radius + 0.5) {
+      const dx = cam.x - it.position.x;
+      const dz = cam.z - it.position.z;
+      const horiz = Math.hypot(dx, dz);
+      const useHoriz = it.kind === 'harvest' || it.kind === 'flower_pick';
+      const d = useHoriz ? horiz : cam.distanceTo(it.position);
+      const reach = it.radius + (useHoriz ? 0.9 : 0.5);
+      if (d < bestD && d <= reach) {
         bestD = d;
         this.cityInteractPrompt = it;
       }
@@ -6850,13 +6856,19 @@ export class ForgeHeartGame {
       this.toast('Restored to arrival dock.', 2);
     }
 
-    // Proximity prompt
+    // Proximity prompt (XZ distance for harvest/flowers so deck height doesn't block E)
     this.hubInteractPrompt = null;
     let bestD = 3.2;
+    const cam = this.camera.position;
     for (const it of this.hub.interactables) {
       if (it.kind === 'parcel_chest' && !this.inv.parcelLeased) continue;
-      const d = this.camera.position.distanceTo(it.position);
-      if (d < bestD && d <= it.radius + 0.5) {
+      const dx = cam.x - it.position.x;
+      const dz = cam.z - it.position.z;
+      const horiz = Math.hypot(dx, dz);
+      const useHoriz = it.kind === 'harvest' || it.kind === 'flower_pick';
+      const d = useHoriz ? horiz : cam.distanceTo(it.position);
+      const reach = it.radius + (useHoriz ? 0.85 : 0.5);
+      if (d < bestD && d <= reach) {
         bestD = d;
         this.hubInteractPrompt = it;
       }
@@ -8538,9 +8550,18 @@ export class ForgeHeartGame {
       assignEl.innerHTML =
         '<span class="craft-hint">Hire a worker first (Hire Board at workshop).</span>';
     }
-    const sites = listHarvestSites();
+    // Tutorial market: only Training Cloud Reef. Empire: all plazas (no training entry).
+    const trainingOnly = this.economyActive && !this.megaCityActive;
+    const sites = listHarvestSites({ trainingOnly });
     for (const w of this.inv.workers) {
       if (w.harvestSiteId === undefined) w.harvestSiteId = null;
+      // Clamp empire-only sites while still in market training
+      if (trainingOnly && w.harvestSiteId && w.harvestSiteId !== 'training') {
+        w.harvestSiteId = 'training';
+      }
+      if (trainingOnly && !w.harvestSiteId) {
+        w.harvestSiteId = 'training';
+      }
       const card = document.createElement('div');
       card.className = 'program-assign-card';
       const runningProg =
@@ -8557,15 +8578,18 @@ export class ForgeHeartGame {
       reefRow.className = 'pa-row';
       const reefLab = document.createElement('label');
       reefLab.className = 'pa-lab';
-      reefLab.textContent = 'PLAZA';
+      reefLab.textContent = trainingOnly ? 'REEF' : 'PLAZA';
       const reefSel = document.createElement('select');
       for (const s of sites) {
         const o = document.createElement('option');
         o.value = s.id ?? '';
-        o.textContent = `${s.name} (${s.mats.map((m) => COMMODITIES[m].name.split(' ')[0]).join('/')})`;
+        o.textContent = trainingOnly
+          ? `${s.name}`
+          : `${s.name} (${s.mats.map((m) => COMMODITIES[m].name.split(' ')[0]).join('/')})`;
         if ((w.harvestSiteId ?? '') === (s.id ?? '')) o.selected = true;
         reefSel.appendChild(o);
       }
+      reefSel.disabled = trainingOnly && sites.length <= 1;
       reefSel.addEventListener('change', () => {
         const id = reefSel.value === '' ? null : reefSel.value;
         const r = setWorkerHarvestSite(this.inv, w.id, id);

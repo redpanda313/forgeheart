@@ -1102,38 +1102,50 @@ export function buildSkyCity(): SkyCityBuilt {
     }
 
     // Plaza flower patches — one bloom type per patch; some plazas host two
+    // (E · haul pick, same minigame as training)
     {
       const patches = flowerPatchesForDistrict(d.id, d.role);
       const offsets: Array<[number, number]> =
         patches.length > 1
           ? [
-              [0.18, -0.2],
-              [-0.2, 0.16],
+              [0.22, -0.24],
+              [-0.24, 0.2],
             ]
-          : [[0.18, -0.2]];
+          : [[0.22, -0.24]];
       patches.forEach((flowerId, pi) => {
         const [ox, oz] = offsets[pi] ?? offsets[0]!;
         const fx = cx + sz * ox;
         const fz = cz + sz * oz;
         const patch = buildFlowerPatchMesh(flowerId, {
           seed: hashDistrictFlower(d.id, flowerId, pi),
-          count: 5 + (pi % 2),
-          scale: 1.05,
+          count: 6 + (pi % 2),
+          scale: 1.15,
         });
-        patch.position.set(fx, 0, fz);
+        patch.position.set(fx, DECK_Y, fz);
         addMesh(patch);
         const name = flowerDisplayName(flowerId);
-        const fl = labelSprite(name.toUpperCase());
-        fl.position.set(fx, 1.65, fz);
-        setSignWorldWidth(fl, 2.6);
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(0.7, 0.05, 6, 14),
+          new THREE.MeshStandardMaterial({
+            color: 0xe8a0c8,
+            emissive: 0x884466,
+            emissiveIntensity: 0.5,
+          }),
+        );
+        ring.rotation.x = Math.PI / 2;
+        ring.position.set(fx, DECK_Y + 0.12, fz);
+        addMesh(ring);
+        const fl = labelSprite(`${name.toUpperCase()} · E`);
+        fl.position.set(fx, DECK_Y + 1.85, fz);
+        setSignWorldWidth(fl, 2.8);
         addMesh(fl);
         interactables.push({
           id: `flowers_${d.id}_${flowerId}`,
           kind: 'flower_pick',
-          position: new THREE.Vector3(fx, 0.5, fz),
-          radius: 2.6,
-          mesh: patch,
-          label: `Pick ${name} (personality)`,
+          position: new THREE.Vector3(fx, DECK_Y + 0.55, fz),
+          radius: 3.6,
+          mesh: ring,
+          label: `Pick ${name} (Space / EXTRACT in green)`,
           districtId: d.id,
           harvestPool: [flowerId],
           harvestName: name,

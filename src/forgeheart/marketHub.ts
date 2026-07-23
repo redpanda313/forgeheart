@@ -369,29 +369,54 @@ export function buildMarketHub(): MarketHubBuilt {
     addMesh(hLab);
   }
 
-  // ——— Training plaza flower patch (personality ingredient intro) ———
+  // ——— Training plaza flower patches (personality ingredients · haul pick) ———
   {
-    const flowerId = 'bloom_sky' as const;
-    // SW plaza edge — clear of vendors (+X), reef (−X), bay (−Z), dock (+Z)
-    const fx = -12;
-    const fz = 8;
-    const patch = buildFlowerPatchMesh(flowerId, { seed: 42, count: 6, scale: 1.15 });
-    patch.position.set(fx, 0, fz);
-    addMesh(patch);
-    const fname = flowerDisplayName(flowerId);
-    const fLab = labelSprite(`${fname.toUpperCase()} · E pick`);
-    fLab.position.set(fx, 1.9, fz);
-    addMesh(fLab);
-    interactables.push({
-      id: 'flowers_training',
-      kind: 'flower_pick',
-      position: new THREE.Vector3(fx, 0.5, fz),
-      radius: 2.8,
-      mesh: patch,
-      label: `Pick ${fname} (personality for frames)`,
-      harvestPool: [flowerId],
-      harvestName: fname,
-    });
+    const trainingFlowers: Array<{
+      id: CommodityId;
+      x: number;
+      z: number;
+      seed: number;
+    }> = [
+      { id: 'bloom_sky', x: -12, z: 8, seed: 42 },
+      { id: 'bloom_brass', x: -8, z: 12, seed: 77 },
+      { id: 'flower_gift', x: -14, z: 3, seed: 91 },
+    ];
+    for (const f of trainingFlowers) {
+      const flowerId = f.id as 'bloom_sky' | 'bloom_brass' | 'flower_gift';
+      const patch = buildFlowerPatchMesh(flowerId, {
+        seed: f.seed,
+        count: 7,
+        scale: 1.2,
+      });
+      patch.position.set(f.x, 0, f.z);
+      addMesh(patch);
+      const fname = flowerDisplayName(flowerId);
+      // Bright ring so the pick prompt is obvious
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.75, 0.05, 6, 14),
+        new THREE.MeshStandardMaterial({
+          color: 0xe8a0c8,
+          emissive: 0x884466,
+          emissiveIntensity: 0.55,
+        }),
+      );
+      ring.rotation.x = Math.PI / 2;
+      ring.position.set(f.x, 0.12, f.z);
+      addMesh(ring);
+      const fLab = labelSprite(`${fname.toUpperCase()} · E haul`);
+      fLab.position.set(f.x, 2.0, f.z);
+      addMesh(fLab);
+      interactables.push({
+        id: `flowers_training_${flowerId}`,
+        kind: 'flower_pick',
+        position: new THREE.Vector3(f.x, 0.55, f.z),
+        radius: 3.4,
+        mesh: ring,
+        label: `Pick ${fname} (Space / EXTRACT in green)`,
+        harvestPool: [flowerId],
+        harvestName: fname,
+      });
+    }
   }
 
   // ——— Lease office (+X / +Z of plaza) + walkway from plaza ———
