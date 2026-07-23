@@ -402,7 +402,7 @@ function landmarkFromInteract(it: CityInteract): MapLandmark | null {
       return {
         id: it.id,
         kind: 'harvest',
-        label: 'Plaza flowers',
+        label: it.harvestName ?? 'Plaza flowers',
         x,
         z,
         districtId: it.districtId,
