@@ -2554,11 +2554,17 @@ export function canCraft(inv: InventoryState, recipe: Recipe): boolean {
 }
 
 export function craft(inv: InventoryState, recipe: Recipe): { ok: boolean; msg: string } {
-  if (!inv.parcelLeased && recipe.needsBay) {
-    return { ok: false, msg: 'Lease a bay first — craft needs a workbench.' };
+  if (recipe.needsBay && !canCraftAtHomeOrBay(inv)) {
+    return { ok: false, msg: 'Need a bay or home workshop to craft.' };
   }
   if (!canCraft(inv, recipe)) {
     return { ok: false, msg: 'Missing materials for that recipe.' };
+  }
+  // Stack room for one craft
+  const outId = recipe.output.id;
+  const outN = recipe.output.n;
+  if (getQty(inv, outId) + outN > effectiveStack(inv, outId)) {
+    return { ok: false, msg: `Inventory full for ${COMMODITIES[outId].name}.` };
   }
   for (const inp of recipe.inputs) {
     removeItem(inv, inp.id, inp.n);
@@ -2567,6 +2573,46 @@ export function craft(inv: InventoryState, recipe: Recipe): { ok: boolean; msg: 
   return {
     ok: true,
     msg: `Crafted ${recipe.output.n}× ${COMMODITIES[recipe.output.id].name}`,
+  };
+}
+
+/** How many times `recipe` can be crafted with current mats / stack room. */
+export function maxCraftTimes(inv: InventoryState, recipe: Recipe): number {
+  if (recipe.needsBay && !canCraftAtHomeOrBay(inv)) return 0;
+  let max = Infinity;
+  for (const inp of recipe.inputs) {
+    max = Math.min(max, Math.floor(getQty(inv, inp.id) / inp.n));
+  }
+  const room = effectiveStack(inv, recipe.output.id) - getQty(inv, recipe.output.id);
+  max = Math.min(max, Math.floor(room / Math.max(1, recipe.output.n)));
+  return Math.max(0, Number.isFinite(max) ? max : 0);
+}
+
+/** Craft the same recipe up to `times` (stops on first failure). */
+export function craftTimes(
+  inv: InventoryState,
+  recipe: Recipe,
+  times: number,
+): { ok: boolean; msg: string; crafted: number } {
+  const n = Math.max(0, Math.floor(times));
+  if (n < 1) return { ok: false, msg: 'Invalid amount.', crafted: 0 };
+  let crafted = 0;
+  for (let i = 0; i < n; i++) {
+    const r = craft(inv, recipe);
+    if (!r.ok) {
+      if (crafted === 0) return { ok: false, msg: r.msg, crafted: 0 };
+      return {
+        ok: true,
+        crafted,
+        msg: `Crafted ${crafted}× ${COMMODITIES[recipe.output.id].name} (stopped: ${r.msg})`,
+      };
+    }
+    crafted++;
+  }
+  return {
+    ok: true,
+    crafted,
+    msg: `Crafted ${crafted * recipe.output.n}× ${COMMODITIES[recipe.output.id].name}`,
   };
 }
 
@@ -4233,7 +4279,7 @@ export function craftCustom(
 ): { ok: boolean; msg: string } {
   const recipe = inv.customRecipes.find((r) => r.id === recipeId);
   if (!recipe) return { ok: false, msg: 'Unknown invention.' };
-  if (!inv.parcelLeased) return { ok: false, msg: 'Need a bay.' };
+  if (!canCraftAtHomeOrBay(inv)) return { ok: false, msg: 'Need a bay or home workshop.' };
   for (const inp of recipe.inputs) {
     if (getQty(inv, inp.id) < inp.n) {
       return { ok: false, msg: `Missing ${COMMODITIES[inp.id].name} for ${recipe.name}.` };
@@ -4255,21 +4301,63 @@ export function craftCustom(
   return { ok: true, msg: `Crafted 1× ${recipe.name}` };
 }
 
+/** Max invention crafts for a custom recipe. */
+export function maxCraftCustomTimes(inv: InventoryState, recipeId: string): number {
+  const recipe = inv.customRecipes.find((r) => r.id === recipeId);
+  if (!recipe || !canCraftAtHomeOrBay(inv)) return 0;
+  let max = Infinity;
+  for (const inp of recipe.inputs) {
+    max = Math.min(max, Math.floor(getQty(inv, inp.id) / inp.n));
+  }
+  const room = effectiveInventionStack(inv) - (inv.customStock[recipeId] ?? 0);
+  max = Math.min(max, room);
+  return Math.max(0, Number.isFinite(max) ? max : 0);
+}
+
+export function craftCustomTimes(
+  inv: InventoryState,
+  recipeId: string,
+  times: number,
+): { ok: boolean; msg: string; crafted: number } {
+  const recipe = inv.customRecipes.find((r) => r.id === recipeId);
+  if (!recipe) return { ok: false, msg: 'Unknown invention.', crafted: 0 };
+  const n = Math.max(0, Math.floor(times));
+  if (n < 1) return { ok: false, msg: 'Invalid amount.', crafted: 0 };
+  let crafted = 0;
+  for (let i = 0; i < n; i++) {
+    const r = craftCustom(inv, recipeId);
+    if (!r.ok) {
+      if (crafted === 0) return { ok: false, msg: r.msg, crafted: 0 };
+      return {
+        ok: true,
+        crafted,
+        msg: `Crafted ${crafted}× ${recipe.name} (stopped: ${r.msg})`,
+      };
+    }
+    crafted++;
+  }
+  return { ok: true, crafted, msg: `Crafted ${crafted}× ${recipe.name}` };
+}
+
 export function sellCustomToVendor(
   inv: InventoryState,
   recipeId: string,
+  qty = 1,
 ): { ok: boolean; msg: string; gained: number } {
   const recipe = inv.customRecipes.find((r) => r.id === recipeId);
   if (!recipe) return { ok: false, msg: 'Unknown invention.', gained: 0 };
-  const n = inv.customStock[recipeId] ?? 0;
-  if (n < 1) return { ok: false, msg: `No ${recipe.name} in stock.`, gained: 0 };
-  inv.customStock[recipeId] = n - 1;
+  const n = Math.max(0, Math.floor(qty));
+  if (n < 1) return { ok: false, msg: 'Invalid amount.', gained: 0 };
+  const have = inv.customStock[recipeId] ?? 0;
+  if (have < n) return { ok: false, msg: `Need ${n}× ${recipe.name} in stock.`, gained: 0 };
+  inv.customStock[recipeId] = have - n;
   if (inv.customStock[recipeId]! <= 0) delete inv.customStock[recipeId];
-  inv.brass += recipe.sellValue;
+  const gained = recipe.sellValue * n;
+  inv.brass += gained;
   return {
     ok: true,
-    gained: recipe.sellValue,
-    msg: `Sold ${recipe.name} for ${recipe.sellValue} brass.`,
+    gained,
+    msg: n === 1 ? `Sold ${recipe.name} for ${gained} brass.` : `Sold ${n}× ${recipe.name} for ${gained} brass.`,
   };
 }
 

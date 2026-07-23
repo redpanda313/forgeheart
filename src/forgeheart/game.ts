@@ -113,6 +113,10 @@ import {
   craft,
   canCraft,
   craftCustom,
+  craftTimes,
+  maxCraftTimes,
+  craftCustomTimes,
+  maxCraftCustomTimes,
   hireLaborer,
   expandBay,
   sellFrameToBroker,
@@ -7090,17 +7094,47 @@ export class ForgeHeartGame {
   }
 
   private wireCraftDoButton() {
-    const btn = document.getElementById('craft-do-btn');
-    if (!btn || this.craftDoWired || this.disposed) return;
+    const row = document.getElementById('craft-do-row');
+    if (!row || this.craftDoWired || this.disposed) return;
     this.craftDoWired = true;
-    btn.addEventListener(
+    row.addEventListener(
       'click',
-      () => {
+      (ev) => {
         if (this.disposed) return;
-        this.craftSelected();
+        const t = (ev.target as HTMLElement | null)?.closest?.('[data-craft-qty]') as HTMLElement | null;
+        if (!t || !row.contains(t)) return;
+        const qty = Number(t.dataset.craftQty);
+        if (!Number.isFinite(qty) || qty < 1) return;
+        this.craftSelected(qty);
       },
       { signal: this.sessionAbort.signal },
     );
+  }
+
+  /** Shared ×1 / ×10 / ×100 button row for buy, sell, stock, craft. */
+  private appendQtyButtons(
+    parent: HTMLElement,
+    opts: {
+      canDo: (q: number) => boolean;
+      label: (q: number) => string;
+      onClick: (q: number) => void;
+      qtys?: number[];
+      btnClass?: string;
+    },
+  ) {
+    const qtys = opts.qtys ?? [1, 10, 100];
+    const row = document.createElement('div');
+    row.className = 'qty-row';
+    for (const q of qtys) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = opts.btnClass ?? 'qty-btn';
+      b.textContent = opts.label(q);
+      b.disabled = !opts.canDo(q);
+      b.addEventListener('click', () => opts.onClick(q));
+      row.appendChild(b);
+    }
+    parent.appendChild(row);
   }
 
   private wireFrameAssemblyUi() {
@@ -7459,8 +7493,9 @@ export class ForgeHeartGame {
     const outEl = document.getElementById('craft-detail-out');
     const needsEl = document.getElementById('craft-detail-needs');
     const reasonEl = document.getElementById('craft-detail-reason');
-    const doBtn = document.getElementById('craft-do-btn') as HTMLButtonElement | null;
-    if (!empty || !body || !nameEl || !outEl || !needsEl || !reasonEl || !doBtn) return;
+    const doRow = document.getElementById('craft-do-row');
+    const doBtns = doRow?.querySelectorAll<HTMLButtonElement>('[data-craft-qty]');
+    if (!empty || !body || !nameEl || !outEl || !needsEl || !reasonEl || !doBtns?.length) return;
 
     const entry = this.craftEntries().find((e) => e.id === this.craftSelectedId);
     if (!entry) {
@@ -7470,6 +7505,14 @@ export class ForgeHeartGame {
     }
     empty.classList.add('hidden');
     body.classList.remove('hidden');
+
+    const syncQtyBtns = (max: number, label1: string) => {
+      for (const btn of doBtns) {
+        const q = Number(btn.dataset.craftQty);
+        btn.disabled = !(Number.isFinite(q) && q >= 1 && max >= q);
+        if (q === 1) btn.textContent = label1;
+      }
+    };
 
     if (entry.kind === 'recipe' && entry.recipe) {
       const recipe = entry.recipe;
@@ -7486,19 +7529,19 @@ export class ForgeHeartGame {
         row.innerHTML = `<span>${COMMODITIES[inp.id].name}</span><span>${have}/${inp.n} ${ok ? '✓' : '✗'}</span>`;
         needsEl.appendChild(row);
       }
-      if (!this.inv.parcelLeased) {
-        reasonEl.textContent = 'Lease a bay to use the workbench.';
-        doBtn.disabled = true;
+      const max = maxCraftTimes(this.inv, recipe);
+      if (recipe.needsBay && !canCraftAtHomeOrBay(this.inv)) {
+        reasonEl.textContent = 'Need a bay or home workshop.';
       } else if (missing) {
         const need = recipe.inputs.find((inp) => (this.inv.items[inp.id] ?? 0) < inp.n)!;
         const short = need.n - (this.inv.items[need.id] ?? 0);
         reasonEl.textContent = `Missing ${short}× ${COMMODITIES[need.id].name}`;
-        doBtn.disabled = true;
+      } else if (max < 1) {
+        reasonEl.textContent = `Inventory full for ${COMMODITIES[recipe.output.id].name}.`;
       } else {
-        reasonEl.textContent = '';
-        doBtn.disabled = false;
+        reasonEl.textContent = max > 1 ? `Can craft up to ×${Math.min(max, 100)}` : '';
       }
-      doBtn.textContent = 'Craft';
+      syncQtyBtns(max, 'Craft ×1');
     } else if (entry.kind === 'custom' && entry.customId) {
       const cr = this.inv.customRecipes.find((r) => r.id === entry.customId)!;
       nameEl.textContent = cr.name;
@@ -7514,27 +7557,28 @@ export class ForgeHeartGame {
         row.innerHTML = `<span>${COMMODITIES[inp.id].name}</span><span>${have}/${inp.n} ${ok ? '✓' : '✗'}</span>`;
         needsEl.appendChild(row);
       }
-      if (!this.inv.parcelLeased) {
-        reasonEl.textContent = 'Lease a bay first.';
-        doBtn.disabled = true;
+      const max = maxCraftCustomTimes(this.inv, entry.customId);
+      if (!canCraftAtHomeOrBay(this.inv)) {
+        reasonEl.textContent = 'Need a bay or home workshop.';
       } else if (missing) {
         reasonEl.textContent = 'Missing materials for this invention.';
-        doBtn.disabled = true;
+      } else if (max < 1) {
+        reasonEl.textContent = 'Invention storage full — expand at Aether Spire.';
       } else {
-        reasonEl.textContent = '';
-        doBtn.disabled = false;
+        reasonEl.textContent = max > 1 ? `Can craft up to ×${Math.min(max, 100)}` : '';
       }
-      doBtn.textContent = 'Craft invention';
+      syncQtyBtns(max, 'Invent ×1');
     }
   }
 
-  private craftSelected() {
+  private craftSelected(times = 1) {
     if (!this.craftSelectedId) return;
     const entry = this.craftEntries().find((e) => e.id === this.craftSelectedId);
     if (!entry) return;
     const log = document.getElementById('craft-log');
+    const n = Math.max(1, Math.floor(times));
     if (entry.kind === 'recipe' && entry.recipe) {
-      const r = craft(this.inv, entry.recipe);
+      const r = n === 1 ? craft(this.inv, entry.recipe) : craftTimes(this.inv, entry.recipe, n);
       if (log) log.textContent = r.msg;
       if (r.ok) {
         this.audio.playPickup();
@@ -7543,7 +7587,8 @@ export class ForgeHeartGame {
         writeSlot(this.activeSlot, this.buildSaveData());
       }
     } else if (entry.kind === 'custom' && entry.customId) {
-      const r = craftCustom(this.inv, entry.customId);
+      const r =
+        n === 1 ? craftCustom(this.inv, entry.customId) : craftCustomTimes(this.inv, entry.customId, n);
       if (log) log.textContent = r.msg;
       if (r.ok) {
         this.audio.playPickup();
@@ -7637,22 +7682,21 @@ export class ForgeHeartGame {
         row.className = 'bay-inv-row';
         const max = effectiveInventionStack(this.inv);
         row.textContent = `${recipe?.name ?? rid} × ${n} / ${max.toLocaleString()} (invention · sell ${recipe?.sellValue ?? '?'}b)`;
-        const sell = document.createElement('button');
-        sell.type = 'button';
-        sell.textContent = 'Sell 1 (any vendor-ish · Mira rate)';
-        sell.style.marginLeft = '0.5rem';
-        sell.addEventListener('click', () => {
-          const r = sellCustomToVendor(this.inv, rid);
-          this.bayLog(r.msg);
-          if (r.ok) {
-            this.brass = this.inv.brass;
-            this.audio.playPickup();
-            writeSlot(this.activeSlot, this.buildSaveData());
-            this.fillBayPanel();
-            this.syncEconomyHud();
-          }
+        this.appendQtyButtons(row, {
+          canDo: (q) => n >= q,
+          label: (q) => `Sell ×${q}`,
+          onClick: (q) => {
+            const r = sellCustomToVendor(this.inv, rid, q);
+            this.bayLog(r.msg);
+            if (r.ok) {
+              this.brass = this.inv.brass;
+              this.audio.playPickup();
+              writeSlot(this.activeSlot, this.buildSaveData());
+              this.fillBayPanel();
+              this.syncEconomyHud();
+            }
+          },
         });
-        row.appendChild(sell);
         invEl.appendChild(row);
       }
       for (const f of this.inv.assembledFrames ?? []) {
@@ -8497,36 +8541,52 @@ export class ForgeHeartGame {
     for (const id of v.stock) {
       const def = COMMODITIES[id];
       const price = Math.round(def.baseSell * v.sellMul);
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = `Buy ${def.name} · ${price} brass`;
-      b.addEventListener('click', () => {
-        const r = buyFromVendor(this.inv, v, id, 1);
-        this.marketLog(r.msg);
-        this.brass = this.inv.brass;
-        this.fillMarketLists(v);
-        this.syncMarketWallet();
-        this.syncEconomyHud();
+      const wrap = document.createElement('div');
+      wrap.className = 'market-item';
+      const title = document.createElement('div');
+      title.className = 'market-item-label';
+      title.textContent = `Buy ${def.name} · ${price} brass ea`;
+      wrap.appendChild(title);
+      const room = effectiveStack(this.inv, id) - (this.inv.items[id] ?? 0);
+      const byBrass = Math.floor(this.inv.brass / Math.max(1, price));
+      this.appendQtyButtons(wrap, {
+        canDo: (q) => q <= room && q <= byBrass,
+        label: (q) => `×${q}`,
+        onClick: (q) => {
+          const r = buyFromVendor(this.inv, v, id, q);
+          this.marketLog(r.msg);
+          this.brass = this.inv.brass;
+          this.fillMarketLists(v);
+          this.syncMarketWallet();
+          this.syncEconomyHud();
+        },
       });
-      buyList.appendChild(b);
+      buyList.appendChild(wrap);
     }
     for (const id of v.stock) {
-      const q = this.inv.items[id] ?? 0;
-      if (q < 1) continue;
+      const have = this.inv.items[id] ?? 0;
+      if (have < 1) continue;
       const def = COMMODITIES[id];
       const price = Math.round(def.baseBuy * v.buyMul);
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = `Sell ${def.name} (×${q}) · ${price} ea`;
-      b.addEventListener('click', () => {
-        const r = sellToVendor(this.inv, v, id, 1);
-        this.marketLog(r.msg);
-        this.brass = this.inv.brass;
-        this.fillMarketLists(v);
-        this.syncMarketWallet();
-        this.syncEconomyHud();
+      const wrap = document.createElement('div');
+      wrap.className = 'market-item';
+      const title = document.createElement('div');
+      title.className = 'market-item-label';
+      title.textContent = `Sell ${def.name} (have ×${have}) · ${price} ea`;
+      wrap.appendChild(title);
+      this.appendQtyButtons(wrap, {
+        canDo: (q) => have >= q,
+        label: (q) => `×${q}`,
+        onClick: (q) => {
+          const r = sellToVendor(this.inv, v, id, q);
+          this.marketLog(r.msg);
+          this.brass = this.inv.brass;
+          this.fillMarketLists(v);
+          this.syncMarketWallet();
+          this.syncEconomyHud();
+        },
       });
-      sellList.appendChild(b);
+      sellList.appendChild(wrap);
     }
     if (sellList.children.length === 0) {
       const p = document.createElement('p');
@@ -9467,16 +9527,16 @@ export class ForgeHeartGame {
     if (stockBtns) {
       stockBtns.innerHTML = '';
       if (!stall.owned) return;
-      const opts: { id: CommodityId; n: number; label: string }[] = [
-        { id: 'polished_wire', n: 2, label: 'Polished wire ×2' },
-        { id: 'wire', n: 3, label: 'Wire ×3' },
-        { id: 'scrap_brass', n: 5, label: 'Scrap ×5' },
-        { id: 'cloud_iron', n: 3, label: 'Iron ×3' },
-        { id: 'gear_blank', n: 2, label: 'Gear ×2' },
-        { id: 'repair_kit', n: 2, label: 'Kit ×2' },
-        { id: 'bloom_sky', n: 2, label: 'Skyblooms ×2' },
+      const opts: { id: CommodityId; label: string }[] = [
+        { id: 'polished_wire', label: 'Polished wire' },
+        { id: 'wire', label: 'Wire' },
+        { id: 'scrap_brass', label: 'Scrap' },
+        { id: 'cloud_iron', label: 'Iron' },
+        { id: 'gear_blank', label: 'Gear' },
+        { id: 'repair_kit', label: 'Kit' },
+        { id: 'bloom_sky', label: 'Skyblooms' },
       ];
-      // Assembled frames
+      // Assembled frames (unique items — still ×1)
       {
         const b = document.createElement('button');
         b.type = 'button';
@@ -9496,44 +9556,56 @@ export class ForgeHeartGame {
         stockBtns.appendChild(b);
       }
       for (const o of opts) {
-        const b = document.createElement('button');
-        b.type = 'button';
+        const wrap = document.createElement('div');
+        wrap.className = 'stall-stock-item';
         const have = this.inv.items[o.id] ?? 0;
         const fair = fairStallPrice(o.id, this.inv);
-        b.textContent = `${o.label} (have ${have} · fair ${fair}b)`;
-        b.disabled = have < o.n;
-        b.addEventListener('click', () => {
-          const r = stockStallFromInv(this.inv, o.id, o.n, undefined, stall);
-          this.stallLog(r.msg);
-          if (r.ok) {
-            this.audio.playPickup();
-            writeSlot(this.activeSlot, this.buildSaveData());
-          }
-          this.fillStallPanel();
-          this.syncEconomyHud();
+        const label = document.createElement('div');
+        label.className = 'stall-stock-item-label';
+        label.textContent = `${o.label} (have ${have} · fair ${fair}b)`;
+        wrap.appendChild(label);
+        this.appendQtyButtons(wrap, {
+          canDo: (q) => have >= q,
+          label: (q) => `Stock ×${q}`,
+          onClick: (q) => {
+            const r = stockStallFromInv(this.inv, o.id, q, undefined, stall);
+            this.stallLog(r.msg);
+            if (r.ok) {
+              this.audio.playPickup();
+              writeSlot(this.activeSlot, this.buildSaveData());
+            }
+            this.fillStallPanel();
+            this.syncEconomyHud();
+          },
         });
-        stockBtns.appendChild(b);
+        stockBtns.appendChild(wrap);
       }
       // Invention stock buttons — full market cycle
       for (const cr of this.inv.customRecipes) {
         const have = this.inv.customStock[cr.id] ?? 0;
-        const b = document.createElement('button');
-        b.type = 'button';
         const inventBonus = dist?.inventBonus ?? 1;
         const fair = fairInventionAsk(cr, inventBonus);
-        b.textContent = `Invent ${cr.name} ×1 (have ${have} · fair ${fair}b)`;
-        b.disabled = have < 1;
-        b.addEventListener('click', () => {
-          const r = stockInventionOnStall(this.inv, cr.id, 1, stall, inventBonus);
-          this.stallLog(r.msg);
-          if (r.ok) {
-            this.audio.playPickup();
-            writeSlot(this.activeSlot, this.buildSaveData());
-          }
-          this.fillStallPanel();
-          this.syncEconomyHud();
+        const wrap = document.createElement('div');
+        wrap.className = 'stall-stock-item';
+        const label = document.createElement('div');
+        label.className = 'stall-stock-item-label';
+        label.textContent = `${cr.name} (have ${have} · fair ${fair}b)`;
+        wrap.appendChild(label);
+        this.appendQtyButtons(wrap, {
+          canDo: (q) => have >= q,
+          label: (q) => `Stock ×${q}`,
+          onClick: (q) => {
+            const r = stockInventionOnStall(this.inv, cr.id, q, stall, inventBonus);
+            this.stallLog(r.msg);
+            if (r.ok) {
+              this.audio.playPickup();
+              writeSlot(this.activeSlot, this.buildSaveData());
+            }
+            this.fillStallPanel();
+            this.syncEconomyHud();
+          },
         });
-        stockBtns.appendChild(b);
+        stockBtns.appendChild(wrap);
       }
     }
   }
