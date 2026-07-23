@@ -630,6 +630,8 @@ export interface WorkerState {
   frameWorkMul?: number;
   frameHarvestMul?: number;
   frameProgramBonus?: number;
+  /** True when upkeep failed — idle until brass covers wages again */
+  unpaid?: boolean;
 }
 
 /** Player-placed commercial / cosmetic props from purchase→Game Maker */
@@ -780,6 +782,8 @@ export interface StallState {
   layout?: StallLayout | null;
   /** Brass already paid toward layout (redesign charges delta only) */
   layoutPaid?: number;
+  /** Closed automatically when upkeep failed — reopen when brass recovers */
+  forcedClosed?: boolean;
 }
 
 /** Cost tables mirrored in stallBuild / factoryBuild (kept here for quotes) */
@@ -1194,6 +1198,7 @@ export function setWorkerHarvestSite(
 }
 
 export function describeWorkerAssignment(inv: InventoryState, w: WorkerState): string {
+  if (w.unpaid) return 'UNPAID — idle until brass covers upkeep (or fire in Bay)';
   if (w.job === 'program' && w.programId) {
     const p = inv.programs.find((x) => x.id === w.programId);
     const site =
@@ -1239,6 +1244,7 @@ export function tickPassiveWorker(
 ): { ok: boolean; msg?: string; brassDelta?: number } {
   const w = inv.workers.find((x) => x.id === workerId);
   if (!w) return { ok: false };
+  if (w.unpaid) return { ok: false, msg: `${w.name} unpaid — waiting for brass.` };
   if (w.job === 'idle') return { ok: false };
   if (w.job === 'program' && w.programId) {
     const p = inv.programs.find((x) => x.id === w.programId);
@@ -1705,6 +1711,7 @@ export function emptyStall(): StallState {
     pendingHaggle: null,
     layout: null,
     layoutPaid: 0,
+    forcedClosed: false,
   };
 }
 
@@ -3184,6 +3191,7 @@ export function leaseCityStall(
 export function toggleStallOpen(inv: InventoryState): { ok: boolean; msg: string } {
   if (!inv.stall.owned) return { ok: false, msg: 'Lease a stall first.' };
   inv.stall.open = !inv.stall.open;
+  if (inv.stall.open) inv.stall.forcedClosed = false;
   return {
     ok: true,
     msg: inv.stall.open ? 'Stall OPEN — customers browsing.' : 'Stall CLOSED.',
@@ -3198,6 +3206,7 @@ export function toggleCityStallOpen(
   const stall = inv.cityStalls?.[districtId];
   if (!stall?.owned) return { ok: false, msg: 'Lease this district stall first.' };
   stall.open = !stall.open;
+  if (stall.open) stall.forcedClosed = false;
   return {
     ok: true,
     msg: `${dist?.name ?? districtId}: ${stall.open ? 'OPEN' : 'CLOSED'}`,
@@ -3942,28 +3951,124 @@ export function applyWorkerJobResult(
   return { ok: true };
 }
 
-export function tickBayUpkeep(inv: InventoryState): { ok: boolean; msg?: string } {
-  if (inv.bayLevel < 1) return { ok: true };
+/** Total brass due each upkeep tick (bay + wages + city shop tax). */
+export function bayUpkeepDue(inv: InventoryState): number {
+  if (inv.bayLevel < 1) return 0;
   const wages = totalWagesPerTick(inv);
   const cost = inv.bayLevel * BAY_UPKEEP_PER_LEVEL + wages;
-  // Multi-plaza shop leases: soft upkeep per owned city stall
   const shopTax = ownedCityStallCount(inv) * 2;
-  const total = cost + shopTax;
+  return cost + shopTax;
+}
+
+export interface ForcedClosedStall {
+  key: string;
+  label: string;
+}
+
+/** Stalls auto-closed by failed upkeep (still owned, waiting to reopen). */
+export function listForcedClosedStalls(inv: InventoryState): ForcedClosedStall[] {
+  const out: ForcedClosedStall[] = [];
+  if (inv.stall.owned && inv.stall.forcedClosed) {
+    out.push({ key: 'training', label: 'Training stall' });
+  }
+  for (const [did, stall] of Object.entries(inv.cityStalls ?? {})) {
+    if (!stall.owned || !stall.forcedClosed) continue;
+    const dist = districtById(did);
+    out.push({ key: did, label: dist?.name ?? did });
+  }
+  return out;
+}
+
+function forceCloseOwnedOpenStalls(inv: InventoryState): ForcedClosedStall[] {
+  const closed: ForcedClosedStall[] = [];
+  if (inv.stall.owned && inv.stall.open) {
+    inv.stall.open = false;
+    inv.stall.forcedClosed = true;
+    closed.push({ key: 'training', label: 'Training stall' });
+  } else if (inv.stall.owned && inv.stall.forcedClosed) {
+    closed.push({ key: 'training', label: 'Training stall' });
+  }
+  for (const [did, stall] of Object.entries(inv.cityStalls ?? {})) {
+    if (!stall.owned) continue;
+    const dist = districtById(did);
+    const label = dist?.name ?? did;
+    if (stall.open) {
+      stall.open = false;
+      stall.forcedClosed = true;
+      closed.push({ key: did, label });
+    } else if (stall.forcedClosed) {
+      closed.push({ key: did, label });
+    }
+  }
+  return closed;
+}
+
+export function fireWorker(
+  inv: InventoryState,
+  workerId: string,
+): { ok: boolean; msg: string } {
+  const idx = inv.workers.findIndex((w) => w.id === workerId);
+  if (idx < 0) return { ok: false, msg: 'Worker not found.' };
+  const w = inv.workers[idx]!;
+  if (w.hasMedallion) onMedallionHostLost(inv, w.id);
+  inv.workers.splice(idx, 1);
+  inv.laborerHired = inv.workers.length > 0;
+  return { ok: true, msg: `Fired ${w.name}. Wages drop next upkeep.` };
+}
+
+export interface UpkeepResult {
+  ok: boolean;
+  msg?: string;
+  need?: number;
+  /** Crew marked unpaid / already unpaid during a failed tick */
+  unpaidWorkers?: { id: string; name: string }[];
+  /** Shops force-closed (or already closed) this failed tick */
+  closedShops?: ForcedClosedStall[];
+  /** Just cleared unpaid after a successful pay */
+  paidWorkers?: { id: string; name: string }[];
+  /** Force-closed shops that can be reopened now that upkeep cleared */
+  canOpenShops?: ForcedClosedStall[];
+}
+
+export function tickBayUpkeep(inv: InventoryState): UpkeepResult {
+  if (inv.bayLevel < 1) return { ok: true };
+  const wages = totalWagesPerTick(inv);
+  const total = bayUpkeepDue(inv);
   if (total <= 0) return { ok: true };
   if (inv.brass < total) {
-    if (inv.workers.length > 0) {
-      const gone = inv.workers.pop()!;
-      inv.laborerHired = inv.workers.length > 0;
-      return {
-        ok: false,
-        msg: `Upkeep failed — ${gone.name} left. Need ${total} brass (wages + bay + shops).`,
-      };
+    const unpaidWorkers: { id: string; name: string }[] = [];
+    for (const w of inv.workers) {
+      if (!w.unpaid) unpaidWorkers.push({ id: w.id, name: w.name });
+      w.unpaid = true;
     }
-    return { ok: false, msg: `Bay upkeep due (${total} brass) — scale retail to cover empire costs.` };
+    const closedShops = forceCloseOwnedOpenStalls(inv);
+    const crewBit =
+      inv.workers.length > 0
+        ? `Crew unpaid (${inv.workers.map((w) => w.name).join(', ')}).`
+        : 'No crew left to idle.';
+    const shopBit =
+      closedShops.length > 0
+        ? ` Shops closed: ${closedShops.map((s) => s.label).join(', ')}.`
+        : '';
+    return {
+      ok: false,
+      need: total,
+      unpaidWorkers,
+      closedShops,
+      msg: `Can't cover upkeep (${total}b) — ${crewBit}${shopBit}`,
+    };
   }
+  const paidWorkers = inv.workers
+    .filter((w) => w.unpaid)
+    .map((w) => ({ id: w.id, name: w.name }));
+  for (const w of inv.workers) w.unpaid = false;
+  const canOpenShops = listForcedClosedStalls(inv);
   inv.brass -= total;
   return {
     ok: true,
+    need: total,
+    paidWorkers,
+    canOpenShops,
     msg: inv.workers.length
       ? `Upkeep −${total}b (crew wages ${wages} · bay L${inv.bayLevel} · ${ownedCityStallCount(inv)} shops)`
       : `Bay upkeep −${total} brass`,
@@ -4520,6 +4625,7 @@ function stallToSave(s: StallState) {
         }
       : null,
     layoutPaid: s.layoutPaid ?? 0,
+    forcedClosed: !!s.forcedClosed,
   };
 }
 
@@ -4528,6 +4634,7 @@ function stallFromSave(s: Partial<StallState> | undefined): StallState {
   if (!s || typeof s !== 'object') return base;
   base.owned = !!s.owned;
   base.open = !!s.open;
+  base.forcedClosed = !!(s as StallState).forcedClosed;
   base.shelf = s.shelf && typeof s.shelf === 'object' ? { ...s.shelf } : {};
   base.customShelf =
     s.customShelf && typeof s.customShelf === 'object' ? { ...s.customShelf } : {};
@@ -4787,6 +4894,7 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
       frameWorkMul: typeof w.frameWorkMul === 'number' ? w.frameWorkMul : undefined,
       frameHarvestMul: typeof w.frameHarvestMul === 'number' ? w.frameHarvestMul : undefined,
       frameProgramBonus: typeof w.frameProgramBonus === 'number' ? w.frameProgramBonus : undefined,
+      unpaid: !!w.unpaid,
     }));
   } else if (o.laborerHired) {
     // Migrate Phase 1 single laborer

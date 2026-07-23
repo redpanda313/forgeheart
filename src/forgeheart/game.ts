@@ -145,6 +145,9 @@ import {
   upgradePlayerBoard,
   sellCustomToVendor,
   tickBayUpkeep,
+  bayUpkeepDue,
+  listForcedClosedStalls,
+  fireWorker,
   tickStall,
   tickAllStalls,
   tickAllPassiveWorkers,
@@ -379,6 +382,16 @@ export class ForgeHeartGame {
   private helpEl: HTMLElement | null = null;
   private msg = '';
   private msgT = 0;
+  private toastHideToken = 0;
+  private alerts: {
+    id: string;
+    severity: 'info' | 'critical' | 'resolve';
+    message: string;
+    sticky: boolean;
+    expiresAt: number | null;
+  }[] = [];
+  private alertsExpanded = false;
+  private alertsWired = false;
 
   private fireHeld = false;
   private safePos = new THREE.Vector3();
@@ -637,6 +650,7 @@ export class ForgeHeartGame {
       if (el.textContent === 'VOICE' || el.textContent === 'PLASMA') el.textContent = 'PLASMA';
       if (el.textContent === 'RESOLVE' || el.textContent === 'INTEGRITY') el.textContent = 'INTEGRITY';
     });
+    this.wireAlertsUi();
 
     this.bindInput();
     this.wireHarvestTouchUi();
@@ -3983,6 +3997,10 @@ export class ForgeHeartGame {
     if (this.inv.workers.length) extras.push(`${this.inv.workers.length} crew`);
     if (this.inv.playerBoard.owned) extras.push('Board');
     if (this.inv.framesSold > 0) extras.push(`Fr ${this.inv.framesSold}`);
+    const unpaidN = this.inv.workers.filter((w) => w.unpaid).length;
+    if (unpaidN) extras.push(`${unpaidN} unpaid`);
+    const closedN = listForcedClosedStalls(this.inv).length;
+    if (closedN) extras.push(`${closedN} closed`);
     const tail = extras.length ? ` · ${extras.join(' · ')}` : '';
     this.statsEl.textContent = `${this.objective} · Æ ${this.inv.aether}${tail}`;
     if (this.locEl) {
@@ -3994,6 +4012,7 @@ export class ForgeHeartGame {
     }
     const pct = document.getElementById('resolve-pct');
     if (pct) pct.textContent = String(Math.round(this.health));
+    this.syncCrisisAlerts();
   }
 
   private skyCityObjective(): string {
@@ -4418,7 +4437,7 @@ export class ForgeHeartGame {
     if (this.upkeepAcc >= UPKEEP_INTERVAL) {
       this.upkeepAcc = 0;
       const r = tickBayUpkeep(this.inv);
-      if (r.msg) this.toast(r.msg, 2.4);
+      this.handleUpkeepResult(r);
       this.brass = this.inv.brass;
       this.syncEconomyHud();
       writeSlot(this.activeSlot, this.buildSaveData());
@@ -6682,7 +6701,7 @@ export class ForgeHeartGame {
     if (this.upkeepAcc >= UPKEEP_INTERVAL) {
       this.upkeepAcc = 0;
       const r = tickBayUpkeep(this.inv);
-      if (r.msg) this.toast(r.msg, 2.4);
+      this.handleUpkeepResult(r);
       if (!r.ok) {
         this.syncWorkerAgentsLoadout();
         this.objective = this.skyCityObjective();
@@ -7792,6 +7811,24 @@ export class ForgeHeartGame {
           this.syncEconomyHud();
         });
         actions.appendChild(raise);
+        const fire = document.createElement('button');
+        fire.type = 'button';
+        fire.textContent = w.unpaid ? 'Fire (unpaid)' : 'Fire';
+        fire.classList.toggle('danger', !!w.unpaid);
+        fire.addEventListener('click', () => {
+          const r = fireWorker(this.inv, w.id);
+          this.bayLog(r.msg);
+          if (r.ok) {
+            this.clearAlert(`crisis-crew`);
+            this.clearAlert(`resolve-crew`);
+            this.toast(r.msg, 3.2);
+            this.rebuildWorkerAgents();
+            writeSlot(this.activeSlot, this.buildSaveData());
+          }
+          this.fillBayPanel();
+          this.syncEconomyHud();
+        });
+        actions.appendChild(fire);
         const eqB = document.createElement('button');
         eqB.type = 'button';
         eqB.textContent = 'Equip board (40b)';
@@ -9370,14 +9407,25 @@ export class ForgeHeartGame {
       } else {
         const open = document.createElement('button');
         open.type = 'button';
-        open.textContent = stall.open ? 'Close stall' : 'Open stall';
+        const need = bayUpkeepDue(this.inv);
+        const canReopen = !stall.open && !!stall.forcedClosed && this.inv.brass >= need;
+        open.textContent = stall.open
+          ? 'Close stall'
+          : stall.forcedClosed
+            ? canReopen
+              ? 'Open stall (ready)'
+              : `Open stall (need ${need}b upkeep)`
+            : 'Open stall';
+        open.disabled = !stall.open && !!stall.forcedClosed && this.inv.brass < need;
         open.addEventListener('click', () => {
           const r = districtId
             ? toggleCityStallOpen(this.inv, districtId)
             : toggleStallOpen(this.inv);
           this.stallLog(r.msg);
+          if (r.ok && stall.open) this.clearAlert('resolve-shops');
           writeSlot(this.activeSlot, this.buildSaveData());
           this.fillStallPanel();
+          this.syncEconomyHud();
         });
         actions.appendChild(open);
         const mkToggle = (lab: string, key: 'autoFrames' | 'autoHarvest' | 'autoWire' | 'autoInvent') => {
@@ -11140,25 +11188,263 @@ export class ForgeHeartGame {
     }
   }
 
-  private toast(t: string, sec = 2.5) {
+  private toast(
+    t: string,
+    sec = 2.5,
+    opts?: { critical?: boolean; resolve?: boolean; alertId?: string; sticky?: boolean },
+  ) {
+    const critical = !!opts?.critical;
+    const resolve = !!opts?.resolve;
+    const duration = critical
+      ? this.mobile.enabled
+        ? 11
+        : 8
+      : resolve
+        ? this.mobile.enabled
+          ? 8
+          : 5.5
+        : sec;
     this.msg = t;
-    this.msgT = sec;
+    this.msgT = duration;
     this.toastEl.textContent = t;
+    this.toastEl.classList.toggle('critical', critical);
+    this.toastEl.classList.toggle('resolve', resolve && !critical);
     this.toastEl.classList.remove('hidden');
-    window.setTimeout(() => this.toastEl.classList.add('hidden'), sec * 1000);
+    const token = ++this.toastHideToken;
+    window.setTimeout(() => {
+      if (token !== this.toastHideToken) return;
+      this.toastEl.classList.add('hidden');
+      this.toastEl.classList.remove('critical', 'resolve');
+    }, duration * 1000);
+    if (opts?.alertId || opts?.sticky || critical) {
+      this.upsertAlert({
+        id: opts?.alertId ?? `toast-${Date.now()}`,
+        severity: critical ? 'critical' : resolve ? 'resolve' : 'info',
+        message: t,
+        sticky: !!opts?.sticky || critical,
+        expiresAt: opts?.sticky || critical ? null : Date.now() + duration * 1000,
+      });
+    }
   }
   private plaque(t: string) {
     const sec = this.mobile.enabled ? 9.5 : 5;
-    this.msg = t;
-    this.msgT = sec;
-    this.toastEl.textContent = t;
-    this.toastEl.classList.remove('hidden');
-    window.setTimeout(() => this.toastEl.classList.add('hidden'), sec * 1000);
+    this.toast(t, sec);
   }
   private flash(t: string) {
     this.convertEl.textContent = t;
     this.convertEl.classList.remove('hidden');
     window.setTimeout(() => this.convertEl.classList.add('hidden'), 2200);
+  }
+
+  private wireAlertsUi() {
+    if (this.alertsWired || this.disposed) return;
+    this.alertsWired = true;
+    const toggle = document.getElementById('alert-toggle');
+    const close = document.getElementById('alert-panel-close');
+    const panel = document.getElementById('alert-panel');
+    toggle?.addEventListener(
+      'click',
+      () => {
+        if (this.disposed) return;
+        this.alertsExpanded = !this.alertsExpanded;
+        this.renderAlerts();
+      },
+      { signal: this.sessionAbort.signal },
+    );
+    close?.addEventListener(
+      'click',
+      () => {
+        if (this.disposed) return;
+        this.alertsExpanded = false;
+        this.renderAlerts();
+      },
+      { signal: this.sessionAbort.signal },
+    );
+    panel?.addEventListener(
+      'click',
+      (ev) => {
+        const btn = (ev.target as HTMLElement | null)?.closest?.('[data-alert-dismiss]') as
+          | HTMLElement
+          | null;
+        if (!btn) return;
+        const id = btn.getAttribute('data-alert-dismiss');
+        if (id) this.clearAlert(id);
+      },
+      { signal: this.sessionAbort.signal },
+    );
+    this.renderAlerts();
+  }
+
+  private upsertAlert(a: {
+    id: string;
+    severity: 'info' | 'critical' | 'resolve';
+    message: string;
+    sticky: boolean;
+    expiresAt: number | null;
+  }) {
+    const i = this.alerts.findIndex((x) => x.id === a.id);
+    if (i >= 0) this.alerts[i] = a;
+    else this.alerts.push(a);
+    this.renderAlerts();
+  }
+
+  private clearAlert(id: string) {
+    const next = this.alerts.filter((a) => a.id !== id);
+    if (next.length === this.alerts.length) return;
+    this.alerts = next;
+    if (this.alerts.length === 0) this.alertsExpanded = false;
+    this.renderAlerts();
+  }
+
+  private pruneExpiredAlerts() {
+    const now = Date.now();
+    const next = this.alerts.filter((a) => a.sticky || (a.expiresAt != null && a.expiresAt > now));
+    if (next.length !== this.alerts.length) {
+      this.alerts = next;
+      if (this.alerts.length === 0) this.alertsExpanded = false;
+    }
+  }
+
+  private renderAlerts() {
+    this.pruneExpiredAlerts();
+    const toggle = document.getElementById('alert-toggle');
+    const countEl = document.getElementById('alert-count');
+    const panel = document.getElementById('alert-panel');
+    const list = document.getElementById('alert-list');
+    if (!toggle || !countEl || !panel || !list) return;
+    const n = this.alerts.length;
+    const hasCritical = this.alerts.some((a) => a.severity === 'critical');
+    toggle.classList.toggle('hidden', n < 1);
+    toggle.classList.toggle('has-critical', hasCritical);
+    toggle.setAttribute('aria-expanded', this.alertsExpanded ? 'true' : 'false');
+    countEl.textContent = String(n);
+    panel.classList.toggle('hidden', !this.alertsExpanded || n < 1);
+    panel.setAttribute('aria-hidden', !this.alertsExpanded || n < 1 ? 'true' : 'false');
+    list.innerHTML = '';
+    for (const a of this.alerts) {
+      const li = document.createElement('li');
+      li.className = a.severity;
+      const msg = document.createElement('span');
+      msg.className = 'alert-msg';
+      msg.textContent = a.message;
+      li.appendChild(msg);
+      const dismiss = document.createElement('button');
+      dismiss.type = 'button';
+      dismiss.className = 'alert-dismiss';
+      dismiss.title = 'Dismiss';
+      dismiss.setAttribute('data-alert-dismiss', a.id);
+      dismiss.textContent = '×';
+      // Sticky crisis alerts stay until resolved — still allow dismiss of resolve/info
+      if (a.severity === 'critical' && a.sticky) {
+        dismiss.disabled = true;
+        dismiss.title = 'Stays until resolved';
+        dismiss.style.opacity = '0.35';
+        dismiss.style.cursor = 'default';
+      }
+      li.appendChild(dismiss);
+      list.appendChild(li);
+    }
+  }
+
+  /** Keep unpaid-crew / closed-shop alerts alive while relevant; swap to resolve when affordable. */
+  private syncCrisisAlerts() {
+    const need = bayUpkeepDue(this.inv);
+    const unpaid = this.inv.workers.filter((w) => w.unpaid);
+    const closed = listForcedClosedStalls(this.inv);
+    const short = need > 0 && this.inv.brass < need;
+
+    if (unpaid.length) {
+      const names = unpaid.map((w) => w.name).join(', ');
+      if (short) {
+        this.clearAlert('resolve-crew');
+        this.upsertAlert({
+          id: 'crisis-crew',
+          severity: 'critical',
+          sticky: true,
+          expiresAt: null,
+          message: `Can't pay ${names} — need ${need} brass for upkeep.`,
+        });
+      } else {
+        this.clearAlert('crisis-crew');
+        this.upsertAlert({
+          id: 'resolve-crew',
+          severity: 'resolve',
+          sticky: true,
+          expiresAt: null,
+          message: `${names} can be paid again — fire them in the Bay if wages are too high.`,
+        });
+      }
+    } else {
+      this.clearAlert('crisis-crew');
+      // Keep brief resolve after pay only if explicitly set by upkeep handler
+    }
+
+    if (closed.length) {
+      const labels = closed.map((s) => s.label).join(', ');
+      if (short) {
+        this.clearAlert('resolve-shops');
+        this.upsertAlert({
+          id: 'crisis-shops',
+          severity: 'critical',
+          sticky: true,
+          expiresAt: null,
+          message: `${labels} closed — need ${need} brass before shops can reopen.`,
+        });
+      } else {
+        this.clearAlert('crisis-shops');
+        this.upsertAlert({
+          id: 'resolve-shops',
+          severity: 'resolve',
+          sticky: true,
+          expiresAt: null,
+          message: `${labels} can be opened again from the stall desk.`,
+        });
+      }
+    } else {
+      this.clearAlert('crisis-shops');
+      this.clearAlert('resolve-shops');
+    }
+
+    this.renderAlerts();
+  }
+
+  private handleUpkeepResult(r: {
+    ok: boolean;
+    msg?: string;
+    need?: number;
+    unpaidWorkers?: { id: string; name: string }[];
+    closedShops?: { key: string; label: string }[];
+    paidWorkers?: { id: string; name: string }[];
+    canOpenShops?: { key: string; label: string }[];
+  }) {
+    if (!r.ok) {
+      if (r.msg) {
+        this.toast(r.msg, 8, { critical: true, sticky: true, alertId: 'crisis-upkeep' });
+      }
+      this.syncCrisisAlerts();
+      return;
+    }
+    this.clearAlert('crisis-upkeep');
+    this.clearAlert('crisis-crew');
+    if (r.paidWorkers && r.paidWorkers.length) {
+      const names = r.paidWorkers.map((w) => w.name).join(', ');
+      this.toast(`${names} paid — fire extras in the Bay if costs bite.`, 5.5, {
+        resolve: true,
+        sticky: true,
+        alertId: 'resolve-crew',
+      });
+    } else if (r.msg && (r.need ?? 0) > 0) {
+      this.toast(r.msg, 2.4);
+    }
+    if (r.canOpenShops && r.canOpenShops.length) {
+      const labels = r.canOpenShops.map((s) => s.label).join(', ');
+      this.toast(`${labels} can be opened again.`, 5.5, {
+        resolve: true,
+        sticky: true,
+        alertId: 'resolve-shops',
+      });
+    }
+    this.syncCrisisAlerts();
   }
 
   private onResize() {

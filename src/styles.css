@@ -771,6 +771,159 @@ h1 {
   line-height: 1.4;
   text-align: center;
   pointer-events: none;
+  z-index: 40;
+}
+.plaque-toast.critical {
+  border-color: #e07050;
+  background: rgba(48, 16, 12, 0.94);
+  color: #ffe8d8;
+  box-shadow: 0 0 0 1px rgba(224, 112, 80, 0.35);
+}
+.plaque-toast.resolve {
+  border-color: #7cbc6a;
+  background: rgba(12, 36, 22, 0.94);
+  color: #e8f5dc;
+}
+
+/* Sticky / expandable critical alerts */
+.game-alerts {
+  position: absolute;
+  top: 4.6rem;
+  right: 0.75rem;
+  z-index: 46;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+  pointer-events: none;
+}
+.alert-toggle {
+  pointer-events: auto;
+  appearance: none;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  border: 2px solid #e07050;
+  background: rgba(48, 16, 12, 0.92);
+  color: #ffe0c8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  position: relative;
+}
+.alert-toggle.has-critical {
+  animation: alert-pulse 1.6s ease-in-out infinite;
+}
+.alert-bang {
+  font-size: 1.25rem;
+  font-weight: 800;
+  line-height: 1;
+}
+.alert-count {
+  position: absolute;
+  top: -0.25rem;
+  right: -0.25rem;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.22rem;
+  border-radius: 999px;
+  background: #e07050;
+  color: #1a0804;
+  font-size: 0.62rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.alert-panel {
+  pointer-events: auto;
+  width: min(320px, 86vw);
+  max-height: min(50vh, 360px);
+  overflow: auto;
+  background: rgba(8, 20, 32, 0.96);
+  border: 1px solid #3a5568;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.alert-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid #2a4050;
+}
+.alert-panel-head h4 {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #e0d0a8;
+}
+.alert-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.alert-list li {
+  display: flex;
+  gap: 0.4rem;
+  align-items: flex-start;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid #2a4050;
+  background: #0c1e2e;
+  font-size: 0.74rem;
+  line-height: 1.35;
+  color: #d0e0f0;
+}
+.alert-list li.critical {
+  border-color: #e07050;
+  background: rgba(48, 16, 12, 0.55);
+  color: #ffe8d8;
+}
+.alert-list li.resolve {
+  border-color: #7cbc6a;
+  background: rgba(12, 36, 22, 0.55);
+  color: #e8f5dc;
+}
+.alert-list li .alert-msg {
+  flex: 1;
+}
+.alert-list li button.alert-dismiss {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #8a9aab;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.1rem;
+}
+.alert-list li button.alert-dismiss:hover {
+  color: #f0e6c8;
+}
+@keyframes alert-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  }
+  50% {
+    transform: scale(1.06);
+    box-shadow: 0 0 14px rgba(224, 112, 80, 0.45);
+  }
+}
+.forgeheart-mobile .game-alerts {
+  top: 3.6rem;
+  right: 0.55rem;
+}
+.forgeheart-mobile .alert-toggle {
+  width: 2.7rem;
+  height: 2.7rem;
 }
 
 /* Resolve / health panel */
@@ -1924,6 +2077,11 @@ h1 {
   font-size: 0.68rem;
   padding: 0.3rem 0.4rem;
   cursor: pointer;
+}
+.bay-worker-actions button.danger {
+  border-color: #e07050;
+  color: #ffe0c8;
+  background: #3a1810;
 }
 .bay-worker-actions button:hover,
 .bay-invent-row button:hover {

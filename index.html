@@ -129,6 +129,32 @@
         <div id="convert-toast" class="convert-toast hidden"></div>
         <div class="help-line">WASD · E read/interact · 1 Hand reprogram · Space jump · Esc</div>
       </div>
+      <div id="game-alerts" class="game-alerts" aria-live="polite">
+        <button
+          type="button"
+          id="alert-toggle"
+          class="alert-toggle hidden"
+          aria-expanded="false"
+          aria-controls="alert-panel"
+          title="Alerts"
+        >
+          <span class="alert-bang" aria-hidden="true">!</span>
+          <span id="alert-count" class="alert-count">0</span>
+        </button>
+        <div
+          id="alert-panel"
+          class="alert-panel hidden"
+          role="dialog"
+          aria-label="Active alerts"
+          aria-hidden="true"
+        >
+          <header class="alert-panel-head">
+            <h4>Alerts</h4>
+            <button type="button" id="alert-panel-close" class="maker-close" title="Close">×</button>
+          </header>
+          <ul id="alert-list" class="alert-list"></ul>
+        </div>
+      </div>
       <!-- Empire city map (M) — data-driven from live world -->
       <div id="city-map-panel" class="city-map-panel hidden" aria-hidden="true">
         <div class="city-map-card">

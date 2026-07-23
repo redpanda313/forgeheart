@@ -164,7 +164,8 @@ export class WorkerAgent {
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     let tag = jobShort(worker.job);
-    if (worker.job === 'program') tag = 'PROG';
+    if (worker.unpaid) tag = 'UNPAID';
+    else if (worker.job === 'program') tag = 'PROG';
     const prefix = worker.hasMedallion ? '★ ' : worker.kind === 'robot' ? '⚙ ' : '';
     drawLabel(ctx, canvas.width, canvas.height, `${prefix}${worker.name} · ${tag}`);
     (this.label.material as THREE.SpriteMaterial).map!.needsUpdate = true;
@@ -243,6 +244,30 @@ export class WorkerAgent {
       return null;
     }
     this.mesh.visible = true;
+
+    if (w.unpaid) {
+      this.phase = 'idle';
+      this.path = [];
+      this.pendingWork = null;
+      this.legQueue = [];
+      const bay = waypoints.bay;
+      if (bay) {
+        const dx = bay.x - this.mesh.position.x;
+        const dz = bay.z - this.mesh.position.z;
+        if (Math.hypot(dx, dz) > 0.4) {
+          const path = nav.findPath(this.mesh.position, bay);
+          const target = path.length > 1 ? path[1]! : bay;
+          const tdx = target.x - this.mesh.position.x;
+          const tdz = target.z - this.mesh.position.z;
+          const dist = Math.hypot(tdx, tdz) || 1;
+          const speed = workerMoveSpeed(w) * 0.65;
+          this.mesh.position.x += (tdx / dist) * Math.min(dist, speed * dt);
+          this.mesh.position.z += (tdz / dist) * Math.min(dist, speed * dt);
+        }
+      }
+      this.syncLoadout(w);
+      return null;
+    }
 
     const sig = `${w.job}|${w.programId ?? ''}|${this.progStep}`;
     if (!this.assignSig || this.assignSig !== sig) {
