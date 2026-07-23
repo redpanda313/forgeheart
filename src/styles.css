@@ -127,13 +127,18 @@ h1 {
 .city-map-panel {
   position: absolute;
   inset: 0;
-  z-index: 35;
+  /* Above game-alerts (46) / mobile chrome so × is always tappable */
+  z-index: 55;
   display: flex;
   align-items: center;
   justify-content: center;
   background: rgba(5, 10, 18, 0.72);
   backdrop-filter: blur(3px);
   pointer-events: auto;
+}
+.game-alerts.map-suppressed {
+  visibility: hidden;
+  pointer-events: none !important;
 }
 .city-map-panel.hidden {
   display: none !important;
@@ -2394,6 +2399,21 @@ h1 {
   font-size: 1.25rem;
   line-height: 1;
   cursor: pointer;
+  touch-action: manipulation;
+  position: relative;
+  z-index: 3;
+  flex-shrink: 0;
+}
+#city-map-close {
+  /* Larger tap target for mobile without growing the visual chrome too much */
+  width: 2.6rem;
+  height: 2.6rem;
+  font-size: 1.45rem;
+}
+#city-map-close::before {
+  content: '';
+  position: absolute;
+  inset: -0.45rem;
 }
 
 .maker-cats,
@@ -2975,8 +2995,23 @@ h1 {
     border-right: none;
   }
   .city-map-head {
-    padding: 0.45rem 0.65rem 0.35rem;
+    padding: max(0.45rem, env(safe-area-inset-top))
+      max(0.65rem, env(safe-area-inset-right)) 0.35rem
+      max(0.65rem, env(safe-area-inset-left));
     flex-shrink: 0;
+    align-items: center;
+    position: relative;
+    z-index: 4;
+  }
+  #city-map-close {
+    width: 3rem;
+    height: 3rem;
+    font-size: 1.6rem;
+    border-color: rgba(196, 163, 90, 0.65);
+    background: rgba(12, 24, 36, 0.96);
+  }
+  #city-map-close::before {
+    inset: -0.65rem;
   }
   .city-map-head h3 {
     font-size: 0.85rem;
