@@ -8,6 +8,7 @@ import { makeMaterials, type Mats } from './materials';
 import type { Collider } from './level';
 import { VENDORS, type VendorDef } from './economy';
 import type { HubWaypoints } from './workerAgent';
+import { makeSignSprite } from './signLabel';
 
 export type HubInteractKind =
   | 'vendor'
@@ -102,25 +103,20 @@ function floorSlab(
 }
 
 function labelSprite(text: string): THREE.Sprite {
-  const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 64;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = 'rgba(20,16,10,0.75)';
-  ctx.fillRect(0, 0, 256, 64);
-  ctx.strokeStyle = '#c4a35a';
-  ctx.strokeRect(2, 2, 252, 60);
-  ctx.fillStyle = '#f0e0b0';
-  ctx.font = 'bold 22px serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 32);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
-  const s = new THREE.Sprite(mat);
-  s.scale.set(2.4, 0.6, 1);
-  return s;
+  return makeSignSprite(text, {
+    width: 256,
+    maxWidth: 640,
+    height: 64,
+    maxHeight: 180,
+    maxFont: 22,
+    minFont: 11,
+    fontFamily: 'serif',
+    fill: 'rgba(20,16,10,0.75)',
+    stroke: '#c4a35a',
+    textColor: '#f0e0b0',
+    worldWidth: 2.8,
+    srgb: true,
+  });
 }
 
 export function buildMarketHub(): MarketHubBuilt {

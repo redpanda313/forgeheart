@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import type { Mats } from './materials';
 import type { Collider } from './level';
+import { makeSignSprite } from './signLabel';
 
 export type EnterableKind = 'home' | 'shop' | 'office';
 
@@ -106,22 +107,20 @@ export function buildEnterableShell(
   addBox(g, cols, mats.copper ?? mats.brass, w + 0.4, 0.28, d + 0.4, 0, floors * floorH + 0.2, 0, 'floor');
 
   if (opts?.label) {
-    const c = document.createElement('canvas');
-    c.width = 256;
-    c.height = 64;
-    const ctx = c.getContext('2d')!;
-    ctx.fillStyle = 'rgba(20,16,12,0.75)';
-    ctx.fillRect(0, 0, 256, 64);
-    ctx.fillStyle = '#f0e0b0';
-    ctx.font = 'bold 22px system-ui,sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(opts.label.slice(0, 18), 128, 32);
-    const spr = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false }),
-    );
+    const spr = makeSignSprite(opts.label, {
+      width: 256,
+      maxWidth: 560,
+      height: 64,
+      maxHeight: 160,
+      maxFont: 22,
+      minFont: 11,
+      fontFamily: 'system-ui,sans-serif',
+      fill: 'rgba(20,16,12,0.75)',
+      stroke: '#c4a35a',
+      textColor: '#f0e0b0',
+      worldWidth: 3.2,
+    });
     spr.position.set(0, floors * floorH + 1.2, d / 2 + 0.2);
-    spr.scale.set(3.2, 0.8, 1);
     g.add(spr);
   }
 

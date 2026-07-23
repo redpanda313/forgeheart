@@ -7,6 +7,7 @@ import type { Mats } from './materials';
 import { buildEnterableShell, offsetColliders } from './enterableBuilding';
 import type { Collider } from './level';
 import type { SiteProp, StallLayout, StallTier } from './economy';
+import { makeSignSprite, setSignWorldWidth } from './signLabel';
 
 export const STALL_TIERS: {
   id: StallTier;
@@ -168,29 +169,23 @@ export function addFrontDoorCue(
 
   // Floating labels
   const makeLabel = (text: string, y: number, scaleX: number) => {
-    const c = document.createElement('canvas');
-    c.width = 512;
-    c.height = 96;
-    const ctx = c.getContext('2d')!;
-    ctx.fillStyle = 'rgba(10,8,4,0.88)';
-    ctx.fillRect(0, 0, 512, 96);
-    ctx.strokeStyle = '#ffcc66';
-    ctx.lineWidth = 6;
-    ctx.strokeRect(4, 4, 504, 88);
-    ctx.fillStyle = '#ffe8a0';
-    ctx.font = 'bold 48px system-ui,sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, 256, 48);
-    const spr = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: new THREE.CanvasTexture(c),
-        transparent: true,
-        depthWrite: false,
-      }),
-    );
+    const spr = makeSignSprite(text, {
+      width: 512,
+      maxWidth: 640,
+      height: 96,
+      maxHeight: 180,
+      maxFont: 48,
+      minFont: 16,
+      fontFamily: 'system-ui,sans-serif',
+      fill: 'rgba(10,8,4,0.88)',
+      stroke: '#ffcc66',
+      textColor: '#ffe8a0',
+      lineWidth: 6,
+      pad: 14,
+      worldWidth: scaleX,
+    });
+    setSignWorldWidth(spr, scaleX);
     spr.position.set(0, y, doorZ + 0.35);
-    spr.scale.set(scaleX, scaleX * 0.22, 1);
     spr.userData.doorCue = true;
     cue.add(spr);
   };

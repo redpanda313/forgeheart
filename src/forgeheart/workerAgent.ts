@@ -22,6 +22,7 @@ import type { NavGrid } from './navGrid';
 import { makeKitNpc } from './npcKit';
 import { makeMaterials } from './materials';
 import { RobotUnit } from './robot';
+import { paintFittedSign } from './signLabel';
 
 export type HubWaypointKey = string;
 
@@ -427,27 +428,27 @@ function jobShort(job: JobId): string {
 }
 
 function drawLabel(ctx: CanvasRenderingContext2D, w: number, h: number, text: string) {
-  ctx.fillStyle = 'rgba(12,18,28,0.8)';
-  ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = '#c4a35a';
-  ctx.strokeRect(2, 2, w - 4, h - 4);
-  ctx.fillStyle = '#e8dcc0';
-  ctx.font = 'bold 18px system-ui,sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text.slice(0, 28), w / 2, h / 2, w - 16);
+  paintFittedSign(ctx, w, h, text, {
+    maxFont: 18,
+    minFont: 10,
+    fontFamily: 'system-ui,sans-serif',
+    fill: 'rgba(12,18,28,0.8)',
+    stroke: '#c4a35a',
+    textColor: '#e8dcc0',
+    pad: 8,
+  });
 }
 
 function makeLabel(text: string): THREE.Sprite {
   const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 48;
+  c.width = 320;
+  c.height = 64;
   const ctx = c.getContext('2d')!;
   drawLabel(ctx, c.width, c.height, text);
   const tex = new THREE.CanvasTexture(c);
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
   const s = new THREE.Sprite(mat);
-  s.scale.set(2.4, 0.45, 1);
+  s.scale.set(2.6, 0.52, 1);
   return s;
 }
 

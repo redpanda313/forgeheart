@@ -23,6 +23,7 @@ import { makeKitNpc, tickNpcAnim, type NpcMeshParts, type NpcVisualRole } from '
 import { buildEnterableShell, offsetColliders } from './enterableBuilding';
 import { buildPlazaCircuit, type PlazaCircuit } from './plazaCircuit';
 import { RobotUnit } from './robot';
+import { makeSignSprite, setSignWorldWidth } from './signLabel';
 export type CityInteractKind =
   | 'neighbor'
   | 'vendor'
@@ -218,24 +219,19 @@ export interface SkyCityBuilt {
 }
 
 function labelSprite(text: string): THREE.Sprite {
-  const c = document.createElement('canvas');
-  c.width = 320;
-  c.height = 64;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = 'rgba(12,16,24,0.8)';
-  ctx.fillRect(0, 0, 320, 64);
-  ctx.strokeStyle = '#c4a35a';
-  ctx.strokeRect(2, 2, 316, 60);
-  ctx.fillStyle = '#f0e0b0';
-  ctx.font = 'bold 20px system-ui,sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 160, 32);
-  const tex = new THREE.CanvasTexture(c);
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
-  const s = new THREE.Sprite(mat);
-  s.scale.set(3.2, 0.65, 1);
-  return s;
+  return makeSignSprite(text, {
+    width: 320,
+    maxWidth: 720,
+    height: 64,
+    maxHeight: 200,
+    maxFont: 20,
+    minFont: 11,
+    fontFamily: 'system-ui,sans-serif',
+    fill: 'rgba(12,16,24,0.8)',
+    stroke: '#c4a35a',
+    textColor: '#f0e0b0',
+    worldWidth: 3.4,
+  });
 }
 
 /** Deck thickness + collider padding so snap/land never miss thin tops */
@@ -936,7 +932,7 @@ export function buildSkyCity(): SkyCityBuilt {
 
     const lab = labelSprite(d.name.toUpperCase());
     lab.position.set(cx, 4.2, cz + sz * 0.35);
-    lab.scale.set(4.2, 0.75, 1);
+    setSignWorldWidth(lab, 4.2);
     addMesh(lab);
 
     // Fountain / center piece
@@ -1005,7 +1001,7 @@ export function buildSkyCity(): SkyCityBuilt {
     addMesh(sm);
     const sl = labelSprite(`STALL · ${d.stallCost}b · ${d.name}`);
     sl.position.set(cx + sz * 0.28, 2.9, cz + sz * 0.22);
-    sl.scale.set(3.6, 0.6, 1);
+    setSignWorldWidth(sl, 3.6);
     addMesh(sl);
     interactables.push({
       id: `stall_${d.id}`,
@@ -1057,7 +1053,7 @@ export function buildSkyCity(): SkyCityBuilt {
       const matNames = biome.mats.join('/');
       const hl = labelSprite(`${biome.name}`);
       hl.position.set(hx, 2.6, hz);
-      hl.scale.set(3.6, 0.6, 1);
+      setSignWorldWidth(hl, 3.6);
       addMesh(hl);
       interactables.push({
         id: `harvest_${d.id}`,
@@ -1096,7 +1092,7 @@ export function buildSkyCity(): SkyCityBuilt {
       addMesh(fm);
       const fl = labelSprite('FLOWERS');
       fl.position.set(fx, 1.8, fz);
-      fl.scale.set(2.4, 0.45, 1);
+      setSignWorldWidth(fl, 2.4);
       addMesh(fl);
       interactables.push({
         id: `flowers_${d.id}`,
@@ -1557,7 +1553,7 @@ export function buildSkyCity(): SkyCityBuilt {
     addMesh(lm);
     const ll = labelSprite('LEASE CITY WORKSHOP · empire HQ');
     ll.position.set(ix + 18, 3, iz + 10);
-    ll.scale.set(4.2, 0.7, 1);
+    setSignWorldWidth(ll, 4.2);
     addMesh(ll);
     interactables.push({
       id: 'city_workshop_lease',
@@ -1654,7 +1650,7 @@ export function buildSkyCity(): SkyCityBuilt {
     {
       const tip = labelSprite('EXPAND YARDS → Sky Foundry (board west)');
       tip.position.set(ix - 12, 2.8, iz - 4);
-      tip.scale.set(5.2, 0.75, 1);
+      setSignWorldWidth(tip, 5.2);
       workshopGroup.add(tip);
     }
     addMark(
@@ -1745,11 +1741,11 @@ export function buildSkyCity(): SkyCityBuilt {
     expandYardGroup.add(kiosk);
     const kLab = labelSprite('EXPAND BAY · more crew slots · no hard cap');
     kLab.position.set(fx + 6, 3.2, fz - 2);
-    kLab.scale.set(5.4, 0.8, 1);
+    setSignWorldWidth(kLab, 5.4);
     expandYardGroup.add(kLab);
     const title = labelSprite('EMPIRE EXPAND YARDS · Sky Foundry');
     title.position.set(fx + 8, 5.5, fz - 16);
-    title.scale.set(5.5, 0.85, 1);
+    setSignWorldWidth(title, 5.5);
     expandYardGroup.add(title);
 
     interactables.push({
@@ -1816,11 +1812,12 @@ export function buildSkyCity(): SkyCityBuilt {
       addMesh(mark);
       const lab = labelSprite(title);
       lab.position.set(x, DECK_Y + 3.2, z);
-      lab.scale.set(4.2, 0.7, 1);
+      setSignWorldWidth(lab, 4.2);
       addMesh(lab);
       const sub = labelSprite(blurb);
-      sub.position.set(x, DECK_Y + 2.55, z);
-      sub.scale.set(3.6, 0.55, 1);
+      const subLines = typeof sub.userData.signLines === 'number' ? sub.userData.signLines : 1;
+      sub.position.set(x, DECK_Y + 2.55 - Math.max(0, subLines - 1) * 0.22, z);
+      setSignWorldWidth(sub, 3.6);
       addMesh(sub);
       interactables.push({
         id: `storage_${track}`,
@@ -2138,7 +2135,7 @@ export function buildSkyCity(): SkyCityBuilt {
   {
     const skyLab = labelSprite('SKYWAYS · Q board · wind paths only · no roads');
     skyLab.position.set(apartmentPos.x + 8, 5.5, apartmentPos.z);
-    skyLab.scale.set(5.5, 0.8, 1);
+    setSignWorldWidth(skyLab, 5.5);
     addMesh(skyLab);
   }
 

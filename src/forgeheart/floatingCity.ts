@@ -11,6 +11,7 @@
 import * as THREE from 'three';
 import type { Mats } from './materials';
 import type { Collider } from './level';
+import { layoutSignText } from './signLabel';
 
 export type PlatformShape = 'circle' | 'octagon' | 'hexagon' | 'rect' | 'diamond';
 export type BuildingKind = 'office' | 'factory' | 'home' | 'church' | 'school';
@@ -435,27 +436,38 @@ function plaque(
   z: number,
   yaw: number,
 ) {
-  const plate = addMesh(parent, new THREE.BoxGeometry(1.4, 0.55, 0.08), mats.brass, x, y, z, 0, yaw, 0);
+  const laid = layoutSignText(text, {
+    width: 256,
+    maxWidth: 384,
+    height: 96,
+    maxHeight: 160,
+    maxFont: 28,
+    minFont: 12,
+    fontFamily: 'serif',
+    fill: '#2a2218',
+    stroke: '#c4a35a',
+    textColor: '#f0e0b0',
+    lineWidth: 6,
+    pad: 12,
+  });
+  const plateH = 0.45 * Math.max(1, laid.aspect / (96 / 256));
+  const plateW = 1.4 * Math.min(1.35, Math.max(1, laid.canvas.width / 256));
+  const plate = addMesh(
+    parent,
+    new THREE.BoxGeometry(plateW, plateH + 0.1, 0.08),
+    mats.brass,
+    x,
+    y,
+    z,
+    0,
+    yaw,
+    0,
+  );
   void plate;
-  // simple canvas label
-  const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 96;
-  const ctx = c.getContext('2d')!;
-  ctx.fillStyle = '#2a2218';
-  ctx.fillRect(0, 0, 256, 96);
-  ctx.strokeStyle = '#c4a35a';
-  ctx.lineWidth = 6;
-  ctx.strokeRect(4, 4, 248, 88);
-  ctx.fillStyle = '#f0e0b0';
-  ctx.font = 'bold 28px serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 48);
-  const tex = new THREE.CanvasTexture(c);
+  const tex = new THREE.CanvasTexture(laid.canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   const sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.25, 0.45),
+    new THREE.PlaneGeometry(plateW * 0.9, plateH),
     new THREE.MeshBasicMaterial({ map: tex, transparent: true }),
   );
   sign.position.set(x, y, z);
@@ -1169,28 +1181,48 @@ export function buildFloatingCitySample(
     const board = new THREE.Group();
     board.position.set(0, 2, 28);
     addMesh(board, new THREE.BoxGeometry(8, 3.2, 0.2), mats.iron, 0, 2, 0);
-    const c = document.createElement('canvas');
-    c.width = 512;
-    c.height = 256;
-    const ctx = c.getContext('2d')!;
-    ctx.fillStyle = '#1a2430';
-    ctx.fillRect(0, 0, 512, 256);
-    ctx.fillStyle = '#c4a35a';
-    ctx.font = 'bold 28px serif';
-    ctx.fillText('SKY DISTRICT · SAMPLE', 40, 50);
-    ctx.fillStyle = '#d0d8e0';
-    ctx.font = '20px sans-serif';
-    const lines = [
+    const paragraphs = [
+      'SKY DISTRICT · SAMPLE',
       'Walk: docks, bridges, parks, building interiors',
       'Surf: open air channels between platforms',
       'Platforms bob · energy domes hold them aloft',
       'Enter offices, factories, homes, church, school',
     ];
-    lines.forEach((ln, i) => ctx.fillText(ln, 40, 100 + i * 32));
+    const c = document.createElement('canvas');
+    c.width = 640;
+    c.height = 320;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#1a2430';
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.strokeStyle = '#c4a35a';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(4, 4, c.width - 8, c.height - 8);
+    let y = 36;
+    for (let i = 0; i < paragraphs.length; i++) {
+      const isTitle = i === 0;
+      const laid = layoutSignText(paragraphs[i]!, {
+        width: c.width - 48,
+        maxWidth: c.width - 48,
+        height: isTitle ? 40 : 36,
+        maxHeight: isTitle ? 56 : 72,
+        maxFont: isTitle ? 28 : 20,
+        minFont: 12,
+        fontFamily: isTitle ? 'serif' : 'sans-serif',
+        fill: 'rgba(0,0,0,0)',
+        stroke: 'rgba(0,0,0,0)',
+        textColor: isTitle ? '#c4a35a' : '#d0d8e0',
+        pad: 4,
+        lineWidth: 0,
+      });
+      ctx.drawImage(laid.canvas, 24, y);
+      y += laid.canvas.height + (isTitle ? 10 : 6);
+    }
+    // Grow canvas height if paragraphs spilled (shouldn't with fitted lines)
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
+    const planeH = Math.min(3.6, Math.max(3.0, 3.0 * (y / 280)));
     const plane = new THREE.Mesh(
-      new THREE.PlaneGeometry(7.6, 3.0),
+      new THREE.PlaneGeometry(7.6, planeH),
       new THREE.MeshBasicMaterial({ map: tex }),
     );
     plane.position.set(0, 2, 0.15);
