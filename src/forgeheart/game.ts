@@ -2701,7 +2701,7 @@ export class ForgeHeartGame {
       writeSlot(this.activeSlot, fresh);
       this.applyTutorialBackstory();
       this.flash(bs.tutorial.flashTitle);
-      this.toast(bs.tutorial.openingToast, 8);
+      this.toast(bs.tutorial.openingToast, 10);
       this.controls.lock();
       return;
     }
@@ -3215,7 +3215,7 @@ export class ForgeHeartGame {
       if (best.isBrother) {
         const t = this.tut();
         this.flash(t.wakeFlash);
-        this.toast(t.wakeToast, 5);
+        this.toast(t.wakeToast, 7);
       } else {
         const eq = this.plasmaEquilibrium(allyCount + 1);
         this.flash(`REPROGRAMMED · grid settles ~${eq}%`);
@@ -3242,7 +3242,7 @@ export class ForgeHeartGame {
     this.objective = 'Something is at the door…';
     this.setHelp('Grab Arc Wrench (E) · wait out the bangs — or bash the door open with 2');
     this.flash('A BANG at the lab door —');
-    this.toast(this.tut().siegeToast, 5);
+    this.toast(this.tut().siegeToast, 7);
     // Reveal wrench on the rack
     for (const it of this.interactables) {
       if (it.type === 'wrench_pickup') {
@@ -3364,10 +3364,10 @@ export class ForgeHeartGame {
     this.setHelp('2 Wrench · scramble or KO · Hand reprogram optional · flee to the dock if needed');
     if (reason === 'forced') {
       this.flash('YOU OPENED THE DOOR — two demon frames!');
-      this.toast(this.tut().breachToastFlee, 5);
+      this.toast(this.tut().breachToastFlee, 7);
     } else {
       this.flash('THE DOOR GIVES — two demon frames!');
-      this.toast(this.tut().breachToastFight, 5);
+      this.toast(this.tut().breachToastFight, 7);
     }
     // Auto-offer wrench if not taken
     if (!this.wrenchUnlocked) {
@@ -3817,7 +3817,7 @@ export class ForgeHeartGame {
       this.objective = `You dismantled ${obj} — gather 3 trays to rebuild`;
       this.setHelp(`E on glowing trays around the workstation · then Hand to wake ${name}`);
       this.flash(t.scrapFlash);
-      this.toast(t.scrapToast, 7);
+      this.toast(t.scrapToast, 9);
       for (const it of this.interactables) {
         if (it.type === 'tray') {
           it.mesh.visible = true;
@@ -3856,7 +3856,7 @@ export class ForgeHeartGame {
     const t = this.tut();
     this.objective = `Frame rebuilt — Hand (1) to call ${this.companionName()} home`;
     this.flash(t.rebuildFlash);
-    this.toast(t.rebuildToast, 6);
+    this.toast(t.rebuildToast, 8);
     this.audio.playPickup();
   }
 
@@ -3869,7 +3869,7 @@ export class ForgeHeartGame {
     this.audio.playWin();
     const t = this.tut();
     this.flash(t.winFlash);
-    this.toast(t.winToast, 6);
+    this.toast(t.winToast, 8);
     this.setHelp('Loading Sky City Market…');
     this.bringEliasToRace = this.bringEliasToRace || this.hadAllyOnce;
     const pre = this.buildSaveData();
@@ -4020,26 +4020,31 @@ export class ForgeHeartGame {
     // Personalized backstory intro (same seed as workshop — full heartfelt arc)
     const bs = this.backstory!;
     const mLines = bs.tutorial.marketLines;
-    this.toast(mLines[0] + ' ' + mLines[1], 6);
+    this.toast(mLines[0] + ' ' + mLines[1], 8);
     window.setTimeout(() => {
       if (this.disposed) return;
-      this.toast(mLines[2] + ' ' + mLines[3], 6);
-    }, 6500);
+      this.toast(mLines[2] + ' ' + mLines[3], 8);
+    }, 8500);
     window.setTimeout(() => {
       if (this.disposed) return;
-      if (mLines[4]) this.toast(mLines[4]!, 5);
-    }, 12500);
+      if (mLines[4]) {
+        this.toast(
+          `${mLines[4]} Assign a job in Bay (I) → Workers to send ${bs.companionName} to work.`,
+          7,
+        );
+      }
+    }, 17000);
     window.setTimeout(() => {
       if (this.disposed) return;
       if (this.inv.apartmentOwned) {
-        this.toast('Apartment already deeded — free practice in the training market.', 6);
+        this.toast('Apartment already deeded — free practice in the training market.', 7);
       } else {
         this.toast(
           `Market training: trade, craft, hire, sell. Reach ${APARTMENT_COST} brass, then follow the path east to Sky Real Estate.`,
-          8,
+          10,
         );
       }
-    }, 18000);
+    }, 24500);
 
     this.audio.setWind(0.3);
     this.syncEconomyHud();
@@ -7051,8 +7056,14 @@ export class ForgeHeartGame {
   private tickWorkers(dt: number) {
     if (!this.hub) return;
     let dirty = false;
+    // Companion idle-follow target = player feet on the market pad
+    const follow = new THREE.Vector3(
+      this.camera.position.x,
+      0,
+      this.camera.position.z,
+    );
     for (const a of this.workerAgents) {
-      const r = a.tick(dt, this.inv, this.hub.waypoints, this.navGrid);
+      const r = a.tick(dt, this.inv, this.hub.waypoints, this.navGrid, follow);
       if (r?.msg) {
         this.toast(r.msg, 2);
         dirty = true;
@@ -11300,19 +11311,20 @@ export class ForgeHeartGame {
 
   private toast(
     t: string,
-    sec = 2.5,
+    sec = 4,
     opts?: { critical?: boolean; resolve?: boolean; alertId?: string; sticky?: boolean },
   ) {
     const critical = !!opts?.critical;
     const resolve = !!opts?.resolve;
+    // Story/toasts linger a bit longer so procedural copy is readable
     const duration = critical
       ? this.mobile.enabled
-        ? 11
-        : 8
+        ? 12.5
+        : 9.5
       : resolve
         ? this.mobile.enabled
-          ? 8
-          : 5.5
+          ? 9.5
+          : 7
         : sec;
     this.msg = t;
     this.msgT = duration;
@@ -11337,13 +11349,13 @@ export class ForgeHeartGame {
     }
   }
   private plaque(t: string) {
-    const sec = this.mobile.enabled ? 9.5 : 5;
+    const sec = this.mobile.enabled ? 11 : 7;
     this.toast(t, sec);
   }
   private flash(t: string) {
     this.convertEl.textContent = t;
     this.convertEl.classList.remove('hidden');
-    window.setTimeout(() => this.convertEl.classList.add('hidden'), 2200);
+    window.setTimeout(() => this.convertEl.classList.add('hidden'), 3600);
   }
 
   private wireAlertsUi() {

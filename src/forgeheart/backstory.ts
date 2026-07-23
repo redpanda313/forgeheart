@@ -69,7 +69,7 @@ const REMAINS = [
   'a half-melted nameplate',
   'a prayer card from St. Brass',
   'a cracked monocle lens',
-  'a braid of copper wire they always wore',
+  'a braid of copper wire worn every day',
   'a scratched boarding pass to nowhere',
   'a dented tea tin of spare bolts',
   'a childhood gear-toy',
@@ -125,6 +125,7 @@ const SCAR = [
   'a stash of scrap brass you cannot bring yourself to sell',
 ] as const;
 
+/** Phrase after "he/she/they was/were …" — no embedded pronouns. */
 const PERSONALITY = [
   'always first into the light',
   'quiet until the gears needed a song',
@@ -138,13 +139,13 @@ const PERSONALITY = [
   'brave in small rooms, shy in grand halls',
   'loyal past the point of sense',
   'curious enough to open sealed folios',
-  'practical, until someone they loved was hurting',
+  'practical, until someone beloved was hurting',
   'a storyteller who made docks feel like home',
   'precise with hands, messy with feelings',
   'hopeful even when the plasma ran low',
   'protective of anyone smaller than the machine',
   'fond of tea gone cold beside the bench',
-  'a singer under their breath while soldering',
+  'a singer under the breath while soldering',
   'honest to a fault about what frames could hold',
 ] as const;
 
@@ -160,11 +161,11 @@ const SEASONS = [
   'the bright week the orchids bloomed on Cloud Terrace',
   'the long rain that flooded the lower markets',
   'the quiet month before the patent hearing',
-  'the feast-day they skipped to finish a chassis',
+  'the feast-day skipped to finish a chassis',
   'the eclipse over Grand Market',
   'the first frost on the workshop glass',
   'the windy equinox when the boards raced',
-  'the warm dusk they said goodbye “for a while”',
+  'the warm dusk of a temporary goodbye',
 ] as const;
 
 const PLACES = [
@@ -207,15 +208,16 @@ const LAST_WORDS = [
   '“You were always the better engineer.”',
 ] as const;
 
+/** Templates use {p} for possessive (his/her/their). */
 const WORKSHOP_TONES = [
-  'still smells like their coats',
-  'keeps their notes in the exact same stacks',
+  'still smells like {p} coats',
+  'keeps {p} notes in the exact same stacks',
   'echoes when you walk as if expecting two sets of boots',
-  'holds their tools where muscle memory left them',
+  'holds {p} tools where muscle memory left them',
   'feels too large for one living engineer',
   'hums with leftover plasma from nights of failed trials',
   'guards a silence you both used to fill with talk',
-  'is warmer near the bench they loved most',
+  'is warmer near the bench {p} hands loved most',
 ] as const;
 
 const MALE_NAMES = [
@@ -468,35 +470,37 @@ function buildTutorial(args: {
     args;
   const N = n;
   const whoOf = who.of;
+  const tone = workshopTone.replace(/\{p\}/g, p.possessive);
 
   const photoOpener = pick(rng, PHOTO_OPENERS);
+  // Always conjugate was/were for he/she/they
   const photoQuotes = [
-    `“Taken ${season}. ${capitalize(p.subject)} ${personality}.”`,
-    `“${season}. I still hear ${p.object} humming at the bench.”`,
-    `“${capitalize(p.subject)} was ${personality}. I keep this where I can see ${p.object}.”`,
+    `Taken ${season}. ${capitalize(p.subject)} ${p.was} ${personality}.`,
+    `${capitalize(season)}. I still hear ${p.object} humming at the bench.`,
+    `${capitalize(p.subject)} ${p.was} ${personality}. I keep this where I can see ${p.object}.`,
   ];
   const burialLines = [
-    `You laid ${p.object} to rest ${place}. The lab ${workshopTone}.`,
-    `Afterward you came back here alone. The workshop ${workshopTone}.`,
+    `You laid ${p.object} to rest ${place}. The lab ${tone}.`,
+    `Afterward you came back here alone. The workshop ${tone}.`,
     `There is a place ${place} with ${p.possessive} name — and this room, which still expects ${p.object}.`,
   ];
 
   const journalBodies = [
-    `I found the coil pattern in a sealed folio: plasma laced through brass can hold a pattern of mind. Not a program — a guest. When the frame is quiet and ${remains} is true, a soul may take seat. I write this for ${N}.`,
-    `Grandfather’s notes called it a “guest pattern.” Plasma sings; brass remembers. If any spark of ${N} remains between stars and steam, the right seat will know ${p.object}. I build because ${why}.`,
-    `Tonight I stop calling automata empty. Something looks out when the plasma holds. I will seat ${N} if the city itself has to wait. The coil is ready. The talisman is ${remains}.`,
+    `I found the coil pattern in a sealed folio: plasma laced through brass can hold a pattern of mind. Not a program — a guest. When the frame is quiet and the remains are true, a soul may take seat. I write this for ${whoOf}.`,
+    `Grandfather’s notes called it a “guest pattern.” Plasma sings; brass remembers. If any spark remains between stars and steam, the right seat will know ${p.object}. I build because ${why}.`,
+    `Tonight I stop calling automata empty. Something looks out when the plasma holds. I will seat ${whoOf} if the city itself has to wait. The coil is ready. What remains is ${remains}.`,
   ];
 
   const theoryBodies = [
-    `I no longer believe the automata are empty. Something looks out of their eyes when the plasma sings. Demons wear scrap like coats. But love is a beacon too — if I can call ${N} home, ${p.subject} will know my voice.`,
-    `They said personhood cannot cling to metal. I have seen the opposite: fear in red eyes, loyalty in green. ${capitalize(whoOf)} taught me that. ${capitalize(p.subject)} ${personality}. I will not scrap what still might listen.`,
-    `Rogue frames prove the worst can take a body. Then the best must be possible too. I am ${moral} — and I carry ${scar}. Still I reach for ${N} with the Hand, not the wrench.`,
+    `I no longer believe the automata are empty. Something looks out of their eyes when the plasma sings. Demons wear scrap like coats. But love is a beacon too — if I can call ${whoOf} home, ${p.subject} will know my voice.`,
+    `They said personhood cannot cling to metal. I have seen the opposite: fear in red eyes, loyalty in green. ${capitalize(whoOf)} taught me that. ${capitalize(p.subject)} ${p.was} ${personality}. I will not scrap what still might listen.`,
+    `Rogue frames prove the worst can take a body. Then the best must be possible too. I am ${moral} — and I carry ${scar}. Still I reach for ${whoOf} with the Hand, not the wrench.`,
   ];
 
   const talismanBodies = [
-    `Wired ${remains} into the chest plate. If any spark of ${N} remains, it will know this weight. Do not scrap the frame. Reprogram with the Hand. Speak ${p.possessive} name.`,
+    `Wired ${remains} into the chest plate. If any spark of ${whoOf} remains, it will know this weight. Do not scrap the frame. Reprogram with the Hand. Speak ${p.possessive} name.`,
     `Last words I keep: ${lastWords} I obeyed as far as craft allows. The frame on the bench is ${p.possessive} only chance. Hand (1). Not E. Not yet.`,
-    `${capitalize(remains)} sits over the heart gear. ${N} — ${whoOf} — lost to ${how}. I build ${why}. Wake ${p.object} gently.`,
+    `${capitalize(remains)} sits over the heart gear. ${capitalize(whoOf)}, lost to ${how}. I build ${why}. Wake ${p.object} gently.`,
   ];
 
   const wakeFlashes = [
@@ -531,13 +535,17 @@ function buildTutorial(args: {
     `${N} walks with you now in brass and green light.`,
   ];
 
+  // Photo: name only once (title), body uses relation + pronouns
+  const quote = pick(rng, photoQuotes);
+  const burial = pick(rng, burialLines);
+
   return {
     workshopName: `${surname} Workshop`,
     flashTitle: `The Workshop — ${N} waits on the bench`,
     openingToast: `${capitalize(whoOf)} is gone — lost to ${how}. The frame holds ${remains}. Walk the lab. Read. Then use the Hand (1) to wake ${N} — not scrap (E).`,
     objectiveExplore: `Read the lab. Wake ${N} with the Hand (1) — do not scrap ${p.object}.`,
-    photoTitle: `Photograph — ${N}`,
-    photoText: `${N} ${surname}, ${whoOf}. ${photoOpener}: ${pick(rng, photoQuotes)} ${pick(rng, burialLines)}`,
+    photoTitle: `Photograph — ${N} ${surname}`,
+    photoText: `${capitalize(whoOf)}. ${photoOpener}: “${quote}” ${burial}`,
     notes: [
       {
         title: pick(rng, JOURNAL_TITLES),
@@ -561,8 +569,8 @@ function buildTutorial(args: {
     scrapFlash: `The talisman frame is scrap —`,
     scrapToast: pick(rng, scrapToasts),
     rebuildObjectiveBase: `Rebuild ${N}`,
-    rebuildFlash: `A new shell stands — ${remains} is reseated`,
-    rebuildToast: `Stand close. Hand weapon. Click to reprogram. Speak ${N}'s name in the plasma.`,
+    rebuildFlash: `A new shell stands — ${remains} reseated`,
+    rebuildToast: `Stand close. Hand weapon. Click to reprogram. Speak the name ${N} in the plasma.`,
     trayPartFlash: (title, count) => `Part recovered — ${title} (${count}/3)`,
     trayObjective: (count) => `Rebuild ${N} — trays ${count}/3`,
     surviveObjective: `Survive — arc the demons, keep ${N} close`,
@@ -595,7 +603,8 @@ export function generateBackstory(seed: number): Backstory {
   const season = pick(rng, SEASONS);
   const place = pick(rng, PLACES);
   const lastWords = pick(rng, LAST_WORDS);
-  const workshopTone = pick(rng, WORKSHOP_TONES);
+  const workshopToneRaw = pick(rng, WORKSHOP_TONES);
+  const workshopTone = workshopToneRaw.replace(/\{p\}/g, p.possessive);
   const trays = pick(rng, TRAY_SETS);
 
   // Extra entropy draws (template-adjacent picks) — reserved for future lines
@@ -616,7 +625,7 @@ export function generateBackstory(seed: number): Backstory {
     season,
     place,
     lastWords,
-    workshopTone,
+    workshopTone: workshopToneRaw,
     trays,
     rng,
   });

@@ -238,8 +238,8 @@ export function tickNpcAnim(
   moving: boolean,
   phase: number,
 ) {
-  // Consistent walk cycle — cadence scales slightly by role
-  const cadence = role === 'flyer' ? 11 : role === 'girl' ? 8.5 : 9.2;
+  // Walk cadence ~5× prior rates (city clock is slow; legs need real-time feel)
+  const cadence = role === 'flyer' ? 55 : role === 'girl' ? 42 : 46;
   const walk = Math.sin(t * cadence + phase * 6);
   const idle = Math.sin(t * 1.7 + phase);
   const breath = Math.sin(t * 2.2 + phase * 3) * 0.012;

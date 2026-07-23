@@ -1580,8 +1580,8 @@ export function makeRobotWorker(name: string, id?: string): WorkerState {
 }
 
 /**
- * Ensure the soul-host robot worker exists (tutorial market crew of 4 with them).
- * `companionName` is the playthrough-unique name from backstory.
+ * Ensure the soul-host robot worker exists (companion from workshop).
+ * Starts idle (follows the player) until assigned a job/program.
  */
 export function ensureEliasRobotWorker(inv: InventoryState, companionName = 'Elias'): WorkerState {
   let elias = inv.workers.find((w) => w.id === 'bot_elias');
@@ -1597,45 +1597,31 @@ export function ensureEliasRobotWorker(inv: InventoryState, companionName = 'Eli
   elias = makeRobotWorker(companionName, 'bot_elias');
   elias.hasMedallion = true;
   elias.payGrade = 1;
+  elias.job = 'idle'; // follow player until a task is assigned
   inv.workers.unshift(elias);
   inv.medallionHostId = elias.id;
   inv.medallionLoose = false;
-  inv.laborerHired = true;
   return elias;
 }
 
 /**
- * Market tutorial crew: soul-host robot + 3 human laborers = 4 assignable agents.
- * Humans are granted once when the companion arrives (no brass charge).
+ * Market start: companion robot only — no free hired crew.
+ * Robot follows until Bay → Workers assigns a job or program.
+ * (Hired humans still appear if the player buys them later.)
  */
 export function ensureTutorialMarketCrew(inv: InventoryState, companionName = 'Elias'): void {
   if (!inv.parcelLeased) {
     inv.parcelLeased = true;
     inv.bayLevel = Math.max(inv.bayLevel, 1);
   }
-  ensureEliasRobotWorker(inv, companionName);
-  const humanNames = ['Rook', 'Pip', 'Nessa'];
-  let humans = inv.workers.filter((w) => w.kind !== 'robot');
-  for (const name of humanNames) {
-    if (humans.length >= 3) break;
-    if (humans.some((h) => h.name === name)) continue;
-    const w: WorkerState = {
-      id: `w_tut_${name.toLowerCase()}`,
-      name,
-      job: 'harvest',
-      programId: null,
-      hasBoard: false,
-      hasSpeedTool: false,
-      hasHaulPack: false,
-      jobsDone: 0,
-      payGrade: 0,
-      harvestSiteId: null,
-      kind: 'human',
-    };
-    inv.workers.push(w);
-    humans.push(w);
+  // Strip legacy free tutorial laborers (Rook / Pip / Nessa) once
+  inv.workers = inv.workers.filter((w) => !String(w.id).startsWith('w_tut_'));
+  const elias = ensureEliasRobotWorker(inv, companionName);
+  // Only force idle follow on a fresh companion that never worked a real job yet
+  if (elias.jobsDone === 0 && !elias.programId && (elias.job === 'harvest' || elias.job === 'idle')) {
+    elias.job = 'idle';
   }
-  inv.laborerHired = inv.workers.length > 0;
+  inv.laborerHired = inv.workers.some((w) => w.id !== 'bot_elias');
 }
 
 export function assignMedallion(inv: InventoryState, workerId: string): { ok: boolean; msg: string } {

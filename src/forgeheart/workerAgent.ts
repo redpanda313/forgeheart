@@ -167,6 +167,7 @@ export class WorkerAgent {
     let tag = jobShort(worker.job);
     if (worker.unpaid) tag = 'UNPAID';
     else if (worker.job === 'program') tag = 'PROG';
+    else if (worker.job === 'idle' && (worker.id === 'bot_elias' || worker.hasMedallion)) tag = 'FOLLOW';
     const prefix = worker.hasMedallion ? '★ ' : worker.kind === 'robot' ? '⚙ ' : '';
     drawLabel(ctx, canvas.width, canvas.height, `${prefix}${worker.name} · ${tag}`);
     (this.label.material as THREE.SpriteMaterial).map!.needsUpdate = true;
@@ -238,6 +239,8 @@ export class WorkerAgent {
     inv: InventoryState,
     waypoints: HubWaypoints,
     nav: NavGrid,
+    /** Player feet — idle soul-host robot follows until assigned a task */
+    followTarget?: THREE.Vector3 | null,
   ): { msg?: string } | null {
     const w = inv.workers.find((x) => x.id === this.workerId);
     if (!w) {
@@ -278,13 +281,18 @@ export class WorkerAgent {
       this.syncLoadout(w);
     }
 
-    this.bob += dt * 6;
-    const moving = this.phase === 'walk';
-    if (this.robot) {
-      this.robot.tickAnim(dt, moving, 'ally');
-    } else {
-      const body = this.mesh.children[0];
-      if (body) body.position.y = Math.sin(this.bob) * 0.04;
+    this.bob += dt * 30;
+    const isIdleCompanion =
+      w.job === 'idle' && (w.id === 'bot_elias' || !!w.hasMedallion) && !!followTarget;
+    let moving = this.phase === 'walk';
+    // Idle companion animates in its own branch (follow the player)
+    if (!isIdleCompanion) {
+      if (this.robot) {
+        this.robot.tickAnim(dt, moving, 'ally');
+      } else {
+        const body = this.mesh.children[0];
+        if (body) body.position.y = Math.sin(this.bob) * 0.04;
+      }
     }
 
     // Finished a cycle with empty legs → restart job
@@ -294,12 +302,37 @@ export class WorkerAgent {
     }
 
     if (w.job === 'idle') {
+      if (isIdleCompanion && followTarget) {
+        // Stay near the player until a Bay job/program is assigned
+        const pos = this.mesh.position;
+        const dx = followTarget.x - pos.x;
+        const dz = followTarget.z - pos.z;
+        const dist = Math.hypot(dx, dz);
+        moving = false;
+        if (dist > 2.6) {
+          const path = nav.findPath(pos, followTarget);
+          const target = path.length > 1 ? path[1]! : followTarget;
+          this.stepToward(target, workerMoveSpeed(w) * dt * 1.05, nav);
+          moving = true;
+        } else if (dist > 1.35) {
+          this.stepToward(followTarget, workerMoveSpeed(w) * dt * 0.55, nav);
+          moving = true;
+        }
+        // Face the engineer
+        if (dist > 0.2) {
+          this.mesh.rotation.y = Math.atan2(dx, dz);
+        }
+        if (this.robot) this.robot.tickAnim(dt, moving, 'ally');
+        this.syncLoadout(w);
+        return null;
+      }
       const bay = waypoints.bay;
+      if (!bay) return null;
       const path = nav.findPath(this.mesh.position, bay);
       const target = path.length > 1 ? path[1]! : bay;
-      const dx = bay.x - this.mesh.position.x;
-      const dz = bay.z - this.mesh.position.z;
-      if (dx * dx + dz * dz > 0.6) {
+      const bdx = bay.x - this.mesh.position.x;
+      const bdz = bay.z - this.mesh.position.z;
+      if (bdx * bdx + bdz * bdz > 0.6) {
         this.stepToward(target, workerMoveSpeed(w) * dt * 0.65, nav);
       }
       return null;

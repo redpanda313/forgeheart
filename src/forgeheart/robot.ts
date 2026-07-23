@@ -247,7 +247,8 @@ export class RobotUnit {
   }
 
   tickAnim(dt: number, moving: boolean, mode: CombatMode) {
-    this.anim += dt * (moving ? 6 : mode === 'fuse' ? 14 : 2);
+    // Walk cadence ~5× prior rate so legs match movement feel
+    this.anim += dt * (moving ? 30 : mode === 'fuse' ? 14 : 2.5);
     const s = Math.sin(this.anim);
 
     if (mode === 'disabled') {
