@@ -6,10 +6,17 @@
 import * as THREE from 'three';
 import { makeMaterials, type Mats } from './materials';
 import type { Collider } from './level';
-import { VENDORS, type VendorDef, type CommodityId } from './economy';
+import {
+  VENDORS,
+  COMMODITIES,
+  DEFAULT_HARVEST_POOL,
+  type VendorDef,
+  type CommodityId,
+} from './economy';
 import type { HubWaypoints } from './workerAgent';
 import { makeSignSprite } from './signLabel';
 import { buildFlowerPatchMesh, flowerDisplayName } from './flowers';
+import { buildMineralDepositMesh, depositLayoutForSite, MAT_VISUALS } from './harvestDeposits';
 
 export type HubInteractKind =
   | 'vendor'
@@ -297,14 +304,16 @@ export function buildMarketHub(): MarketHubBuilt {
     addMesh(dockLabel);
   }
 
-  // ——— Harvest reef pad (−X) ———
+  // ——— Harvest reef pad (−X): one colored geode rock per starter material ———
   const harvestSpot = new THREE.Vector3(-38, 0.5, 0);
   {
+    const reefCx = -38;
+    const reefCz = 0;
     const reef = new THREE.Mesh(
       new THREE.CylinderGeometry(10, 10.5, 0.45, 10),
       new THREE.MeshStandardMaterial({ color: 0x4a5a48, metalness: 0.2, roughness: 0.7 }),
     );
-    reef.position.set(-38, 0.15, 0);
+    reef.position.set(reefCx, 0.15, reefCz);
     reef.receiveShadow = true;
     addMesh(reef);
     addCol({
@@ -317,50 +326,47 @@ export function buildMarketHub(): MarketHubBuilt {
     addMesh(br.mesh);
     addCol(br.col);
 
-    // Ore nodes (visual)
-    for (let i = 0; i < 5; i++) {
-      const ang = (i / 5) * Math.PI * 2;
-      const ox = -38 + Math.cos(ang) * 4;
-      const oz = Math.sin(ang) * 4;
-      const node = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(0.55, 0),
+    // Deterministic mineral deposits — unique rock + geode per mat (stable forever)
+    const deposits = depositLayoutForSite('training', DEFAULT_HARVEST_POOL, 4.4);
+    for (const d of deposits) {
+      const mat = d.mat as CommodityId;
+      const node = buildMineralDepositMesh(mat, 1);
+      node.position.set(reefCx + d.ox, 0.05, reefCz + d.oz);
+      node.rotation.y = d.yaw;
+      node.scale.setScalar(d.scale);
+      addMesh(node);
+      const vis = MAT_VISUALS[mat];
+      const matName = COMMODITIES[mat]?.name ?? mat;
+      const geodeName = vis?.label ?? matName;
+      const mark = new THREE.Mesh(
+        new THREE.TorusGeometry(0.55, 0.05, 6, 12),
         new THREE.MeshStandardMaterial({
-          color: 0x8a9aaa,
-          metalness: 0.6,
-          roughness: 0.4,
-          emissive: 0x334455,
-          emissiveIntensity: 0.3,
+          color: vis?.geode ?? 0x66d8ff,
+          emissive: vis?.emissive ?? 0x2288cc,
+          emissiveIntensity: 0.55,
         }),
       );
-      node.position.set(ox, 0.7, oz);
-      addMesh(node);
+      mark.rotation.x = Math.PI / 2;
+      mark.position.set(reefCx + d.ox, 0.12, reefCz + d.oz);
+      addMesh(mark);
+      const lab = labelSprite(matName.toUpperCase());
+      lab.position.set(reefCx + d.ox, 1.85, reefCz + d.oz);
+      addMesh(lab);
+      interactables.push({
+        id: `harvest_training_${mat}`,
+        kind: 'harvest',
+        position: new THREE.Vector3(reefCx + d.ox, 0.5, reefCz + d.oz),
+        radius: 2.2,
+        mesh: mark,
+        label: `${geodeName} — extract ${matName}`,
+        harvestPool: [mat],
+        harvestName: `${geodeName} · Training Reef`,
+      });
     }
 
-    const hMark = new THREE.Mesh(
-      new THREE.TorusGeometry(1.2, 0.08, 6, 16),
-      new THREE.MeshStandardMaterial({
-        color: 0x66d8ff,
-        emissive: 0x2288cc,
-        emissiveIntensity: 0.6,
-      }),
-    );
-    hMark.rotation.x = Math.PI / 2;
-    hMark.position.copy(harvestSpot);
-    hMark.position.y = 0.5;
-    addMesh(hMark);
-
-    const hLab = labelSprite('CLOUD REEF · E harvest');
-    hLab.position.set(-38, 2.8, 0);
+    const hLab = labelSprite('CLOUD REEF · geodes');
+    hLab.position.set(reefCx, 2.8, reefCz);
     addMesh(hLab);
-
-    interactables.push({
-      id: 'harvest',
-      kind: 'harvest',
-      position: harvestSpot.clone(),
-      radius: 3.5,
-      mesh: hMark,
-      label: 'Cloud Reef — extract resources',
-    });
   }
 
   // ——— Training plaza flower patch (personality ingredient intro) ———

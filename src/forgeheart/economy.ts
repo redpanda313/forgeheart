@@ -617,6 +617,11 @@ export interface WorkerState {
    * Used for job=harvest and program nodes that harvest.
    */
   harvestSiteId: string | null;
+  /**
+   * When set, only harvest this mat at the chosen plaza/reef.
+   * null = all materials available at that site.
+   */
+  harvestMatId?: CommodityId | null;
   /** Human laborer vs owned robot chassis */
   kind?: 'human' | 'robot';
   /** Elias spirit host — human-parity stats + map marker */
@@ -1070,6 +1075,13 @@ export interface HarvestBiome {
 }
 
 export const HARVEST_BIOMES: Record<string, HarvestBiome> = {
+  /** Market training reef — one deposit per starter mat */
+  training: {
+    id: 'training',
+    name: 'Training Cloud Reef',
+    mats: ['cloud_iron', 'scrap_brass', 'spore_silk', 'sky_salt'],
+    color: 0x4a5a48,
+  },
   harbor: {
     id: 'harbor',
     name: 'Salt Cloud Reef',
@@ -1167,16 +1179,29 @@ export function listHarvestSites(): { id: string | null; name: string; mats: Com
   return sites;
 }
 
-export function harvestPoolForWorker(w: WorkerState): CommodityId[] {
-  if (w.harvestSiteId) {
-    return [...harvestBiomeForDistrict(w.harvestSiteId).mats];
-  }
+/** Materials available at a harvest site (or all default mats if mixed). */
+export function matsAtHarvestSite(siteId: string | null | undefined): CommodityId[] {
+  if (siteId) return [...harvestBiomeForDistrict(siteId).mats];
   return [...DEFAULT_HARVEST_POOL];
+}
+
+export function harvestPoolForWorker(w: WorkerState): CommodityId[] {
+  const siteMats = matsAtHarvestSite(w.harvestSiteId);
+  if (w.harvestMatId && siteMats.includes(w.harvestMatId)) {
+    return [w.harvestMatId];
+  }
+  // Stale mat filter if plaza doesn't carry it — fall back to all at site
+  return siteMats;
 }
 
 export function harvestSiteLabel(siteId: string | null | undefined): string {
   if (!siteId) return 'Any / mixed reefs';
   return harvestBiomeForDistrict(siteId).name;
+}
+
+export function harvestMatLabel(matId: CommodityId | null | undefined): string {
+  if (!matId) return 'All materials';
+  return COMMODITIES[matId]?.name ?? matId;
 }
 
 export function setWorkerHarvestSite(
@@ -1190,25 +1215,55 @@ export function setWorkerHarvestSite(
     return { ok: false, msg: 'Unknown harvest site.' };
   }
   w.harvestSiteId = siteId;
+  // Clear mat filter if not available at new plaza
+  const mats = matsAtHarvestSite(siteId);
+  if (w.harvestMatId && !mats.includes(w.harvestMatId)) {
+    w.harvestMatId = null;
+  }
   const label = harvestSiteLabel(siteId);
+  const mat = harvestMatLabel(w.harvestMatId);
   return {
     ok: true,
-    msg: `${w.name} will harvest at: ${label}`,
+    msg: `${w.name} will harvest at: ${label} · ${mat}`,
+  };
+}
+
+export function setWorkerHarvestMat(
+  inv: InventoryState,
+  workerId: string,
+  matId: CommodityId | null,
+): { ok: boolean; msg: string } {
+  const w = inv.workers.find((x) => x.id === workerId);
+  if (!w) return { ok: false, msg: 'Worker not found.' };
+  if (matId) {
+    const mats = matsAtHarvestSite(w.harvestSiteId);
+    if (!mats.includes(matId)) {
+      return {
+        ok: false,
+        msg: `${COMMODITIES[matId]?.name ?? matId} is not available at ${harvestSiteLabel(w.harvestSiteId)}.`,
+      };
+    }
+  }
+  w.harvestMatId = matId;
+  return {
+    ok: true,
+    msg: `${w.name} harvest target: ${harvestMatLabel(matId)} @ ${harvestSiteLabel(w.harvestSiteId)}`,
   };
 }
 
 export function describeWorkerAssignment(inv: InventoryState, w: WorkerState): string {
   if (w.unpaid) return 'UNPAID — idle until brass covers upkeep (or fire in Bay)';
+  const matBit = w.harvestMatId ? ` · ${harvestMatLabel(w.harvestMatId)}` : ' · all mats';
   if (w.job === 'program' && w.programId) {
     const p = inv.programs.find((x) => x.id === w.programId);
     const site =
       p && p.nodes.includes('harvest')
-        ? ` · reef: ${harvestSiteLabel(w.harvestSiteId)}`
+        ? ` · reef: ${harvestSiteLabel(w.harvestSiteId)}${matBit}`
         : '';
     return `Program “${p?.name ?? '?'}”${site}`;
   }
   if (w.job === 'harvest') {
-    return `Harvest · ${harvestSiteLabel(w.harvestSiteId)}`;
+    return `Harvest · ${harvestSiteLabel(w.harvestSiteId)}${matBit}`;
   }
   const def = JOB_DEFS.find((j) => j.id === w.job);
   return def?.name ?? w.job;
@@ -1567,6 +1622,7 @@ export function makeRobotWorker(name: string, id?: string): WorkerState {
     jobsDone: 0,
     payGrade: 0,
     harvestSiteId: null,
+    harvestMatId: null,
     kind: 'robot',
     hasMedallion: false,
     frameId: null,
@@ -2650,6 +2706,7 @@ export function hireLaborer(inv: InventoryState): { ok: boolean; msg: string; wo
     jobsDone: 0,
     payGrade: 0,
     harvestSiteId: null,
+    harvestMatId: null,
   };
   inv.workers.push(w);
   inv.laborerHired = true;
@@ -4875,6 +4932,10 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
         typeof w.harvestSiteId === 'string' && w.harvestSiteId
           ? String(w.harvestSiteId)
           : null,
+      harvestMatId:
+        typeof w.harvestMatId === 'string' && w.harvestMatId in COMMODITIES
+          ? (w.harvestMatId as CommodityId)
+          : null,
       kind: w.kind === 'robot' ? 'robot' : 'human',
       hasMedallion: !!w.hasMedallion,
       frameId: w.frameId ? String(w.frameId) : null,
@@ -4900,6 +4961,7 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
         jobsDone: 0,
         payGrade: 0,
         harvestSiteId: null,
+        harvestMatId: null,
       },
     ];
   } else {
@@ -4910,6 +4972,7 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
       jobsDone: w.jobsDone ?? 0,
       payGrade: w.payGrade ?? 0,
       harvestSiteId: w.harvestSiteId ?? null,
+      harvestMatId: w.harvestMatId ?? null,
     }));
   }
   inv.laborerHired = inv.workers.length > 0;

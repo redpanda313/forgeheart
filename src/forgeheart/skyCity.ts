@@ -11,6 +11,7 @@ import {
   VENDORS,
   CITY_DISTRICTS,
   harvestBiomeForDistrict,
+  COMMODITIES,
   type VendorDef,
   type CityDistrictDef,
   type CommodityId,
@@ -24,6 +25,7 @@ import { buildEnterableShell, offsetColliders } from './enterableBuilding';
 import { buildPlazaCircuit, type PlazaCircuit } from './plazaCircuit';
 import { RobotUnit } from './robot';
 import { makeSignSprite, setSignWorldWidth } from './signLabel';
+import { buildMineralDepositMesh, depositLayoutForSite, MAT_VISUALS } from './harvestDeposits';
 import {
   buildFlowerPatchMesh,
   flowerDisplayName,
@@ -1054,33 +1056,49 @@ export function buildSkyCity(): SkyCityBuilt {
         kind: 'floor',
       });
       windSkyway(cx, cz, hx, hz, { arch: 6, width: 6.5 });
-      const hm = new THREE.Mesh(
-        new THREE.TorusGeometry(1.1, 0.08, 6, 16),
-        new THREE.MeshStandardMaterial({
-          color: 0x66d8ff,
-          emissive: 0x2288cc,
-          emissiveIntensity: 0.6,
-        }),
-      );
-      hm.rotation.x = Math.PI / 2;
-      hm.position.set(hx, 0.55, hz);
-      addMesh(hm);
-      const matNames = biome.mats.join('/');
+      // One unique mineral deposit per material available at this plaza
+      const deposits = depositLayoutForSite(d.id, biome.mats, 4.6);
+      for (const dep of deposits) {
+        const mat = dep.mat;
+        const node = buildMineralDepositMesh(mat, hashDistrictFlower(d.id, mat, 0));
+        node.position.set(hx + dep.ox, DECK_Y, hz + dep.oz);
+        node.rotation.y = dep.yaw;
+        node.scale.setScalar(dep.scale);
+        addMesh(node);
+        const vis = MAT_VISUALS[mat];
+        const matName = COMMODITIES[mat]?.name ?? mat;
+        const geodeName = vis?.label ?? matName;
+        const mark = new THREE.Mesh(
+          new THREE.TorusGeometry(0.5, 0.05, 6, 12),
+          new THREE.MeshStandardMaterial({
+            color: vis?.geode ?? 0x66d8ff,
+            emissive: vis?.emissive ?? 0x2288cc,
+            emissiveIntensity: 0.55,
+          }),
+        );
+        mark.rotation.x = Math.PI / 2;
+        mark.position.set(hx + dep.ox, DECK_Y + 0.12, hz + dep.oz);
+        addMesh(mark);
+        const ml = labelSprite(matName.toUpperCase());
+        ml.position.set(hx + dep.ox, DECK_Y + 1.75, hz + dep.oz);
+        setSignWorldWidth(ml, 2.4);
+        addMesh(ml);
+        interactables.push({
+          id: `harvest_${d.id}_${mat}`,
+          kind: 'harvest',
+          position: new THREE.Vector3(hx + dep.ox, 0.5, hz + dep.oz),
+          radius: 2.15,
+          mesh: mark,
+          label: `${geodeName} · ${biome.name}`,
+          districtId: d.id,
+          harvestPool: [mat],
+          harvestName: `${geodeName} · ${biome.name}`,
+        });
+      }
       const hl = labelSprite(`${biome.name}`);
       hl.position.set(hx, 2.6, hz);
       setSignWorldWidth(hl, 3.6);
       addMesh(hl);
-      interactables.push({
-        id: `harvest_${d.id}`,
-        kind: 'harvest',
-        position: new THREE.Vector3(hx, 0.5, hz),
-        radius: 3.5,
-        mesh: hm,
-        label: `Harvest · ${biome.name} (${matNames})`,
-        districtId: d.id,
-        harvestPool: [...biome.mats],
-        harvestName: biome.name,
-      });
     }
 
     // Plaza flower patches — one bloom type per patch; some plazas host two

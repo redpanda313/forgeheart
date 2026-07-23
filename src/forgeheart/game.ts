@@ -124,7 +124,9 @@ import {
   setWorkerJob,
   assignWorkerProgram,
   setWorkerHarvestSite,
+  setWorkerHarvestMat,
   listHarvestSites,
+  matsAtHarvestSite,
   describeWorkerAssignment,
   createProgram,
   createProgramFromTemplate,
@@ -153,7 +155,6 @@ import {
   tickAllPassiveWorkers,
   applyHarvestSuccess,
   DEFAULT_HARVEST_POOL,
-  addItem,
   leaseStall,
   leaseCityStall,
   toggleStallOpen,
@@ -479,6 +480,14 @@ export class ForgeHeartGame {
   private harvestOpen = false;
   private harvestNeedle = 0;
   private harvestDir = 1;
+  /** Green zone left edge (%) — starts random in right 2/3, gently drifts */
+  private harvestZoneLeft = 58;
+  private harvestZoneWidth = 14;
+  private harvestZoneVel = 4;
+  private harvestNeedleSpeed = 55;
+  /** Yield qty rolled with difficulty (larger haul = harder timing) */
+  private harvestHaulQty = 2;
+  private harvestMode: 'ore' | 'flower' = 'ore';
   /** Active reef pool (city biomes specialize mats) */
   private harvestPool: CommodityId[] = [...DEFAULT_HARVEST_POOL];
   private harvestLabel = 'Cloud reef';
@@ -803,8 +812,7 @@ export class ForgeHeartGame {
       // Harvest mini-game
       if (this.harvestOpen && !wasDown && e.code === 'Space') {
         e.preventDefault();
-        const inZone = this.harvestNeedle >= 55 && this.harvestNeedle <= 75;
-        this.closeHarvest(inZone);
+        this.closeHarvest(this.harvestNeedleInZone());
         return;
       }
       if (this.harvestOpen && e.code === 'Escape') {
@@ -2452,8 +2460,7 @@ export class ForgeHeartGame {
       (e) => {
         e.preventDefault();
         if (this.disposed || !this.harvestOpen) return;
-        const inZone = this.harvestNeedle >= 55 && this.harvestNeedle <= 75;
-        this.closeHarvest(inZone);
+        this.closeHarvest(this.harvestNeedleInZone());
       },
       { signal: sig },
     );
@@ -4489,16 +4496,7 @@ export class ForgeHeartGame {
       this.tickAoiPresence(focus.x, focus.z);
     }
     if (this.harvestOpen) {
-      this.harvestNeedle += this.harvestDir * dt * 55;
-      if (this.harvestNeedle >= 100) {
-        this.harvestNeedle = 100;
-        this.harvestDir = -1;
-      } else if (this.harvestNeedle <= 0) {
-        this.harvestNeedle = 0;
-        this.harvestDir = 1;
-      }
-      const needle = document.getElementById('harvest-needle');
-      if (needle) needle.style.left = `${this.harvestNeedle}%`;
+      this.tickHarvestMinigame(dt);
       this.renderer.render(this.scene, this.camera);
       return;
     }
@@ -4785,6 +4783,7 @@ export class ForgeHeartGame {
       this.openHarvest({
         pool: it.harvestPool,
         name: it.harvestName ?? 'Cloud reef',
+        mode: 'ore',
       });
       return true;
     }
@@ -4792,17 +4791,11 @@ export class ForgeHeartGame {
       const pool = it.harvestPool?.length
         ? it.harvestPool
         : (['bloom_sky'] as CommodityId[]);
-      // One bloom type per patch location
-      const id = pool[0]!;
-      const n = 1 + (Math.random() < 0.35 ? 1 : 0);
-      if (!addItem(this.inv, id, n)) {
-        this.toast('Pack full for those blooms.', 2.5);
-        return true;
-      }
-      this.toast(`Picked ${n}× ${COMMODITIES[id].name} · personality for frames.`, 3);
-      this.audio.playPickup();
-      writeSlot(this.activeSlot, this.buildSaveData());
-      this.syncEconomyHud();
+      this.openHarvest({
+        pool,
+        name: it.harvestName ?? 'Flower patch',
+        mode: 'flower',
+      });
       return true;
     }
     if (it.kind === 'broker') {
@@ -6765,18 +6758,9 @@ export class ForgeHeartGame {
     if (!this.hub) return;
     this.respawnCd = Math.max(0, this.respawnCd - dt);
 
-    // Harvest mini-game needle
+    // Harvest mini-game needle + moving green zone
     if (this.harvestOpen) {
-      this.harvestNeedle += this.harvestDir * dt * 55;
-      if (this.harvestNeedle >= 100) {
-        this.harvestNeedle = 100;
-        this.harvestDir = -1;
-      } else if (this.harvestNeedle <= 0) {
-        this.harvestNeedle = 0;
-        this.harvestDir = 1;
-      }
-      const needle = document.getElementById('harvest-needle');
-      if (needle) needle.style.left = `${this.harvestNeedle}%`;
+      this.tickHarvestMinigame(dt);
       this.renderer.render(this.scene, this.camera);
       return;
     }
@@ -8567,12 +8551,13 @@ export class ForgeHeartGame {
       card.innerHTML = `<strong>${w.name}</strong><div class="pa-status">${status}</div>
         <div class="pa-meta">Pay G${grade} · up to ${maxN} steps</div>`;
 
-      // Harvest reef site (applies to harvest job + harvest program nodes)
+      // Harvest plaza + material (applies to harvest job + harvest program nodes)
+      if (w.harvestMatId === undefined) w.harvestMatId = null;
       const reefRow = document.createElement('div');
       reefRow.className = 'pa-row';
       const reefLab = document.createElement('label');
       reefLab.className = 'pa-lab';
-      reefLab.textContent = 'REEF';
+      reefLab.textContent = 'PLAZA';
       const reefSel = document.createElement('select');
       for (const s of sites) {
         const o = document.createElement('option');
@@ -8595,6 +8580,42 @@ export class ForgeHeartGame {
       reefRow.appendChild(reefLab);
       reefRow.appendChild(reefSel);
       card.appendChild(reefRow);
+
+      const matRow = document.createElement('div');
+      matRow.className = 'pa-row';
+      const matLab = document.createElement('label');
+      matLab.className = 'pa-lab';
+      matLab.textContent = 'MAT';
+      const matSel = document.createElement('select');
+      const siteMats = matsAtHarvestSite(w.harvestSiteId);
+      {
+        const oAll = document.createElement('option');
+        oAll.value = '';
+        oAll.textContent = `All at plaza (${siteMats.map((m) => COMMODITIES[m].name.split(' ')[0]).join('/')})`;
+        if (!w.harvestMatId) oAll.selected = true;
+        matSel.appendChild(oAll);
+      }
+      for (const m of siteMats) {
+        const o = document.createElement('option');
+        o.value = m;
+        o.textContent = COMMODITIES[m].name;
+        if (w.harvestMatId === m) o.selected = true;
+        matSel.appendChild(o);
+      }
+      matSel.addEventListener('change', () => {
+        const id = matSel.value === '' ? null : (matSel.value as CommodityId);
+        const r = setWorkerHarvestMat(this.inv, w.id, id);
+        this.programLog(r.msg);
+        if (w.job === 'idle' || w.job === 'harvest') {
+          setWorkerJob(this.inv, w.id, 'harvest');
+        }
+        writeSlot(this.activeSlot, this.buildSaveData());
+        this.fillProgramPanel();
+        this.syncEconomyHud();
+      });
+      matRow.appendChild(matLab);
+      matRow.appendChild(matSel);
+      card.appendChild(matRow);
 
       // Compact quick-job select (programs are the main path)
       const jobRow = document.createElement('div');
@@ -8747,23 +8768,64 @@ export class ForgeHeartGame {
     if (log) log.textContent = msg;
   }
 
-  private openHarvest(opts?: { pool?: CommodityId[]; name?: string }) {
+  private openHarvest(opts?: {
+    pool?: CommodityId[];
+    name?: string;
+    mode?: 'ore' | 'flower';
+  }) {
     this.harvestOpen = true;
-    this.harvestNeedle = 0;
-    this.harvestDir = 1;
+    this.harvestMode = opts?.mode ?? 'ore';
     this.harvestPool =
       opts?.pool && opts.pool.length ? [...opts.pool] : [...DEFAULT_HARVEST_POOL];
-    this.harvestLabel = opts?.name ?? 'Cloud reef';
+    this.harvestLabel = opts?.name ?? (this.harvestMode === 'flower' ? 'Flower patch' : 'Cloud reef');
+
+    // Haul size: larger hauls → faster needle + smaller green zone
+    const haulTier =
+      this.harvestMode === 'flower'
+        ? 1 + (Math.random() < 0.4 ? 1 : 0) // 1–2
+        : 1 + Math.floor(Math.random() * 3); // 1–3
+    this.harvestHaulQty =
+      this.harvestMode === 'flower'
+        ? haulTier
+        : haulTier === 1
+          ? 1 + Math.floor(Math.random() * 2)
+          : haulTier === 2
+            ? 2 + Math.floor(Math.random() * 2)
+            : 3 + Math.floor(Math.random() * 2);
+
+    // Zone width shrinks slightly on larger hauls (still fair)
+    this.harvestZoneWidth = Math.max(
+      8,
+      (this.harvestMode === 'flower' ? 15 : 17) - haulTier * 2.4,
+    );
+    // Green zone starts in the right 2/3 of the bar
+    const rightStart = 100 / 3;
+    const maxLeft = 100 - this.harvestZoneWidth;
+    this.harvestZoneLeft = rightStart + Math.random() * Math.max(0.01, maxLeft - rightStart);
+    // Gentle drift; faster drift for larger hauls
+    this.harvestZoneVel =
+      (Math.random() < 0.5 ? 1 : -1) * (2.8 + haulTier * 1.4 + Math.random() * 1.2);
+    this.harvestNeedleSpeed = 40 + haulTier * 24 + (this.harvestMode === 'flower' ? 6 : 0);
+    this.harvestNeedle = 0;
+    this.harvestDir = 1;
+
     const el = document.getElementById('harvest-overlay');
     el?.classList.remove('hidden');
     el?.setAttribute('aria-hidden', 'false');
+    const title = document.querySelector('#harvest-overlay h3');
+    if (title) {
+      title.textContent =
+        this.harvestMode === 'flower' ? 'FLOWER PICK' : 'CLOUD REEF HAUL';
+    }
     const hint = document.getElementById('harvest-hint');
     if (hint) {
       const mats = this.harvestPool.map((id) => COMMODITIES[id].name).join(', ');
+      const sizeWord = haulTier >= 3 ? 'heavy' : haulTier === 2 ? 'solid' : 'light';
       hint.textContent = this.mobile.enabled
-        ? `${this.harvestLabel} · tap EXTRACT in the green zone · yields: ${mats}`
-        : `${this.harvestLabel} · Space in green · yields: ${mats}`;
+        ? `${this.harvestLabel} · ${sizeWord} haul ×${this.harvestHaulQty} · tap EXTRACT in the moving green · ${mats}`
+        : `${this.harvestLabel} · ${sizeWord} haul ×${this.harvestHaulQty} · Space in the moving green · ${mats}`;
     }
+    this.syncHarvestZoneUi();
     this.syncMobileGameplay();
     try {
       this.controls.unlock();
@@ -8772,18 +8834,68 @@ export class ForgeHeartGame {
     }
   }
 
+  private harvestNeedleInZone(): boolean {
+    const lo = this.harvestZoneLeft;
+    const hi = this.harvestZoneLeft + this.harvestZoneWidth;
+    return this.harvestNeedle >= lo && this.harvestNeedle <= hi;
+  }
+
+  private syncHarvestZoneUi() {
+    const zone = document.querySelector('.harvest-zone') as HTMLElement | null;
+    if (zone) {
+      zone.style.left = `${this.harvestZoneLeft}%`;
+      zone.style.width = `${this.harvestZoneWidth}%`;
+    }
+    const needle = document.getElementById('harvest-needle');
+    if (needle) needle.style.left = `${this.harvestNeedle}%`;
+  }
+
+  private tickHarvestMinigame(dt: number) {
+    // Needle sweep
+    this.harvestNeedle += this.harvestDir * dt * this.harvestNeedleSpeed;
+    if (this.harvestNeedle >= 100) {
+      this.harvestNeedle = 100;
+      this.harvestDir = -1;
+    } else if (this.harvestNeedle <= 0) {
+      this.harvestNeedle = 0;
+      this.harvestDir = 1;
+    }
+    // Green zone gently drifts within the right 2/3 of the bar
+    const minL = 100 / 3;
+    const maxL = 100 - this.harvestZoneWidth;
+    this.harvestZoneLeft += this.harvestZoneVel * dt;
+    if (this.harvestZoneLeft <= minL) {
+      this.harvestZoneLeft = minL;
+      this.harvestZoneVel = Math.abs(this.harvestZoneVel);
+    } else if (this.harvestZoneLeft >= maxL) {
+      this.harvestZoneLeft = maxL;
+      this.harvestZoneVel = -Math.abs(this.harvestZoneVel);
+    }
+    this.syncHarvestZoneUi();
+  }
+
   private closeHarvest(success: boolean) {
     this.harvestOpen = false;
     const el = document.getElementById('harvest-overlay');
     el?.classList.add('hidden');
     el?.setAttribute('aria-hidden', 'true');
     if (success) {
-      const r = applyHarvestSuccess(this.inv, this.harvestPool);
-      this.toast(`${this.harvestLabel}: ${r.msg}`, 2.5);
+      const r = applyHarvestSuccess(this.inv, this.harvestPool, this.harvestHaulQty);
+      const prefix =
+        this.harvestMode === 'flower' ? 'Picked' : this.harvestLabel;
+      this.toast(
+        this.harvestMode === 'flower'
+          ? `${prefix}: ${r.msg} · personality for frames`
+          : `${prefix}: ${r.msg}`,
+        3,
+      );
       this.audio.playPickup();
       writeSlot(this.activeSlot, this.buildSaveData());
     } else {
-      this.toast('Extraction failed — try again.', 2);
+      this.toast(
+        this.harvestMode === 'flower' ? 'Pick missed — try again.' : 'Extraction failed — try again.',
+        2,
+      );
     }
     this.syncEconomyHud();
     this.syncMobileGameplay();
@@ -8800,24 +8912,22 @@ export class ForgeHeartGame {
       return true;
     }
     if (it.kind === 'harvest') {
-      this.openHarvest();
+      this.openHarvest({
+        pool: it.harvestPool,
+        name: it.harvestName ?? 'Cloud reef',
+        mode: 'ore',
+      });
       return true;
     }
     if (it.kind === 'flower_pick') {
       const pool = it.harvestPool?.length
         ? it.harvestPool
         : (['bloom_sky'] as CommodityId[]);
-      // Each patch holds one type — take that bloom (or first if misconfigured)
-      const id = pool[0]!;
-      const n = 1 + (Math.random() < 0.35 ? 1 : 0);
-      if (!addItem(this.inv, id, n)) {
-        this.toast('Pack full for those blooms.', 2.5);
-        return true;
-      }
-      this.toast(`Picked ${n}× ${COMMODITIES[id].name} · personality for frames.`, 3);
-      this.audio.playPickup();
-      writeSlot(this.activeSlot, this.buildSaveData());
-      this.syncEconomyHud();
+      this.openHarvest({
+        pool,
+        name: it.harvestName ?? 'Flower patch',
+        mode: 'flower',
+      });
       return true;
     }
     if (it.kind === 'lease_office' || it.kind === 'bay_expand') {

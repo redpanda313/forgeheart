@@ -1429,6 +1429,8 @@ h1 {
   background: rgba(100, 220, 160, 0.35);
   border-left: 2px solid #82e0aa;
   border-right: 2px solid #82e0aa;
+  /* left/width set at runtime — zone drifts during haul */
+  transition: none;
 }
 .harvest-needle {
   position: absolute;
