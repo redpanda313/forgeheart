@@ -2600,6 +2600,7 @@ export class ForgeHeartGame {
     this.cityMapCam = null;
     this.cityMapDrag = null;
     this.activeVendor = null;
+    document.getElementById('game-alerts')?.classList.remove('map-suppressed');
     const ids = [
       'bay-panel',
       'craft-panel',
@@ -4715,8 +4716,9 @@ export class ForgeHeartGame {
     if (it.kind === 'flower_pick') {
       const pool = it.harvestPool?.length
         ? it.harvestPool
-        : (['bloom_sky', 'bloom_brass', 'flower_gift'] as CommodityId[]);
-      const id = pool[Math.floor(Math.random() * pool.length)]!;
+        : (['bloom_sky'] as CommodityId[]);
+      // One bloom type per patch location
+      const id = pool[0]!;
       const n = 1 + (Math.random() < 0.35 ? 1 : 0);
       if (!addItem(this.inv, id, n)) {
         this.toast('Pack full for those blooms.', 2.5);
@@ -6312,10 +6314,22 @@ export class ForgeHeartGame {
     if (this.cityMapWired || this.disposed) return;
     this.cityMapWired = true;
     const sig = this.sessionAbort.signal;
-    document.getElementById('city-map-close')?.addEventListener(
-      'click',
-      () => {
-        if (!this.disposed) this.closeCityMap();
+    const closeMap = (ev: Event) => {
+      if (this.disposed) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.closeCityMap();
+    };
+    const closeBtn = document.getElementById('city-map-close');
+    // pointerup + click: mobile Safari often drops click when overlays fight for the tap
+    closeBtn?.addEventListener('pointerup', closeMap, { signal: sig });
+    closeBtn?.addEventListener('click', closeMap, { signal: sig });
+    // Backdrop tap (dimmed area outside the card) also closes on touch devices
+    document.getElementById('city-map-panel')?.addEventListener(
+      'pointerup',
+      (ev) => {
+        if (this.disposed || !this.cityMapOpen) return;
+        if (ev.target === ev.currentTarget) closeMap(ev);
       },
       { signal: sig },
     );
@@ -6521,6 +6535,8 @@ export class ForgeHeartGame {
     const panel = document.getElementById('city-map-panel');
     panel?.classList.remove('hidden');
     panel?.setAttribute('aria-hidden', 'false');
+    // Alerts sit above most HUD chrome — tuck them while the map owns the screen
+    document.getElementById('game-alerts')?.classList.add('map-suppressed');
     // Portrait phones start with places drawer collapsed so the map is large
     const side = document.getElementById('city-map-side');
     const sideBtn = document.getElementById('city-map-side-toggle');
@@ -6549,6 +6565,7 @@ export class ForgeHeartGame {
     const panel = document.getElementById('city-map-panel');
     panel?.classList.add('hidden');
     panel?.setAttribute('aria-hidden', 'true');
+    document.getElementById('game-alerts')?.classList.remove('map-suppressed');
     if (!this.paused && !this.disposed) this.controls.lock();
     this.setHelp(
       this.boardOwned || this.inv.playerBoard.owned
@@ -8697,6 +8714,23 @@ export class ForgeHeartGame {
     }
     if (it.kind === 'harvest') {
       this.openHarvest();
+      return true;
+    }
+    if (it.kind === 'flower_pick') {
+      const pool = it.harvestPool?.length
+        ? it.harvestPool
+        : (['bloom_sky'] as CommodityId[]);
+      // Each patch holds one type — take that bloom (or first if misconfigured)
+      const id = pool[0]!;
+      const n = 1 + (Math.random() < 0.35 ? 1 : 0);
+      if (!addItem(this.inv, id, n)) {
+        this.toast('Pack full for those blooms.', 2.5);
+        return true;
+      }
+      this.toast(`Picked ${n}× ${COMMODITIES[id].name} · personality for frames.`, 3);
+      this.audio.playPickup();
+      writeSlot(this.activeSlot, this.buildSaveData());
+      this.syncEconomyHud();
       return true;
     }
     if (it.kind === 'lease_office' || it.kind === 'bay_expand') {

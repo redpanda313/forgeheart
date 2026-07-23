@@ -24,6 +24,11 @@ import { buildEnterableShell, offsetColliders } from './enterableBuilding';
 import { buildPlazaCircuit, type PlazaCircuit } from './plazaCircuit';
 import { RobotUnit } from './robot';
 import { makeSignSprite, setSignWorldWidth } from './signLabel';
+import {
+  buildFlowerPatchMesh,
+  flowerDisplayName,
+  flowerPatchesForDistrict,
+} from './flowers';
 export type CityInteractKind =
   | 'neighbor'
   | 'vendor'
@@ -216,6 +221,16 @@ export interface SkyCityBuilt {
   circuits: PlazaCircuit[];
   /** Broker frame display groups by district */
   brokerDisplays: Record<string, THREE.Group>;
+}
+
+function hashDistrictFlower(districtId: string, flowerId: string, index: number): number {
+  const s = `${districtId}:${flowerId}:${index}`;
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }
 
 function labelSprite(text: string): THREE.Sprite {
@@ -1068,42 +1083,43 @@ export function buildSkyCity(): SkyCityBuilt {
       });
     }
 
-    // Plaza flower patches — personality ingredients for frame assembly
+    // Plaza flower patches — one bloom type per patch; some plazas host two
     {
-      const flowerPool: CommodityId[] =
-        d.role === 'harbor'
-          ? ['bloom_harbor', 'bloom_sky', 'flower_gift']
-          : d.role === 'premium'
-            ? ['bloom_aether', 'bloom_sky', 'bloom_brass']
-            : d.role === 'industrial'
-              ? ['bloom_brass', 'bloom_spore', 'flower_gift']
-              : ['bloom_sky', 'bloom_spore', 'bloom_brass', 'flower_gift'];
-      const fx = cx + sz * 0.18;
-      const fz = cz - sz * 0.2;
-      const fm = new THREE.Mesh(
-        new THREE.SphereGeometry(0.35, 8, 8),
-        new THREE.MeshStandardMaterial({
-          color: 0xe8a0c8,
-          emissive: 0x884466,
-          emissiveIntensity: 0.35,
-        }),
-      );
-      fm.position.set(fx, 0.55, fz);
-      addMesh(fm);
-      const fl = labelSprite('FLOWERS');
-      fl.position.set(fx, 1.8, fz);
-      setSignWorldWidth(fl, 2.4);
-      addMesh(fl);
-      interactables.push({
-        id: `flowers_${d.id}`,
-        kind: 'flower_pick',
-        position: new THREE.Vector3(fx, 0.5, fz),
-        radius: 2.8,
-        mesh: fm,
-        label: 'Pick plaza flowers (personality)',
-        districtId: d.id,
-        harvestPool: flowerPool,
-        harvestName: `${d.name} blooms`,
+      const patches = flowerPatchesForDistrict(d.id, d.role);
+      const offsets: Array<[number, number]> =
+        patches.length > 1
+          ? [
+              [0.18, -0.2],
+              [-0.2, 0.16],
+            ]
+          : [[0.18, -0.2]];
+      patches.forEach((flowerId, pi) => {
+        const [ox, oz] = offsets[pi] ?? offsets[0]!;
+        const fx = cx + sz * ox;
+        const fz = cz + sz * oz;
+        const patch = buildFlowerPatchMesh(flowerId, {
+          seed: hashDistrictFlower(d.id, flowerId, pi),
+          count: 5 + (pi % 2),
+          scale: 1.05,
+        });
+        patch.position.set(fx, 0, fz);
+        addMesh(patch);
+        const name = flowerDisplayName(flowerId);
+        const fl = labelSprite(name.toUpperCase());
+        fl.position.set(fx, 1.65, fz);
+        setSignWorldWidth(fl, 2.6);
+        addMesh(fl);
+        interactables.push({
+          id: `flowers_${d.id}_${flowerId}`,
+          kind: 'flower_pick',
+          position: new THREE.Vector3(fx, 0.5, fz),
+          radius: 2.6,
+          mesh: patch,
+          label: `Pick ${name} (personality)`,
+          districtId: d.id,
+          harvestPool: [flowerId],
+          harvestName: name,
+        });
       });
     }
 

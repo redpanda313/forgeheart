@@ -6,13 +6,15 @@
 import * as THREE from 'three';
 import { makeMaterials, type Mats } from './materials';
 import type { Collider } from './level';
-import { VENDORS, type VendorDef } from './economy';
+import { VENDORS, type VendorDef, type CommodityId } from './economy';
 import type { HubWaypoints } from './workerAgent';
 import { makeSignSprite } from './signLabel';
+import { buildFlowerPatchMesh, flowerDisplayName } from './flowers';
 
 export type HubInteractKind =
   | 'vendor'
   | 'harvest'
+  | 'flower_pick'
   | 'lease_office'
   | 'parcel_chest'
   | 'craft_bench'
@@ -33,6 +35,9 @@ export interface HubInteract {
   mesh: THREE.Object3D;
   vendor?: VendorDef;
   label: string;
+  /** Single-type bloom pool for flower_pick */
+  harvestPool?: CommodityId[];
+  harvestName?: string;
 }
 
 export interface MarketHubBuilt {
@@ -355,6 +360,31 @@ export function buildMarketHub(): MarketHubBuilt {
       radius: 3.5,
       mesh: hMark,
       label: 'Cloud Reef — extract resources',
+    });
+  }
+
+  // ——— Training plaza flower patch (personality ingredient intro) ———
+  {
+    const flowerId = 'bloom_sky' as const;
+    // SW plaza edge — clear of vendors (+X), reef (−X), bay (−Z), dock (+Z)
+    const fx = -12;
+    const fz = 8;
+    const patch = buildFlowerPatchMesh(flowerId, { seed: 42, count: 6, scale: 1.15 });
+    patch.position.set(fx, 0, fz);
+    addMesh(patch);
+    const fname = flowerDisplayName(flowerId);
+    const fLab = labelSprite(`${fname.toUpperCase()} · E pick`);
+    fLab.position.set(fx, 1.9, fz);
+    addMesh(fLab);
+    interactables.push({
+      id: 'flowers_training',
+      kind: 'flower_pick',
+      position: new THREE.Vector3(fx, 0.5, fz),
+      radius: 2.8,
+      mesh: patch,
+      label: `Pick ${fname} (personality for frames)`,
+      harvestPool: [flowerId],
+      harvestName: fname,
     });
   }
 
