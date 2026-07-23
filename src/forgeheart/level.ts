@@ -170,8 +170,8 @@ export function makePromptSprite(): THREE.Mesh {
 }
 
 /**
- * Tutorial level: brother's workshop lab + exterior floating walkway to escape boat.
- * Story: engineer brings brother's soul into a frame; demons batter the door.
+ * Tutorial level: workshop lab + exterior floating walkway to escape boat.
+ * Story text is stamped at runtime from procedural backstory (see applyTutorialBackstory).
  */
 export function buildBrotherWorkshop(): LevelBuilt {
   const mats = makeMaterials();
@@ -355,31 +355,27 @@ export function buildBrotherWorkshop(): LevelBuilt {
       radius: 2.2,
       mesh: frame,
       prompt,
-      title: 'Photograph — Elias',
-      text:
-        'Elias Voss, your brother. The card on the back is water-stained: “Taken the spring before the fever. He laughed at the camera — always first into the light.” You buried him under the ash-trees. The lab still smells like his coats.',
+      title: 'Photograph',
+      text: 'A photograph waits on the wall. (Story fills in when the playthrough begins.)',
     });
   }
 
-  // Workbench notes
+  // Workbench notes — titles/bodies replaced by procedural backstory at runtime
   const notes: { pos: THREE.Vector3; title: string; text: string }[] = [
     {
       pos: new THREE.Vector3(1.2, 1.0, 0.5),
-      title: 'Journal — Consciousness Imprint',
-      text:
-        'I found the coil pattern in Grandfather’s sealed folio: plasma laced through brass can hold a pattern of mind. Not a program — a guest. When the frame is quiet and the talisman is true, a soul may take seat.',
+      title: 'Journal',
+      text: 'Workshop journal — pages wait for this engineer’s story.',
     },
     {
       pos: new THREE.Vector3(-1.1, 1.0, 0.6),
-      title: 'Theory — Souls in Steel',
-      text:
-        'I no longer believe the automata are empty. Something looks out of their eyes when the plasma sings. Demons wear scrap like coats. But love is a beacon too — if I can call Elias home, he will know my voice.',
+      title: 'Theory',
+      text: 'Theory notes — personhood in metal, still unfinished.',
     },
     {
       pos: new THREE.Vector3(0.2, 1.0, -1.5),
       title: 'Talisman Note',
-      text:
-        'Wired his pocket-watch gear into the chest plate — the one Mother gave him. If any spark of Elias remains between stars and steam, it will know this weight. Do not scrap the frame. Reprogram with the Hand. Speak his name.',
+      text: 'A bench note about the talisman and the Hand.',
     },
   ];
   for (const n of notes) {
@@ -520,7 +516,7 @@ export function buildBrotherWorkshop(): LevelBuilt {
       mesh: panel,
       prompt,
       title: 'Skiff Controls',
-      text: 'Brass levers and a plasma throttle. Press E to cast off — escape with Elias.',
+      text: 'Brass levers and a plasma throttle. Press E to cast off — escape with your companion.',
       opened: false,
     });
   }

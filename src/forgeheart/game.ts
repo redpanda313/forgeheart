@@ -410,7 +410,7 @@ export class ForgeHeartGame {
   private readonly doorHpMax = 4;
   private brotherScrapped = false;
   private hadAllyOnce = false;
-  private objective = 'Read the lab. Wake Elias with the Hand (1) — do not scrap him.';
+  private objective = 'Read the lab. Wake them with the Hand (1) — do not scrap them.';
 
   // ——— Race / surfboard (legacy; Phase 0 uses economy hub) ———
   private raceway: RacewayBuilt | null = null;
@@ -571,6 +571,11 @@ export class ForgeHeartGame {
   ) {
     this.activeSlot = options.slot;
     this.pendingLoad = options.save;
+    {
+      const seed =
+        options.save?.backstorySeed ?? ((Math.random() * 0xffffffff) >>> 0);
+      this.backstory = generateBackstory(seed);
+    }
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
@@ -618,15 +623,17 @@ export class ForgeHeartGame {
     // City editor root — available on all levels; loads saved placements
     this.initCityEditor(this.level.mats);
 
-    // Only Elias — deactivated, leaned on the workstation
+    // Soul-frame companion — deactivated, leaned on the workstation
     const brother = new RobotUnit(this.level.mats, this.level.anchors.brotherSpot.clone());
     brother.isBrother = true;
-    brother.displayName = 'Elias';
+    brother.displayName = this.backstory?.companionName ?? 'Elias';
     brother.setPhase('disabled');
     brother.scramble = 100;
     brother.scrambled = true;
     this.robots.push(brother);
     this.scene.add(brother.mesh);
+
+    this.applyTutorialBackstory();
 
     this.camera.position.set(
       this.level.spawn.x,
@@ -2508,10 +2515,14 @@ export class ForgeHeartGame {
       this.inv.brass = Math.max(this.inv.brass, this.brass);
     }
     this.syncBoardOwnership();
+    const levelName =
+      levelId === 'workshop' && this.backstory
+        ? this.backstory.tutorial.workshopName
+        : LEVEL_NAMES[levelId];
     return {
       version: 1,
       levelId,
-      levelName: LEVEL_NAMES[levelId],
+      levelName,
       savedAt: Date.now(),
       health: this.health,
       plasma: this.plasma,
@@ -2528,6 +2539,57 @@ export class ForgeHeartGame {
       economy: invToSave(this.inv),
       backstorySeed: this.backstory?.seed,
     };
+  }
+
+  private companionName(): string {
+    return this.backstory?.companionName ?? 'Elias';
+  }
+
+  /** Guaranteed tutorial copy for the current seed (lazy if missing). */
+  private tut() {
+    if (!this.backstory) {
+      this.backstory = generateBackstory((Math.random() * 0xffffffff) >>> 0);
+    }
+    return this.backstory.tutorial;
+  }
+
+  /**
+   * Stamp procedural workshop lore onto photo / notes / trays / boat
+   * and set the explore objective for this playthrough.
+   */
+  private applyTutorialBackstory() {
+    const bs = this.backstory;
+    if (!bs) return;
+    const t = bs.tutorial;
+    this.objective = t.objectiveExplore;
+
+    for (const r of this.robots) {
+      if (r.isBrother) r.displayName = bs.companionName;
+    }
+
+    let noteIdx = 0;
+    for (const it of this.interactables) {
+      if (it.type === 'photo' || it.id === 'brother_photo') {
+        it.title = t.photoTitle;
+        it.text = t.photoText;
+      } else if (it.type === 'note') {
+        const note = t.notes[noteIdx++];
+        if (note) {
+          it.title = note.title;
+          it.text = note.text;
+          it.id = note.title;
+        }
+      } else if (it.type === 'tray') {
+        const i = Number(String(it.id).replace('tray_', '')) || 0;
+        const label = t.trayLabels[i] ?? t.trayLabels[0]!;
+        it.title = label;
+        it.text = `Workbench tray: ${label}. Press E to reclaim the part for ${bs.companionName}.`;
+      } else if (it.type === 'wrench_pickup') {
+        it.text = t.wrenchText;
+      } else if (it.type === 'boat') {
+        it.text = t.boatText;
+      }
+    }
   }
 
   private syncWeaponHud() {
@@ -2629,14 +2691,17 @@ export class ForgeHeartGame {
   async start() {
     await this.audio.resume();
 
-    // New game: seed empty save on slot
+    // New game: seed empty save on slot (keep this playthrough's backstory seed)
     if (!this.pendingLoad) {
-      writeSlot(this.activeSlot, emptySave('workshop'));
-      this.flash('The Workshop — Elias waits on the bench');
-      this.toast(
-        'Your brother is gone. The frame holds a talisman of his. Walk the lab. Read. Then use the Hand (1) to wake him — not scrap (E).',
-        8,
-      );
+      const fresh = emptySave('workshop');
+      const bs = this.backstory ?? generateBackstory(fresh.backstorySeed ?? 1);
+      this.backstory = bs;
+      fresh.backstorySeed = bs.seed;
+      fresh.levelName = bs.tutorial.workshopName;
+      writeSlot(this.activeSlot, fresh);
+      this.applyTutorialBackstory();
+      this.flash(bs.tutorial.flashTitle);
+      this.toast(bs.tutorial.openingToast, 8);
       this.controls.lock();
       return;
     }
@@ -3148,8 +3213,9 @@ export class ForgeHeartGame {
       best.onGround = true;
       this.audio.playReprogram();
       if (best.isBrother) {
-        this.flash('ELIAS — the talisman finds him. Green eyes. Your brother.');
-        this.toast('Plasma will settle near three-quarters with one ally. Stay close to him.', 5);
+        const t = this.tut();
+        this.flash(t.wakeFlash);
+        this.toast(t.wakeToast, 5);
       } else {
         const eq = this.plasmaEquilibrium(allyCount + 1);
         this.flash(`REPROGRAMMED · grid settles ~${eq}%`);
@@ -3176,10 +3242,7 @@ export class ForgeHeartGame {
     this.objective = 'Something is at the door…';
     this.setHelp('Grab Arc Wrench (E) · wait out the bangs — or bash the door open with 2');
     this.flash('A BANG at the lab door —');
-    this.toast(
-      'Demon-ridden frames. Hold the workshop — or take the Arc Wrench and force the door open early.',
-      5,
-    );
+    this.toast(this.tut().siegeToast, 5);
     // Reveal wrench on the rack
     for (const it of this.interactables) {
       if (it.type === 'wrench_pickup') {
@@ -3252,7 +3315,7 @@ export class ForgeHeartGame {
           this.toast('Five strikes. Take the Arc Wrench from the rack (E).', 4);
           this.objective = 'Take the Arc Wrench (E) — the door is failing';
         } else if (this.bangCount === 8) {
-          this.toast('Almost through — stand ready with Elias.', 3);
+          this.toast(this.tut().doorAlmostToast, 3);
         }
         if (this.bangCount >= this.bangsTotal) {
           this.breachDoor();
@@ -3297,14 +3360,14 @@ export class ForgeHeartGame {
       this.robots.push(r);
       this.scene.add(r.mesh);
     }
-    this.objective = 'Survive — arc the demons, keep Elias close';
+    this.objective = this.tut().surviveObjective;
     this.setHelp('2 Wrench · scramble or KO · Hand reprogram optional · flee to the dock if needed');
     if (reason === 'forced') {
       this.flash('YOU OPENED THE DOOR — two demon frames!');
-      this.toast('They wear scrap like coats. Fight with Elias or run for the skiff.', 5);
+      this.toast(this.tut().breachToastFlee, 5);
     } else {
       this.flash('THE DOOR GIVES — two demon frames!');
-      this.toast('They wear scrap like coats. Arc wrench for combat. Elias will fight beside you.', 5);
+      this.toast(this.tut().breachToastFight, 5);
     }
     // Auto-offer wrench if not taken
     if (!this.wrenchUnlocked) {
@@ -3458,7 +3521,10 @@ export class ForgeHeartGame {
       onMedallionHostLost(this.inv, 'bot_elias');
       const elias = this.inv.workers.find((w) => w.id === 'bot_elias');
       if (elias) elias.hasMedallion = false;
-      this.toast("Elias went rogue — medallion returned. Reassign it to a robot you own.", 4);
+      this.toast(
+        `${this.companionName()} went rogue — medallion returned. Reassign it to a robot you own.`,
+        4,
+      );
     }
     const left = this.countPoweredAllies();
     const eq = this.plasmaEquilibrium(left);
@@ -3697,8 +3763,8 @@ export class ForgeHeartGame {
       if (it.prompt) it.prompt.visible = false;
       this.traysCollected++;
       this.audio.playPickup();
-      this.flash(`Part recovered — ${it.title} (${this.traysCollected}/3)`);
-      this.objective = `Rebuild Elias — trays ${this.traysCollected}/3`;
+      this.flash(this.tut().trayPartFlash(it.title ?? 'Part', this.traysCollected));
+      this.objective = this.tut().trayObjective(this.traysCollected);
       if (this.traysCollected >= 3) this.rebuildBrotherFrame();
       return;
     }
@@ -3745,13 +3811,13 @@ export class ForgeHeartGame {
     if (wasBrother && !this.brotherScrapped && !this.hadAllyOnce) {
       this.brotherScrapped = true;
       this.tutorial = 'rebuild';
-      this.objective = 'You dismantled him — gather 3 trays to rebuild';
-      this.setHelp('E on glowing trays around the workstation · then Hand to wake him');
-      this.flash('The talisman frame is scrap —');
-      this.toast(
-        'No. The trays on the worktables still hold his parts. Gather all three (E), then rebuild.',
-        7,
-      );
+      const t = this.tut();
+      const name = this.companionName();
+      const obj = this.backstory?.pronouns.object ?? 'them';
+      this.objective = `You dismantled ${obj} — gather 3 trays to rebuild`;
+      this.setHelp(`E on glowing trays around the workstation · then Hand to wake ${name}`);
+      this.flash(t.scrapFlash);
+      this.toast(t.scrapToast, 7);
       for (const it of this.interactables) {
         if (it.type === 'tray') {
           it.mesh.visible = true;
@@ -3773,7 +3839,7 @@ export class ForgeHeartGame {
     const spot = this.level.anchors.brotherSpot.clone();
     const brother = new RobotUnit(this.level.mats, spot);
     brother.isBrother = true;
-    brother.displayName = 'Elias';
+    brother.displayName = this.companionName();
     brother.setPhase('disabled');
     brother.scramble = 100;
     brother.scrambled = true;
@@ -3787,9 +3853,10 @@ export class ForgeHeartGame {
         if (it.prompt) it.prompt.visible = false;
       }
     }
-    this.objective = 'Frame rebuilt — Hand (1) to call Elias home';
-    this.flash('A new shell stands — the talisman gear is reseated');
-    this.toast('Stand close. Hand weapon. Click to reprogram. Speak his name in the plasma.', 6);
+    const t = this.tut();
+    this.objective = `Frame rebuilt — Hand (1) to call ${this.companionName()} home`;
+    this.flash(t.rebuildFlash);
+    this.toast(t.rebuildToast, 6);
     this.audio.playPickup();
   }
 
@@ -3800,11 +3867,9 @@ export class ForgeHeartGame {
     this.objective = 'Workshop complete — market training next';
     this.audio.setTension(0);
     this.audio.playWin();
-    this.flash('SKIFF AWAY — Elias is with you');
-    this.toast(
-      'Next: Sky City Market training — earn 1000 brass and buy a sky apartment.',
-      6,
-    );
+    const t = this.tut();
+    this.flash(t.winFlash);
+    this.toast(t.winToast, 6);
     this.setHelp('Loading Sky City Market…');
     this.bringEliasToRace = this.bringEliasToRace || this.hadAllyOnce;
     const pre = this.buildSaveData();
@@ -3901,7 +3966,7 @@ export class ForgeHeartGame {
     this.rebuildHubNav();
     // Elias + 3 humans when brother was woken / continued from tutorial
     if (this.bringEliasToRace || this.hadAllyOnce || fromSave?.bringElias) {
-      ensureTutorialMarketCrew(this.inv);
+      ensureTutorialMarketCrew(this.inv, this.companionName());
       this.brass = this.inv.brass;
     }
     this.rebuildWorkerAgents();
@@ -3952,13 +4017,18 @@ export class ForgeHeartGame {
         : 'MARKET TRAINING · 1000 BRASS → APARTMENT',
     );
 
-    // Personalized backstory intro
-    const bs = this.backstory;
-    this.toast(bs.lines[0] + ' ' + bs.lines[1], 6);
+    // Personalized backstory intro (same seed as workshop — full heartfelt arc)
+    const bs = this.backstory!;
+    const mLines = bs.tutorial.marketLines;
+    this.toast(mLines[0] + ' ' + mLines[1], 6);
     window.setTimeout(() => {
       if (this.disposed) return;
-      this.toast(bs.lines[2] + ' ' + bs.lines[3], 6);
+      this.toast(mLines[2] + ' ' + mLines[3], 6);
     }, 6500);
+    window.setTimeout(() => {
+      if (this.disposed) return;
+      if (mLines[4]) this.toast(mLines[4]!, 5);
+    }, 12500);
     window.setTimeout(() => {
       if (this.disposed) return;
       if (this.inv.apartmentOwned) {
@@ -3969,7 +4039,7 @@ export class ForgeHeartGame {
           8,
         );
       }
-    }, 13000);
+    }, 18000);
 
     this.audio.setWind(0.3);
     this.syncEconomyHud();
@@ -6149,7 +6219,7 @@ export class ForgeHeartGame {
       return;
     }
     if (!this.inv.medallionLoose && !(this.inv.items.elias_medallion ?? 0) && !this.inv.medallionHostId) {
-      this.toast('No medallion — recover it when Elias is lost.', 3);
+      this.toast(`No medallion — recover it when ${this.companionName()} is lost.`, 3);
       return;
     }
     // Cycle to next robot
@@ -7789,7 +7859,11 @@ export class ForgeHeartGame {
           .filter(Boolean)
           .join(' · ');
         const kindTag =
-          w.kind === 'robot' ? (w.hasMedallion ? ' · ★ Elias host' : ' · ⚙ robot') : '';
+          w.kind === 'robot'
+            ? w.hasMedallion
+              ? ` · ★ ${this.companionName()} host`
+              : ' · ⚙ robot'
+            : '';
         const frameTag = w.frameName ? ` · ${w.frameName} (Q${(w.frameQuality ?? 1).toFixed(2)})` : '';
         card.innerHTML = `<strong>${w.name}</strong>${kindTag}${frameTag} · pay grade ${pg}
           <span class="bay-worker-status">Doing: ${assignment}</span>
@@ -7799,7 +7873,9 @@ export class ForgeHeartGame {
         if (w.kind === 'robot') {
           const medalBtn = document.createElement('button');
           medalBtn.type = 'button';
-          medalBtn.textContent = w.hasMedallion ? 'Medallion host' : 'Assign Elias medallion';
+          medalBtn.textContent = w.hasMedallion
+            ? 'Medallion host'
+            : `Assign ${this.companionName()} medallion`;
           medalBtn.disabled = !!w.hasMedallion;
           medalBtn.addEventListener('click', () => {
             const r = assignMedallion(this.inv, w.id);
@@ -8951,7 +9027,7 @@ export class ForgeHeartGame {
     this.skyCity.stallGroup.visible = this.inv.stall.owned;
     syncBrokerFrameDisplays(this.skyCity, this.inv.brokerFrameStock ?? 0);
     if (this.bringEliasToRace || this.hadAllyOnce || fromSave?.bringElias) {
-      ensureEliasRobotWorker(this.inv);
+      ensureEliasRobotWorker(this.inv, this.companionName());
     }
 
     this.scene.background = new THREE.Color(0x5a7a9a);

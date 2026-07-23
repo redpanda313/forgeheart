@@ -3,6 +3,8 @@
  * Slot display name = level that was saved.
  */
 
+import { generateBackstory } from './backstory';
+
 export type LevelId = 'workshop' | 'sky_city' | 'sky_race' | 'mega_city';
 
 export const LEVEL_NAMES: Record<LevelId, string> = {
@@ -127,7 +129,12 @@ export function readSlot(index: number): ForgeSaveData | null {
       data.levelId = 'sky_city';
       data.tutorialPhase = 'city';
     }
-    data.levelName = LEVEL_NAMES[data.levelId] || data.levelName || data.levelId;
+    // Keep personalized workshop titles (e.g. "Hearth Workshop"); refresh market/city labels.
+    if (data.levelId === 'workshop' && data.levelName && data.levelName !== LEVEL_NAMES.workshop) {
+      // preserve
+    } else {
+      data.levelName = LEVEL_NAMES[data.levelId] || data.levelName || data.levelId;
+    }
     if (data.boardCamMode !== 'first' && data.boardCamMode !== 'third') {
       data.boardCamMode = 'first';
     }
@@ -250,6 +257,13 @@ export function formatLevelProgress(data: ForgeSaveData): string {
   const phase = data.tutorialPhase;
   if (phase === 'escape' || phase === 'breach') return 'Escape in progress';
   if (phase === 'siege') return 'Under siege';
-  if (phase === 'rebuild') return 'Rebuilding Elias';
+  if (phase === 'rebuild') {
+    const name = generateBackstory(data.backstorySeed ?? 1).companionName;
+    return `Rebuilding ${name}`;
+  }
+  if (phase === 'explore' && data.backstorySeed != null) {
+    const name = generateBackstory(data.backstorySeed).companionName;
+    return `Workshop · wake ${name}`;
+  }
   return 'In the workshop';
 }

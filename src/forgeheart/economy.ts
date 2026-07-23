@@ -116,7 +116,7 @@ export const COMMODITIES: Record<CommodityId, CommodityDef> = {
   },
   elias_medallion: {
     id: 'elias_medallion',
-    name: "Elias's Medallion",
+    name: 'Soul Medallion',
     baseBuy: 0,
     baseSell: 0,
     stack: 1,
@@ -1494,7 +1494,7 @@ export function harvestRogueRobot(
     inv.medallionLoose = true;
     inv.medallionHostId = null;
     addItem(inv, 'elias_medallion', 1);
-    msg += " Elias's medallion returned to your pack — assign it to another robot.";
+    msg += ' Soul medallion returned to your pack — assign it to another robot.';
   }
   return { ok: true, msg };
 }
@@ -1579,18 +1579,22 @@ export function makeRobotWorker(name: string, id?: string): WorkerState {
   };
 }
 
-/** Ensure Elias exists as a robot worker (tutorial market crew of 4 with him). */
-export function ensureEliasRobotWorker(inv: InventoryState): WorkerState {
-  let elias = inv.workers.find((w) => w.id === 'bot_elias' || w.name === 'Elias');
+/**
+ * Ensure the soul-host robot worker exists (tutorial market crew of 4 with them).
+ * `companionName` is the playthrough-unique name from backstory.
+ */
+export function ensureEliasRobotWorker(inv: InventoryState, companionName = 'Elias'): WorkerState {
+  let elias = inv.workers.find((w) => w.id === 'bot_elias');
   if (elias) {
     elias.kind = 'robot';
+    elias.name = companionName;
     if (!inv.medallionLoose && !inv.medallionHostId) {
       elias.hasMedallion = true;
       inv.medallionHostId = elias.id;
     }
     return elias;
   }
-  elias = makeRobotWorker('Elias', 'bot_elias');
+  elias = makeRobotWorker(companionName, 'bot_elias');
   elias.hasMedallion = true;
   elias.payGrade = 1;
   inv.workers.unshift(elias);
@@ -1601,15 +1605,15 @@ export function ensureEliasRobotWorker(inv: InventoryState): WorkerState {
 }
 
 /**
- * Market tutorial crew: Elias (medallion robot) + 3 human laborers = 4 assignable agents.
- * Humans are granted once when Elias arrives (no brass charge).
+ * Market tutorial crew: soul-host robot + 3 human laborers = 4 assignable agents.
+ * Humans are granted once when the companion arrives (no brass charge).
  */
-export function ensureTutorialMarketCrew(inv: InventoryState): void {
+export function ensureTutorialMarketCrew(inv: InventoryState, companionName = 'Elias'): void {
   if (!inv.parcelLeased) {
     inv.parcelLeased = true;
     inv.bayLevel = Math.max(inv.bayLevel, 1);
   }
-  ensureEliasRobotWorker(inv);
+  ensureEliasRobotWorker(inv, companionName);
   const humanNames = ['Rook', 'Pip', 'Nessa'];
   let humans = inv.workers.filter((w) => w.kind !== 'robot');
   for (const name of humanNames) {
@@ -1642,7 +1646,7 @@ export function assignMedallion(inv: InventoryState, workerId: string): { ok: bo
   if (!inv.medallionLoose && getQty(inv, 'elias_medallion') < 1 && inv.medallionHostId !== workerId) {
     // Allow reassign from current host
     if (!inv.medallionHostId) {
-      return { ok: false, msg: 'No medallion in pack. Recover it when Elias is lost.' };
+      return { ok: false, msg: 'No medallion in pack. Recover it when the soul-host is lost.' };
     }
   }
   // Clear previous host
@@ -1655,7 +1659,7 @@ export function assignMedallion(inv: InventoryState, workerId: string): { ok: bo
   inv.medallionHostId = bot.id;
   return {
     ok: true,
-    msg: `${bot.name} now hosts Elias's spirit — human pace, medallion on the map.`,
+    msg: `${bot.name} now hosts the soul medallion — human pace, marked on the map.`,
   };
 }
 
@@ -2745,7 +2749,7 @@ export function assignWorkerProgram(
   if (p.nodes.length > maxNodes) {
     return {
       ok: false,
-      msg: `${w.name} is a bare robot — max ${maxNodes} tasks (has ${p.nodes.length}). Equip Elias's medallion for human capacity.`,
+      msg: `${w.name} is a bare robot — max ${maxNodes} tasks (has ${p.nodes.length}). Equip the soul medallion for human capacity.`,
     };
   }
   w.job = 'program';

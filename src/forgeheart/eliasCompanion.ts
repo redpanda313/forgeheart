@@ -24,11 +24,11 @@ export class EliasCompanion {
   private bobT = Math.random() * 10;
   private scene: THREE.Scene;
 
-  constructor(scene: THREE.Scene, mats: Mats, spawn: THREE.Vector3) {
+  constructor(scene: THREE.Scene, mats: Mats, spawn: THREE.Vector3, companionName = 'Elias') {
     this.scene = scene;
     this.robot = new RobotUnit(mats, spawn.clone());
     this.robot.isBrother = true;
-    this.robot.displayName = 'Elias';
+    this.robot.displayName = companionName;
     this.robot.setPhase('ally');
     this.robot.hp = 60;
     this.robot.maxHp = 60;
