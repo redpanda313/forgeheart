@@ -126,6 +126,8 @@ export class MobileControls {
   private stickOrigin = { x: 0, y: 0 };
   private stickAxes: StickAxes = { x: 0, y: 0 };
   private moveHeld = new Set<string>();
+  /** Last time the active stick finger moved — used to detect orphaned holds. */
+  private stickLastActiveMs = 0;
 
   private lookPointerId: number | null = null;
   private lookLast = { x: 0, y: 0 };
@@ -138,6 +140,7 @@ export class MobileControls {
 
   private fireHeld = false;
   private attackHoldTimer: number | null = null;
+  private stickWatchTimer: number | null = null;
   private _enabled: boolean;
 
   constructor() {
@@ -229,6 +232,7 @@ export class MobileControls {
     this.bindTwoFingerTouchRotate(sig);
     this.bindButtons(sig);
     this.bindTapAffordance(sig);
+    this.bindStickFailSafes(sig);
     this.setVisible(true);
     this.setGameplayActive(true);
     this.syncBoardButtons();
@@ -238,6 +242,7 @@ export class MobileControls {
   detach() {
     this.releaseAll();
     this.clearAttackHold();
+    this.clearStickWatch();
     try {
       this.abort?.abort();
     } catch {
@@ -326,9 +331,7 @@ export class MobileControls {
   }
 
   private releaseAll() {
-    this.clearMoveKeys();
-    this.resetStickVisual();
-    this.stickPointerId = null;
+    this.endStickGesture(null, true);
     this.lookPointerId = null;
     this.lookPointers.clear();
     this.rotateLastAngle = null;
@@ -347,27 +350,82 @@ export class MobileControls {
     }
   }
 
+  private clearStickWatch() {
+    if (this.stickWatchTimer != null) {
+      window.clearInterval(this.stickWatchTimer);
+      this.stickWatchTimer = null;
+    }
+  }
+
+  /**
+   * End an active stick gesture. Pass the pointer id that owns it, or force=true
+   * to clear a stale/orphaned hold (lost pointerup is common on mobile Safari).
+   */
+  private endStickGesture(pointerId: number | null, force = false) {
+    const activeId = this.stickPointerId;
+    if (activeId == null && !force) {
+      // Still clear residual axes/keys if something left them stuck
+      if (this.stickAxes.x !== 0 || this.stickAxes.y !== 0 || this.moveHeld.size) {
+        this.stickAxes = { x: 0, y: 0 };
+        this.clearMoveKeys();
+        this.resetStickVisual();
+      }
+      return;
+    }
+    if (!force && pointerId != null && activeId != null && pointerId !== activeId) return;
+
+    const releaseId = activeId;
+    this.stickPointerId = null;
+    this.stickAxes = { x: 0, y: 0 };
+    this.clearMoveKeys();
+    this.resetStickVisual();
+    this.clearStickWatch();
+    if (releaseId != null && this.stick) {
+      try {
+        if (this.stick.hasPointerCapture?.(releaseId)) {
+          this.stick.releasePointerCapture(releaseId);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   private bindStick(sig: AbortSignal) {
     const el = this.stick;
     if (!el) return;
 
     const onDown = (ev: PointerEvent) => {
       if (!this.host || this.host.isDisposed() || !this.visible) return;
-      if (this.stickPointerId != null) return;
       if (ev.button !== 0 && ev.pointerType === 'mouse') return;
+      // Fail-safe: a new finger always reclaims a stuck stick (lost pointerup)
+      if (this.stickPointerId != null && this.stickPointerId !== ev.pointerId) {
+        this.endStickGesture(this.stickPointerId, true);
+      } else if (this.stickPointerId === ev.pointerId) {
+        // Duplicate down for same id — refresh origin instead of ignoring
+      } else if (this.moveHeld.size || this.stickAxes.x || this.stickAxes.y) {
+        this.endStickGesture(null, true);
+      }
       ev.preventDefault();
       ev.stopPropagation();
       this.stickPointerId = ev.pointerId;
+      this.stickLastActiveMs = performance.now();
       const rect = el.getBoundingClientRect();
       this.stickOrigin.x = rect.left + rect.width / 2;
       this.stickOrigin.y = rect.top + rect.height / 2;
-      el.setPointerCapture(ev.pointerId);
+      try {
+        el.setPointerCapture(ev.pointerId);
+      } catch {
+        /* ignore */
+      }
       this.updateStick(ev.clientX, ev.clientY, rect.width / 2);
+      this.ensureStickWatch();
     };
 
     const onMove = (ev: PointerEvent) => {
       if (ev.pointerId !== this.stickPointerId) return;
       ev.preventDefault();
+      this.stickLastActiveMs = performance.now();
       const rect = el.getBoundingClientRect();
       this.updateStick(ev.clientX, ev.clientY, rect.width / 2);
     };
@@ -375,22 +433,80 @@ export class MobileControls {
     const onUp = (ev: PointerEvent) => {
       if (ev.pointerId !== this.stickPointerId) return;
       ev.preventDefault();
-      this.stickPointerId = null;
-      this.stickAxes = { x: 0, y: 0 };
-      this.clearMoveKeys();
-      this.resetStickVisual();
-      try {
-        el.releasePointerCapture(ev.pointerId);
-      } catch {
-        /* ignore */
-      }
+      this.endStickGesture(ev.pointerId, false);
+    };
+
+    const onLostCapture = (ev: PointerEvent) => {
+      // Capture stolen / released — drop the hold even if pointerup never arrives
+      if (ev.pointerId !== this.stickPointerId) return;
+      this.endStickGesture(ev.pointerId, true);
     };
 
     el.addEventListener('pointerdown', onDown, { signal: sig });
     el.addEventListener('pointermove', onMove, { signal: sig });
     el.addEventListener('pointerup', onUp, { signal: sig });
     el.addEventListener('pointercancel', onUp, { signal: sig });
-    el.addEventListener('lostpointercapture', onUp, { signal: sig });
+    el.addEventListener('lostpointercapture', onLostCapture, { signal: sig });
+  }
+
+  /**
+   * Global fail-safes for orphaned stick holds: window pointer end, tab hide,
+   * blur, and a short watchdog if the finger went silent while keys are still held.
+   */
+  private bindStickFailSafes(sig: AbortSignal) {
+    const endIfMatch = (ev: Event) => {
+      const pe = ev as PointerEvent;
+      if (typeof pe.pointerId === 'number') {
+        this.endStickGesture(pe.pointerId, false);
+      }
+    };
+    // Capture-phase on window catches ups that miss the stick element
+    window.addEventListener('pointerup', endIfMatch, { signal: sig, capture: true });
+    window.addEventListener('pointercancel', endIfMatch, { signal: sig, capture: true });
+
+    const bail = () => this.endStickGesture(null, true);
+    window.addEventListener('blur', bail, { signal: sig });
+    window.addEventListener('pagehide', bail, { signal: sig });
+    document.addEventListener(
+      'visibilitychange',
+      () => {
+        if (document.visibilityState !== 'visible') bail();
+      },
+      { signal: sig },
+    );
+    window.addEventListener('orientationchange', bail, { signal: sig });
+  }
+
+  private ensureStickWatch() {
+    if (this.stickWatchTimer != null) return;
+    // If a stick hold goes quiet with no pointer events for a while while we still
+    // think a finger is down, treat it as orphaned and release.
+    this.stickWatchTimer = window.setInterval(() => {
+      if (this.stickPointerId == null) {
+        this.clearStickWatch();
+        return;
+      }
+      const idle = performance.now() - this.stickLastActiveMs;
+      // Only auto-release when we also have move keys held (stuck walking) and no
+      // recent move — long static holds are valid while the finger rests on an edge.
+      // Orphaned holds typically stop receiving moves AND the finger is gone.
+      if (idle < 1800) return;
+      const el = this.stick;
+      const id = this.stickPointerId;
+      // If the element no longer captures this pointer, the gesture is dead
+      const stillCaptured =
+        id != null && !!el && typeof el.hasPointerCapture === 'function'
+          ? el.hasPointerCapture(id)
+          : false;
+      if (!stillCaptured) {
+        this.endStickGesture(null, true);
+        return;
+      }
+      // Captured but extremely stale (e.g. 6s with no move) — unlikely a real hold
+      if (idle >= 6000 && this.moveHeld.size > 0) {
+        this.endStickGesture(null, true);
+      }
+    }, 400);
   }
 
   private updateStick(clientX: number, clientY: number, radius: number) {
