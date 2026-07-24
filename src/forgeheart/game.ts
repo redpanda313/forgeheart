@@ -140,6 +140,13 @@ import {
   moveProgramNode,
   equipWorkerBoard,
   equipWorkerTool,
+  temperWorkerGear,
+  listTemperingInventions,
+  canTemperGear,
+  workerSpeedToolTier,
+  workerHaulToolTier,
+  toolTierLabel,
+  normalizeWorkerToolTiers,
   inventCustomRecipe,
   INVENT_MATERIAL_IDS,
   inventSlotBlurb,
@@ -7318,17 +7325,19 @@ export class ForgeHeartGame {
     id: string;
     name: string;
     ready: boolean;
-    kind: 'recipe' | 'custom';
+    kind: 'recipe' | 'custom' | 'temper';
     recipe?: Recipe;
     customId?: string;
+    temperKind?: 'speed' | 'haul';
   }[] {
     const out: {
       id: string;
       name: string;
       ready: boolean;
-      kind: 'recipe' | 'custom';
+      kind: 'recipe' | 'custom' | 'temper';
       recipe?: Recipe;
       customId?: string;
+      temperKind?: 'speed' | 'haul';
     }[] = [];
     for (const recipe of RECIPES) {
       out.push({
@@ -7338,6 +7347,25 @@ export class ForgeHeartGame {
         kind: 'recipe',
         recipe,
       });
+    }
+    // Invention-tempered gear — only after invent unlock (post-tutorial progression)
+    if (canInvent(this.inv)) {
+      const invs = listTemperingInventions(this.inv);
+      out.push({
+        id: 'temper:speed',
+        name: 'Temper Rivet Spanner',
+        ready: canTemperGear(this.inv, 'speed'),
+        kind: 'temper',
+        temperKind: 'speed',
+      });
+      out.push({
+        id: 'temper:haul',
+        name: 'Reinforce Haul Pack',
+        ready: canTemperGear(this.inv, 'haul'),
+        kind: 'temper',
+        temperKind: 'haul',
+      });
+      void invs;
     }
     for (const cr of this.inv.customRecipes) {
       const can =
@@ -7540,11 +7568,15 @@ export class ForgeHeartGame {
       case 'basics':
         return all.filter((e) => e.kind === 'recipe' && this.recipeCategory(e.recipe!) === 'basics');
       case 'tools':
-        return all.filter((e) => e.kind === 'recipe' && this.recipeCategory(e.recipe!) === 'tools');
+        return all.filter(
+          (e) =>
+            (e.kind === 'recipe' && this.recipeCategory(e.recipe!) === 'tools') ||
+            e.kind === 'temper',
+        );
       case 'frames':
         return [];
       case 'invent':
-        return all.filter((e) => e.kind === 'custom');
+        return all.filter((e) => e.kind === 'custom' || e.kind === 'temper');
       default:
         return all;
     }
@@ -7584,7 +7616,12 @@ export class ForgeHeartGame {
       if (e.id === this.craftSelectedId) btn.classList.add('craft-selected');
       const name = document.createElement('span');
       name.className = 'craft-name';
-      name.textContent = e.kind === 'custom' ? `Invent · ${e.name}` : e.name;
+      name.textContent =
+        e.kind === 'custom'
+          ? `Invent · ${e.name}`
+          : e.kind === 'temper'
+            ? `Improve · ${e.name}`
+            : e.name;
       const mark = document.createElement('span');
       mark.className = 'craft-mark';
       mark.textContent = e.ready ? '✓' : '·';
@@ -7681,6 +7718,65 @@ export class ForgeHeartGame {
         reasonEl.textContent = max > 1 ? `Can craft up to ×${Math.min(max, 100)}` : '';
       }
       syncQtyBtns(max, 'Invent ×1');
+    } else if (entry.kind === 'temper' && entry.temperKind) {
+      const kind = entry.temperKind;
+      const invs = listTemperingInventions(this.inv);
+      nameEl.textContent = kind === 'speed' ? 'Temper Rivet Spanner' : 'Reinforce Haul Pack';
+      outEl.textContent =
+        kind === 'speed'
+          ? 'Makes Tempered Rivet Spanner · equip for faster crew work'
+          : 'Makes Reinforced Haul Pack · equip for greater reef yields';
+      needsEl.innerHTML = '';
+      const baseId = kind === 'speed' ? 'speed_tool' : 'haul_pack';
+      const baseHave = this.inv.items[baseId] ?? 0;
+      const baseOk = baseHave >= 1;
+      const baseRow = document.createElement('div');
+      baseRow.className = 'craft-need-row ' + (baseOk ? 'ok' : 'bad');
+      baseRow.innerHTML = `<span>${COMMODITIES[baseId].name}</span><span>${baseHave}/1 ${baseOk ? '✓' : '✗'}</span>`;
+      needsEl.appendChild(baseRow);
+      // Invention picker (first stocked selected by default)
+      let inventPick = invs[0]?.id ?? '';
+      if (invs.length) {
+        const pickRow = document.createElement('div');
+        pickRow.className = 'craft-need-row ok';
+        const lab = document.createElement('span');
+        lab.textContent = 'Invention alloy';
+        const sel = document.createElement('select');
+        sel.style.maxWidth = '55%';
+        for (const invn of invs) {
+          const o = document.createElement('option');
+          o.value = invn.id;
+          o.textContent = `${invn.name} ×${invn.qty} (Q${invn.quality})`;
+          sel.appendChild(o);
+        }
+        sel.value = inventPick;
+        sel.addEventListener('change', () => {
+          inventPick = sel.value;
+          (needsEl as HTMLElement).dataset.temperInvent = inventPick;
+        });
+        (needsEl as HTMLElement).dataset.temperInvent = inventPick;
+        pickRow.appendChild(lab);
+        pickRow.appendChild(sel);
+        needsEl.appendChild(pickRow);
+      } else {
+        const miss = document.createElement('div');
+        miss.className = 'craft-need-row bad';
+        miss.innerHTML =
+          '<span>Crafted invention</span><span>0/1 ✗</span>';
+        needsEl.appendChild(miss);
+      }
+      if (!canInvent(this.inv)) {
+        reasonEl.textContent = 'Unlock invention first (bay L3 / city workshop / home lab).';
+      } else if (!baseOk) {
+        reasonEl.textContent = `Craft a basic ${COMMODITIES[baseId].name} first (same Tools list).`;
+      } else if (!invs.length) {
+        reasonEl.textContent = 'Craft 1× of an invention, then return here to improve the tool.';
+      } else {
+        reasonEl.textContent =
+          'Uses one invention unit. Tutorial only needs basic tools — this is optional power.';
+      }
+      const max = canTemperGear(this.inv, kind) ? 1 : 0;
+      syncQtyBtns(max, kind === 'speed' ? 'Temper ×1' : 'Reinforce ×1');
     }
   }
 
@@ -7706,6 +7802,22 @@ export class ForgeHeartGame {
       if (r.ok) {
         this.audio.playPickup();
         writeSlot(this.activeSlot, this.buildSaveData());
+      }
+    } else if (entry.kind === 'temper' && entry.temperKind) {
+      const needsEl = document.getElementById('craft-detail-needs');
+      const inventId =
+        (needsEl as HTMLElement | null)?.dataset?.temperInvent ||
+        listTemperingInventions(this.inv)[0]?.id;
+      if (!inventId) {
+        if (log) log.textContent = 'Craft an invention first, then temper gear with it.';
+      } else {
+        const r = temperWorkerGear(this.inv, entry.temperKind, inventId);
+        if (log) log.textContent = r.msg;
+        if (r.ok) {
+          this.audio.playPickup();
+          this.toast(r.msg, 5);
+          writeSlot(this.activeSlot, this.buildSaveData());
+        }
       }
     }
     this.fillCraftUi();
@@ -7854,14 +7966,17 @@ export class ForgeHeartGame {
       }
       for (const w of this.inv.workers) {
         if (w.harvestSiteId === undefined) w.harvestSiteId = null;
+        normalizeWorkerToolTiers(w);
         const card = document.createElement('div');
         card.className = 'bay-worker-card';
         const pg = w.payGrade ?? 0;
         const assignment = describeWorkerAssignment(this.inv, w);
+        const st = workerSpeedToolTier(w);
+        const ht = workerHaulToolTier(w);
         const gear = [
           w.hasBoard ? 'Board' : null,
-          w.hasSpeedTool ? 'Spanner' : null,
-          w.hasHaulPack ? 'Pack' : null,
+          st > 0 ? toolTierLabel('speed', st) : null,
+          ht > 0 ? toolTierLabel('haul', ht) : null,
         ]
           .filter(Boolean)
           .join(' · ');
@@ -7947,10 +8062,15 @@ export class ForgeHeartGame {
         actions.appendChild(eqB);
         const eqT = document.createElement('button');
         eqT.type = 'button';
-        eqT.textContent = 'Equip spanner';
+        const fineSp = (this.inv.items.speed_tool_fine ?? 0) > 0;
+        eqT.textContent = fineSp ? 'Equip spanner ★' : 'Equip spanner';
+        eqT.title = fineSp
+          ? 'Equips tempered spanner if available (faster work)'
+          : 'Equips Rivet Spanner — temper with inventions later for ★';
         eqT.addEventListener('click', () => {
           const r = equipWorkerTool(this.inv, w.id, 'speed');
           this.bayLog(r.msg);
+          this.toast(r.msg, 3.5);
           if (r.ok) {
             this.audio.playPickup();
             this.syncWorkerAgentsLoadout();
@@ -7961,10 +8081,15 @@ export class ForgeHeartGame {
         actions.appendChild(eqT);
         const eqP = document.createElement('button');
         eqP.type = 'button';
-        eqP.textContent = 'Equip pack';
+        const finePk = (this.inv.items.haul_pack_fine ?? 0) > 0;
+        eqP.textContent = finePk ? 'Equip pack ★' : 'Equip pack';
+        eqP.title = finePk
+          ? 'Equips reinforced pack if available (bigger hauls)'
+          : 'Equips Haul Pack — reinforce with inventions later for ★';
         eqP.addEventListener('click', () => {
           const r = equipWorkerTool(this.inv, w.id, 'haul');
           this.bayLog(r.msg);
+          this.toast(r.msg, 3.5);
           if (r.ok) {
             this.audio.playPickup();
             this.syncWorkerAgentsLoadout();
@@ -7994,7 +8119,7 @@ export class ForgeHeartGame {
         const intro = document.createElement('p');
         intro.className = 'craft-hint';
         intro.textContent =
-          'Invent from two mats → craft → use in frame slots that match those mats (gear→Mechanisms, wire→Wiring, fuel→Power, metals→Chassis) or stock stalls.';
+          'Invent from two mats → craft the invention → use in matching frame slots, stock stalls, or Temper / Reinforce crew tools (Tools list) for stronger harvests.';
         invnEl.appendChild(intro);
         const row = document.createElement('div');
         row.className = 'bay-invent-row';

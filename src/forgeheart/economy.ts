@@ -20,6 +20,8 @@ export type CommodityId =
   | 'scrap_brass'
   | 'spore_silk'
   | 'sky_salt'
+  | 'speed_tool_fine'
+  | 'haul_pack_fine'
   | 'wire'
   | 'glass_pane'
   | 'fuel_cell'
@@ -107,11 +109,27 @@ export const COMMODITIES: Record<CommodityId, CommodityDef> = {
     baseSell: 28,
     stack: 5,
   },
+  /** Tempered with a player invention — stronger work speed */
+  speed_tool_fine: {
+    id: 'speed_tool_fine',
+    name: 'Tempered Rivet Spanner',
+    baseBuy: 28,
+    baseSell: 55,
+    stack: 5,
+  },
   haul_pack: {
     id: 'haul_pack',
     name: 'Haul Pack',
     baseBuy: 10,
     baseSell: 24,
+    stack: 5,
+  },
+  /** Reinforced with a player invention — stronger reef yields */
+  haul_pack_fine: {
+    id: 'haul_pack_fine',
+    name: 'Reinforced Haul Pack',
+    baseBuy: 24,
+    baseSell: 50,
     stack: 5,
   },
   elias_medallion: {
@@ -596,6 +614,9 @@ export const JOB_DEFS: {
   },
 ];
 
+/** 0 = none · 1 = basic craft · 2 = invention-tempered */
+export type ToolTier = 0 | 1 | 2;
+
 export interface WorkerState {
   id: string;
   name: string;
@@ -603,8 +624,14 @@ export interface WorkerState {
   /** When job === program */
   programId: string | null;
   hasBoard: boolean;
+  /** Legacy flag — kept in sync with speedToolTier > 0 */
   hasSpeedTool: boolean;
+  /** Legacy flag — kept in sync with haulToolTier > 0 */
   hasHaulPack: boolean;
+  /** Rivet Spanner tier (0 none · 1 basic · 2 tempered with invention) */
+  speedToolTier?: ToolTier;
+  /** Haul Pack tier (0 none · 1 basic · 2 reinforced with invention) */
+  haulToolTier?: ToolTier;
   /** Completed work nodes (attention / tool wear) */
   jobsDone: number;
   /**
@@ -1634,6 +1661,8 @@ export function makeRobotWorker(name: string, id?: string): WorkerState {
     hasBoard: false,
     hasSpeedTool: false,
     hasHaulPack: false,
+    speedToolTier: 0,
+    haulToolTier: 0,
     jobsDone: 0,
     payGrade: 0,
     harvestSiteId: null,
@@ -2326,7 +2355,9 @@ export const STORAGE_CRAFTED_IDS: readonly CommodityId[] = [
   'gear_blank',
   'repair_kit',
   'speed_tool',
+  'speed_tool_fine',
   'haul_pack',
+  'haul_pack_fine',
   'polished_wire',
   'bloom_brass',
   'bloom_sky',
@@ -2601,6 +2632,7 @@ export const RECIPES: Recipe[] = [
     output: { id: 'haul_pack', n: 1 },
     needsBay: true,
   },
+  // Fine tools are made via temperWorkerGear (invention + basic tool) — not listed as RECIPES.
   {
     id: 'polished_wire',
     name: 'Polish Copper Wire',
@@ -2718,6 +2750,8 @@ export function hireLaborer(inv: InventoryState): { ok: boolean; msg: string; wo
     hasBoard: false,
     hasSpeedTool: false,
     hasHaulPack: false,
+    speedToolTier: 0,
+    haulToolTier: 0,
     jobsDone: 0,
     payGrade: 0,
     harvestSiteId: null,
@@ -3014,13 +3048,47 @@ export function applyProgramNodeResult(
   const finish = (r: { ok: boolean; msg?: string; brassDelta?: number }) => {
     if (r.ok && w) {
       w.jobsDone = (w.jobsDone ?? 0) + 1;
-      // Tool wear attention event
-      if (w.hasSpeedTool && w.jobsDone > 0 && w.jobsDone % 22 === 0) {
-        w.hasSpeedTool = false;
-        return {
-          ...r,
-          msg: `${r.msg ?? ''} · ${name}'s Rivet Spanner wore out!`.trim(),
-        };
+      normalizeWorkerToolTiers(w);
+      // Tool wear — tempered lasts longer; degrades tempered → basic → none
+      if ((w.speedToolTier ?? 0) > 0 && w.jobsDone > 0) {
+        const tier = w.speedToolTier ?? 0;
+        const every = tier >= 2 ? 38 : 22;
+        if (w.jobsDone % every === 0) {
+          if (tier >= 2) {
+            w.speedToolTier = 1;
+            w.hasSpeedTool = true;
+            return {
+              ...r,
+              msg: `${r.msg ?? ''} · ${name}'s tempered spanner cooled to a standard Rivet Spanner.`.trim(),
+            };
+          }
+          w.speedToolTier = 0;
+          w.hasSpeedTool = false;
+          return {
+            ...r,
+            msg: `${r.msg ?? ''} · ${name}'s Rivet Spanner wore out!`.trim(),
+          };
+        }
+      }
+      if ((w.haulToolTier ?? 0) > 0 && w.jobsDone > 0) {
+        const tier = w.haulToolTier ?? 0;
+        const every = tier >= 2 ? 42 : 28;
+        if (w.jobsDone % every === 0) {
+          if (tier >= 2) {
+            w.haulToolTier = 1;
+            w.hasHaulPack = true;
+            return {
+              ...r,
+              msg: `${r.msg ?? ''} · ${name}'s reinforced pack frayed to a standard Haul Pack.`.trim(),
+            };
+          }
+          w.haulToolTier = 0;
+          w.hasHaulPack = false;
+          return {
+            ...r,
+            msg: `${r.msg ?? ''} · ${name}'s Haul Pack wore out!`.trim(),
+          };
+        }
       }
     }
     return r;
@@ -3906,6 +3974,45 @@ export function equipWorkerBoard(
   return { ok: true, msg: `${w.name} equipped with a work surfboard — travels faster.` };
 }
 
+/** Normalize legacy boolean gear flags into tiers. */
+export function normalizeWorkerToolTiers(w: WorkerState): void {
+  if (w.speedToolTier == null) {
+    w.speedToolTier = w.hasSpeedTool ? 1 : 0;
+  }
+  if (w.haulToolTier == null) {
+    w.haulToolTier = w.hasHaulPack ? 1 : 0;
+  }
+  w.speedToolTier = Math.max(0, Math.min(2, w.speedToolTier)) as ToolTier;
+  w.haulToolTier = Math.max(0, Math.min(2, w.haulToolTier)) as ToolTier;
+  w.hasSpeedTool = w.speedToolTier > 0;
+  w.hasHaulPack = w.haulToolTier > 0;
+}
+
+export function workerSpeedToolTier(w: WorkerState): ToolTier {
+  normalizeWorkerToolTiers(w);
+  return w.speedToolTier ?? 0;
+}
+
+export function workerHaulToolTier(w: WorkerState): ToolTier {
+  normalizeWorkerToolTiers(w);
+  return w.haulToolTier ?? 0;
+}
+
+export function toolTierLabel(kind: 'speed' | 'haul', tier: ToolTier): string {
+  if (kind === 'speed') {
+    if (tier >= 2) return 'Tempered Spanner';
+    if (tier >= 1) return 'Rivet Spanner';
+    return 'no spanner';
+  }
+  if (tier >= 2) return 'Reinforced Pack';
+  if (tier >= 1) return 'Haul Pack';
+  return 'no pack';
+}
+
+/**
+ * Equip best available tool of kind (fine preferred over basic).
+ * Replacing a weaker tool returns the old one to inventory when possible.
+ */
 export function equipWorkerTool(
   inv: InventoryState,
   workerId: string,
@@ -3913,22 +4020,169 @@ export function equipWorkerTool(
 ): { ok: boolean; msg: string } {
   const w = inv.workers.find((x) => x.id === workerId);
   if (!w) return { ok: false, msg: 'Worker not found.' };
+  normalizeWorkerToolTiers(w);
+
   if (kind === 'speed') {
-    if (w.hasSpeedTool) return { ok: false, msg: `${w.name} already has a Rivet Spanner.` };
+    const cur = w.speedToolTier ?? 0;
+    const fine = getQty(inv, 'speed_tool_fine');
+    const basic = getQty(inv, 'speed_tool');
+    let next: ToolTier = 0;
+    if (fine > 0) next = 2;
+    else if (basic > 0) next = 1;
+    else {
+      return {
+        ok: false,
+        msg:
+          cur > 0
+            ? `${w.name} already has ${toolTierLabel('speed', cur)}.`
+            : 'Craft a Rivet Spanner (Tools). Temper it with an invention for bigger gains.',
+      };
+    }
+    if (next <= cur) {
+      return {
+        ok: false,
+        msg: `${w.name} already has ${toolTierLabel('speed', cur)} (equip a tempered one for an upgrade).`,
+      };
+    }
+    if (next === 2) removeItem(inv, 'speed_tool_fine', 1);
+    else removeItem(inv, 'speed_tool', 1);
+    // Return previous tool to pack when upgrading
+    if (cur === 1) addItem(inv, 'speed_tool', 1);
+    else if (cur === 2) addItem(inv, 'speed_tool_fine', 1);
+    w.speedToolTier = next;
+    w.hasSpeedTool = true;
+    return {
+      ok: true,
+      msg:
+        next === 2
+          ? `${w.name} equipped Tempered Rivet Spanner — much faster work cycles.`
+          : `${w.name} equipped Rivet Spanner — works faster.`,
+    };
+  }
+
+  const cur = w.haulToolTier ?? 0;
+  const fine = getQty(inv, 'haul_pack_fine');
+  const basic = getQty(inv, 'haul_pack');
+  let next: ToolTier = 0;
+  if (fine > 0) next = 2;
+  else if (basic > 0) next = 1;
+  else {
+    return {
+      ok: false,
+      msg:
+        cur > 0
+          ? `${w.name} already has ${toolTierLabel('haul', cur)}.`
+          : 'Craft a Haul Pack (Tools). Reinforce it with an invention for greater reef yields.',
+    };
+  }
+  if (next <= cur) {
+    return {
+      ok: false,
+      msg: `${w.name} already has ${toolTierLabel('haul', cur)} (equip a reinforced one for an upgrade).`,
+    };
+  }
+  if (next === 2) removeItem(inv, 'haul_pack_fine', 1);
+  else removeItem(inv, 'haul_pack', 1);
+  if (cur === 1) addItem(inv, 'haul_pack', 1);
+  else if (cur === 2) addItem(inv, 'haul_pack_fine', 1);
+  w.haulToolTier = next;
+  w.hasHaulPack = true;
+  return {
+    ok: true,
+    msg:
+      next === 2
+        ? `${w.name} equipped Reinforced Haul Pack — much larger reef hauls.`
+        : `${w.name} equipped Haul Pack — bigger reef yields.`,
+  };
+}
+
+/** Inventions currently stocked and usable to temper gear. */
+export function listTemperingInventions(
+  inv: InventoryState,
+): { id: string; name: string; qty: number; quality: number }[] {
+  return inv.customRecipes
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      qty: inv.customStock[r.id] ?? 0,
+      quality: r.quality ?? 1,
+    }))
+    .filter((x) => x.qty > 0);
+}
+
+/**
+ * Improve a basic tool using one crafted invention.
+ * Gated behind invent unlock — keeps tutorial free of this path.
+ */
+export function temperWorkerGear(
+  inv: InventoryState,
+  kind: 'speed' | 'haul',
+  inventionId: string,
+): { ok: boolean; msg: string } {
+  if (!canInvent(inv)) {
+    return {
+      ok: false,
+      msg: 'Tool tempering unlocks with invention (bay L3, city workshop, or home invent lab).',
+    };
+  }
+  if (!canCraftAtHomeOrBay(inv)) {
+    return { ok: false, msg: 'Need a bay or home workshop.' };
+  }
+  const recipe = inv.customRecipes.find((r) => r.id === inventionId);
+  if (!recipe) return { ok: false, msg: 'Unknown invention.' };
+  const stock = inv.customStock[inventionId] ?? 0;
+  if (stock < 1) {
+    return { ok: false, msg: `Craft 1× ${recipe.name} first, then temper gear with it.` };
+  }
+
+  if (kind === 'speed') {
     if (getQty(inv, 'speed_tool') < 1) {
-      return { ok: false, msg: 'Craft a Rivet Spanner at the workbench first.' };
+      return {
+        ok: false,
+        msg: 'Need a basic Rivet Spanner in stock (Tools → Forge Rivet Spanner).',
+      };
+    }
+    if (getQty(inv, 'speed_tool_fine') + 1 > effectiveStack(inv, 'speed_tool_fine')) {
+      return { ok: false, msg: 'Inventory full for Tempered Rivet Spanner.' };
     }
     removeItem(inv, 'speed_tool', 1);
-    w.hasSpeedTool = true;
-    return { ok: true, msg: `${w.name} equipped Rivet Spanner — works faster.` };
+    inv.customStock[inventionId]!--;
+    if (inv.customStock[inventionId]! <= 0) delete inv.customStock[inventionId];
+    addItem(inv, 'speed_tool_fine', 1);
+    return {
+      ok: true,
+      msg: `Tempered Rivet Spanner with ${recipe.name} (Q${recipe.quality ?? 1}) — equip on a worker for faster work.`,
+    };
   }
-  if (w.hasHaulPack) return { ok: false, msg: `${w.name} already has a Haul Pack.` };
+
   if (getQty(inv, 'haul_pack') < 1) {
-    return { ok: false, msg: 'Craft a Haul Pack at the workbench first.' };
+    return {
+      ok: false,
+      msg: 'Need a basic Haul Pack in stock (Tools → Stitch Haul Pack).',
+    };
+  }
+  if (getQty(inv, 'haul_pack_fine') + 1 > effectiveStack(inv, 'haul_pack_fine')) {
+    return { ok: false, msg: 'Inventory full for Reinforced Haul Pack.' };
   }
   removeItem(inv, 'haul_pack', 1);
-  w.hasHaulPack = true;
-  return { ok: true, msg: `${w.name} equipped Haul Pack — bigger reef yields.` };
+  inv.customStock[inventionId]!--;
+  if (inv.customStock[inventionId]! <= 0) delete inv.customStock[inventionId];
+  addItem(inv, 'haul_pack_fine', 1);
+  const q = recipe.quality ?? 1;
+  return {
+    ok: true,
+    msg: `Reinforced Haul Pack with ${recipe.name} (Q${q}) — equip for greater reef yields.`,
+  };
+}
+
+export function canTemperGear(
+  inv: InventoryState,
+  kind: 'speed' | 'haul',
+): boolean {
+  if (!canInvent(inv) || !canCraftAtHomeOrBay(inv)) return false;
+  if (listTemperingInventions(inv).length < 1) return false;
+  if (kind === 'speed') return getQty(inv, 'speed_tool') >= 1;
+  return getQty(inv, 'haul_pack') >= 1;
 }
 
 export function isRobotWorker(w: WorkerState): boolean {
@@ -3947,8 +4201,9 @@ export function workerMoveSpeed(w: WorkerState): number {
 }
 
 export function workerWorkMul(w: WorkerState): number {
-  let mul = w.hasSpeedTool ? 0.55 : 1;
+  const tier = workerSpeedToolTier(w);
   // Higher mul = slower work timer in agents
+  let mul = tier >= 2 ? 0.36 : tier >= 1 ? 0.55 : 1;
   if (isRobotWorker(w) && !w.hasMedallion) {
     mul *= Math.max(0.5, Math.min(1.7, w.frameWorkMul ?? 1.35));
   }
@@ -3956,11 +4211,20 @@ export function workerWorkMul(w: WorkerState): number {
 }
 
 export function workerHarvestQty(w: WorkerState): number {
-  let n = w.hasHaulPack ? 2 + Math.floor(Math.random() * 2) : 1;
+  const tier = workerHaulToolTier(w);
+  // Basic pack: 2–3 · Reinforced (invention): 4–6
+  let n =
+    tier >= 2
+      ? 4 + Math.floor(Math.random() * 3)
+      : tier >= 1
+        ? 2 + Math.floor(Math.random() * 2)
+        : 1;
   if (isRobotWorker(w) && !w.hasMedallion) {
     const hm = w.frameHarvestMul ?? 0.85;
     n = Math.max(1, Math.floor(n * hm + (hm > 1.1 ? Math.random() : 0)));
   }
+  // Tempered spanner also slightly boosts haul size (cleaner reefs, faster cycles)
+  if (workerSpeedToolTier(w) >= 2 && Math.random() < 0.45) n += 1;
   return n;
 }
 
@@ -4433,10 +4697,14 @@ export function inventCustomRecipe(
   inv.customRecipes.push(recipe);
   inv.inventionsMade = (inv.inventionsMade ?? 0) + 1;
   const slotBlurb = inventSlotBlurb(a, b);
+  const gearTip =
+    inv.customRecipes.length <= 1
+      ? ' Tip: craft a Rivet Spanner or Haul Pack, then Temper / Reinforce it (Tools) with this invention for stronger crew harvests.'
+      : '';
   return {
     ok: true,
     recipe,
-    msg: `Invented ${name} (Q${quality}, ~${sellValue}b). Fits frame slots: ${slotBlurb}. Craft → assemble or stock stalls.`,
+    msg: `Invented ${name} (Q${quality}, ~${sellValue}b). Fits frame slots: ${slotBlurb}. Craft → assemble or stock stalls.${gearTip}`,
   };
 }
 
@@ -4933,35 +5201,49 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
     inv.items = { ...(o.items as InventoryState['items']) };
   }
   if (Array.isArray(o.workers)) {
-    inv.workers = (o.workers as WorkerState[]).map((w) => ({
-      id: String(w.id ?? `w_${Math.random()}`),
-      name: String(w.name ?? 'Worker'),
-      job: (w.job as JobId) || 'harvest',
-      programId: w.programId ? String(w.programId) : null,
-      hasBoard: !!w.hasBoard,
-      hasSpeedTool: !!w.hasSpeedTool,
-      hasHaulPack: !!w.hasHaulPack,
-      jobsDone: typeof w.jobsDone === 'number' ? w.jobsDone : 0,
-      payGrade: typeof w.payGrade === 'number' ? w.payGrade : 0,
-      harvestSiteId:
-        typeof w.harvestSiteId === 'string' && w.harvestSiteId
-          ? String(w.harvestSiteId)
-          : null,
-      harvestMatId:
-        typeof w.harvestMatId === 'string' && w.harvestMatId in COMMODITIES
-          ? (w.harvestMatId as CommodityId)
-          : null,
-      kind: w.kind === 'robot' ? 'robot' : 'human',
-      hasMedallion: !!w.hasMedallion,
-      frameId: w.frameId ? String(w.frameId) : null,
-      frameName: w.frameName ? String(w.frameName) : null,
-      frameQuality: typeof w.frameQuality === 'number' ? w.frameQuality : undefined,
-      frameSpeedMul: typeof w.frameSpeedMul === 'number' ? w.frameSpeedMul : undefined,
-      frameWorkMul: typeof w.frameWorkMul === 'number' ? w.frameWorkMul : undefined,
-      frameHarvestMul: typeof w.frameHarvestMul === 'number' ? w.frameHarvestMul : undefined,
-      frameProgramBonus: typeof w.frameProgramBonus === 'number' ? w.frameProgramBonus : undefined,
-      unpaid: !!w.unpaid,
-    }));
+    inv.workers = (o.workers as WorkerState[]).map((raw) => {
+      const w: WorkerState = {
+        id: String(raw.id ?? `w_${Math.random()}`),
+        name: String(raw.name ?? 'Worker'),
+        job: (raw.job as JobId) || 'harvest',
+        programId: raw.programId ? String(raw.programId) : null,
+        hasBoard: !!raw.hasBoard,
+        hasSpeedTool: !!raw.hasSpeedTool,
+        hasHaulPack: !!raw.hasHaulPack,
+        speedToolTier: (typeof raw.speedToolTier === 'number'
+          ? raw.speedToolTier
+          : raw.hasSpeedTool
+            ? 1
+            : 0) as ToolTier,
+        haulToolTier: (typeof raw.haulToolTier === 'number'
+          ? raw.haulToolTier
+          : raw.hasHaulPack
+            ? 1
+            : 0) as ToolTier,
+        jobsDone: typeof raw.jobsDone === 'number' ? raw.jobsDone : 0,
+        payGrade: typeof raw.payGrade === 'number' ? raw.payGrade : 0,
+        harvestSiteId:
+          typeof raw.harvestSiteId === 'string' && raw.harvestSiteId
+            ? String(raw.harvestSiteId)
+            : null,
+        harvestMatId:
+          typeof raw.harvestMatId === 'string' && raw.harvestMatId in COMMODITIES
+            ? (raw.harvestMatId as CommodityId)
+            : null,
+        kind: raw.kind === 'robot' ? 'robot' : 'human',
+        hasMedallion: !!raw.hasMedallion,
+        frameId: raw.frameId ? String(raw.frameId) : null,
+        frameName: raw.frameName ? String(raw.frameName) : null,
+        frameQuality: typeof raw.frameQuality === 'number' ? raw.frameQuality : undefined,
+        frameSpeedMul: typeof raw.frameSpeedMul === 'number' ? raw.frameSpeedMul : undefined,
+        frameWorkMul: typeof raw.frameWorkMul === 'number' ? raw.frameWorkMul : undefined,
+        frameHarvestMul: typeof raw.frameHarvestMul === 'number' ? raw.frameHarvestMul : undefined,
+        frameProgramBonus: typeof raw.frameProgramBonus === 'number' ? raw.frameProgramBonus : undefined,
+        unpaid: !!raw.unpaid,
+      };
+      normalizeWorkerToolTiers(w);
+      return w;
+    });
   } else if (o.laborerHired) {
     // Migrate Phase 1 single laborer
     inv.workers = [
@@ -4973,6 +5255,8 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
         hasBoard: false,
         hasSpeedTool: false,
         hasHaulPack: false,
+        speedToolTier: 0,
+        haulToolTier: 0,
         jobsDone: 0,
         payGrade: 0,
         harvestSiteId: null,
@@ -4988,6 +5272,8 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
       payGrade: w.payGrade ?? 0,
       harvestSiteId: w.harvestSiteId ?? null,
       harvestMatId: w.harvestMatId ?? null,
+      speedToolTier: w.speedToolTier ?? (w.hasSpeedTool ? 1 : 0),
+      haulToolTier: w.haulToolTier ?? (w.hasHaulPack ? 1 : 0),
     }));
   }
   inv.laborerHired = inv.workers.length > 0;
