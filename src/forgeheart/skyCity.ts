@@ -32,6 +32,7 @@ import {
   flowerDisplayName,
   flowerPatchesForDistrict,
 } from './flowers';
+import { buildVendorMarketStand } from './stallBuild';
 export type CityInteractKind =
   | 'neighbor'
   | 'vendor'
@@ -1155,38 +1156,32 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       });
     }
 
-    // Vendors on market / premium / mixed plazas
+    // Vendors on market / premium / mixed plazas — kit keepers + market stands
     if (d.role === 'market' || d.role === 'premium' || d.role === 'mixed') {
       VENDORS.forEach((v, i) => {
         if (d.role === 'mixed' && i > 1) return;
-        const a = (i / VENDORS.length) * Math.PI * 2;
-        const x = cx + Math.cos(a) * (sz * 0.22);
-        const z = cz + Math.sin(a) * (sz * 0.22);
-        const body = new THREE.Mesh(
-          new THREE.CapsuleGeometry(0.32, 0.85, 4, 8),
-          new THREE.MeshStandardMaterial({ color: 0xc4a882, roughness: 0.8 }),
-        );
-        body.position.set(x, 1.2, z);
-        addMesh(body);
-        const mark = new THREE.Mesh(
-          new THREE.SphereGeometry(0.16, 8, 8),
-          new THREE.MeshStandardMaterial({
-            color: 0xc4a35a,
-            emissive: 0x886622,
-            emissiveIntensity: 0.4,
-          }),
-        );
-        mark.position.set(x + 1.3, 1.1, z);
-        addMesh(mark);
-        const vl = labelSprite(v.name);
-        vl.position.set(x, 2.6, z);
-        addMesh(vl);
+        const a = (i / VENDORS.length) * Math.PI * 2 + di * 0.15;
+        const x = cx + Math.cos(a) * (sz * 0.28);
+        const z = cz + Math.sin(a) * (sz * 0.28);
+        // Face toward plaza center
+        const yaw = Math.atan2(cx - x, cz - z);
+        const stand = buildVendorMarketStand(mats, {
+          x,
+          z,
+          yaw,
+          vendorName: v.name,
+          vendorTitle: v.title,
+          variant: i + di,
+          deckY: DECK_Y,
+        });
+        dGroup.add(stand.group);
+        for (const c of stand.colliders) addCol(c);
         interactables.push({
           id: `vendor_${d.id}_${v.id}`,
           kind: 'vendor',
-          position: mark.position.clone(),
-          radius: 2.3,
-          mesh: mark,
+          position: stand.interactPos.clone(),
+          radius: 2.7,
+          mesh: stand.keeperRoot,
           vendor: v,
           label: `${v.title} · ${v.name} (${d.name})`,
           districtId: d.id,

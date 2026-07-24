@@ -8,6 +8,7 @@ import { buildEnterableShell, offsetColliders } from './enterableBuilding';
 import type { Collider } from './level';
 import type { SiteProp, StallLayout, StallTier } from './economy';
 import { makeSignSprite, setSignWorldWidth } from './signLabel';
+import { makeKitNpc } from './npcKit';
 
 export const STALL_TIERS: {
   id: StallTier;
@@ -566,4 +567,195 @@ export function decorIndexToProps(decor: number): SiteProp[] {
     out.push({ id: ids[i]!, lx: -2.2 + i * 1.1, lz: -2.4, yaw: 0 });
   }
   return out;
+}
+
+/**
+ * NPC market stand — tutorial-style pad + counter + awning + kit shopkeeper.
+ * Local +Z is the customer side (facing out from the stand).
+ */
+export function buildVendorMarketStand(
+  mats: Mats,
+  opts: {
+    x: number;
+    z: number;
+    /** World yaw: direction the counter faces (toward customers) */
+    yaw: number;
+    vendorName: string;
+    vendorTitle?: string;
+    /** Palette / look variation */
+    variant?: number;
+    /** Deck surface Y (plaza top) */
+    deckY?: number;
+    /** Optional awning cloth color override */
+    awningColor?: number;
+  },
+): {
+  group: THREE.Group;
+  colliders: Collider[];
+  /** Front of counter — where the player stands to trade */
+  interactPos: THREE.Vector3;
+  keeperRoot: THREE.Group;
+} {
+  const deckY = opts.deckY ?? 0;
+  const yaw = opts.yaw;
+  const variant = opts.variant ?? 0;
+  const pal = STALL_COLORS[variant % STALL_COLORS.length]!;
+  const awningHex = opts.awningColor ?? pal.cloth;
+
+  const group = new THREE.Group();
+  group.name = `VendorStand_${opts.vendorName.replace(/\s+/g, '_')}`;
+  group.position.set(opts.x, deckY, opts.z);
+  group.rotation.y = yaw;
+
+  const colliders: Collider[] = [];
+  const woodM = new THREE.MeshStandardMaterial({
+    color: pal.wood,
+    roughness: 0.75,
+    metalness: 0.12,
+  });
+  const accentM = new THREE.MeshStandardMaterial({
+    color: pal.accent,
+    roughness: 0.45,
+    metalness: 0.35,
+  });
+  const clothM = new THREE.MeshStandardMaterial({
+    color: awningHex,
+    roughness: 0.85,
+    metalness: 0.05,
+    emissive: new THREE.Color(awningHex).multiplyScalar(0.15),
+    emissiveIntensity: 0.35,
+  });
+
+  const addBox = (
+    mat: THREE.Material,
+    w: number,
+    h: number,
+    d: number,
+    lx: number,
+    ly: number,
+    lz: number,
+    solid = false,
+  ) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    mesh.position.set(lx, ly, lz);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    if (solid) {
+      // Expand axis-aligned bounds after yaw
+      const minL = new THREE.Vector3(lx - w / 2, ly - h / 2, lz - d / 2);
+      const maxL = new THREE.Vector3(lx + w / 2, ly + h / 2, lz + d / 2);
+      const pts = [
+        new THREE.Vector3(minL.x, minL.y, minL.z),
+        new THREE.Vector3(minL.x, minL.y, maxL.z),
+        new THREE.Vector3(minL.x, maxL.y, minL.z),
+        new THREE.Vector3(minL.x, maxL.y, maxL.z),
+        new THREE.Vector3(maxL.x, minL.y, minL.z),
+        new THREE.Vector3(maxL.x, minL.y, maxL.z),
+        new THREE.Vector3(maxL.x, maxL.y, minL.z),
+        new THREE.Vector3(maxL.x, maxL.y, maxL.z),
+      ].map((p) => rotateLocal(p, yaw, opts.x, opts.z));
+      const min = pts[0]!.clone();
+      const max = pts[0]!.clone();
+      for (const p of pts) {
+        min.min(p);
+        max.max(p);
+      }
+      min.y += deckY;
+      max.y += deckY;
+      colliders.push({ min, max, kind: 'solid' });
+    }
+    return mesh;
+  };
+
+  // Floor pad
+  {
+    const pad = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.22, 4.2), woodM);
+    pad.position.set(0, 0.11, 0);
+    pad.receiveShadow = true;
+    group.add(pad);
+    const min = rotateLocal(new THREE.Vector3(-2.6, 0, -2.1), yaw, opts.x, opts.z);
+    const max = rotateLocal(new THREE.Vector3(2.6, 0.22, 2.1), yaw, opts.x, opts.z);
+    const cmin = new THREE.Vector3(Math.min(min.x, max.x), deckY, Math.min(min.z, max.z));
+    const cmax = new THREE.Vector3(Math.max(min.x, max.x), deckY + 0.22, Math.max(min.z, max.z));
+    colliders.push({ min: cmin, max: cmax, kind: 'floor' });
+  }
+
+  // Counter (solid) — customer side +Z
+  addBox(woodM, 3.4, 1.0, 0.72, 0, 0.62, 0.55, true);
+  // Counter top trim
+  addBox(accentM, 3.5, 0.08, 0.78, 0, 1.14, 0.55, false);
+
+  // Back shelves
+  addBox(woodM, 3.2, 1.4, 0.35, 0, 1.3, -1.15, true);
+  addBox(accentM, 3.0, 0.06, 0.32, 0, 1.5, -1.05, false);
+  addBox(accentM, 3.0, 0.06, 0.32, 0, 1.95, -1.05, false);
+
+  // Awning poles + cloth
+  addBox(accentM, 0.1, 2.15, 0.1, -1.7, 1.2, 1.35, false);
+  addBox(accentM, 0.1, 2.15, 0.1, 1.7, 1.2, 1.35, false);
+  addBox(accentM, 0.1, 2.15, 0.1, -1.7, 1.2, -0.9, false);
+  addBox(accentM, 0.1, 2.15, 0.1, 1.7, 1.2, -0.9, false);
+  addBox(clothM, 4.0, 0.1, 2.8, 0, 2.35, 0.2, false);
+
+  // Stock crates beside stand
+  addBox(woodM, 0.7, 0.55, 0.7, -1.9, 0.4, -0.2, false);
+  addBox(woodM, 0.55, 0.45, 0.55, -1.85, 0.9, -0.15, false);
+  addBox(woodM, 0.65, 0.5, 0.65, 1.85, 0.38, -0.25, false);
+
+  // Goods nubs on counter
+  for (const lx of [-1.0, -0.35, 0.35, 1.0]) {
+    const good = new THREE.Mesh(
+      new THREE.BoxGeometry(0.28, 0.22, 0.28),
+      new THREE.MeshStandardMaterial({
+        color: pal.accent,
+        metalness: 0.4,
+        roughness: 0.4,
+        emissive: pal.accent,
+        emissiveIntensity: 0.12,
+      }),
+    );
+    good.position.set(lx, 1.28, 0.55);
+    group.add(good);
+  }
+
+  // Shopkeeper behind counter (−Z)
+  const kit = makeKitNpc('vendor', mats, { variant });
+  kit.root.position.set(0, 0.12, -0.55);
+  kit.root.rotation.y = 0; // faces +Z toward customers (group already yawed)
+  group.add(kit.root);
+
+  // Sign
+  const title = opts.vendorTitle
+    ? `${opts.vendorName}\n${opts.vendorTitle}`
+    : opts.vendorName;
+  const sign = makeSignSprite(title, {
+    width: 280,
+    maxWidth: 640,
+    height: 72,
+    maxHeight: 160,
+    maxFont: 20,
+    minFont: 11,
+    fontFamily: 'serif',
+    fill: 'rgba(20,16,10,0.78)',
+    stroke: '#c4a35a',
+    textColor: '#f0e0b0',
+    worldWidth: 2.6,
+    srgb: true,
+  });
+  sign.position.set(0, 2.85, 0.2);
+  group.add(sign);
+  setSignWorldWidth(sign, 2.6);
+
+  // Customer interact point in front of counter
+  const interactLocal = new THREE.Vector3(0, 1.0, 1.65);
+  const interactPos = rotateLocal(interactLocal, yaw, opts.x, opts.z);
+  interactPos.y = deckY + 1.0;
+
+  return {
+    group,
+    colliders,
+    interactPos,
+    keeperRoot: kit.root,
+  };
 }

@@ -17,6 +17,7 @@ import type { HubWaypoints } from './workerAgent';
 import { makeSignSprite } from './signLabel';
 import { buildFlowerPatchMesh, flowerDisplayName } from './flowers';
 import { buildMineralDepositMesh, depositLayoutForSite, MAT_VISUALS } from './harvestDeposits';
+import { buildVendorMarketStand } from './stallBuild';
 
 export type HubInteractKind =
   | 'vendor'
@@ -210,7 +211,7 @@ export function buildMarketHub(): MarketHubBuilt {
     addMesh(title);
   }
 
-  // Vendor stalls around plaza
+  // Vendor stalls around plaza — kit keepers + tutorial-style stands
   const stallAngles = [
     { a: -0.9, v: 0 },
     { a: -0.3, v: 1 },
@@ -221,56 +222,27 @@ export function buildMarketHub(): MarketHubBuilt {
     const vendor = VENDORS[v]!;
     const x = Math.cos(a) * 12;
     const z = Math.sin(a) * 12;
-    const yaw = a + Math.PI;
+    // Face toward plaza center (0,0)
+    const yaw = Math.atan2(-x, -z);
 
-    // Stall floor
-    const pad = floorSlab(mats, 5, 4, x, z, 0.2, 0x6a5f4e);
-    addMesh(pad.mesh);
-    addCol(pad.col);
-
-    // Counter
-    const counter = box(mats, mats.wood, 3.5, 1.0, 0.7, x + Math.sin(yaw) * 0.8, 0.7, z + Math.cos(yaw) * 0.8);
-    counter.mesh.rotation.y = yaw;
-    addMesh(counter.mesh);
-    addCol({
-      min: new THREE.Vector3(x - 2, 0.2, z - 1.2),
-      max: new THREE.Vector3(x + 2, 1.3, z + 1.2),
-      kind: 'solid',
+    const stand = buildVendorMarketStand(mats, {
+      x,
+      z,
+      yaw,
+      vendorName: vendor.name,
+      vendorTitle: vendor.title,
+      variant: v,
+      deckY: 0,
     });
-
-    // Awning
-    const awn = box(mats, mats.copper, 4, 0.12, 3, x, 2.4, z);
-    addMesh(awn.mesh);
-
-    // Vendor mannequin (simple)
-    const body = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.35, 0.9, 4, 8),
-      new THREE.MeshStandardMaterial({ color: 0xc4a882, roughness: 0.8 }),
-    );
-    body.position.set(x - Math.sin(yaw) * 1.2, 1.2, z - Math.cos(yaw) * 1.2);
-    addMesh(body);
-
-    const spr = labelSprite(vendor.name);
-    spr.position.set(x, 2.9, z);
-    addMesh(spr);
-
-    const marker = new THREE.Mesh(
-      new THREE.SphereGeometry(0.2, 8, 8),
-      new THREE.MeshStandardMaterial({
-        color: 0xc4a35a,
-        emissive: 0x886622,
-        emissiveIntensity: 0.4,
-      }),
-    );
-    marker.position.set(x + Math.sin(yaw) * 1.5, 1.1, z + Math.cos(yaw) * 1.5);
-    addMesh(marker);
+    addMesh(stand.group);
+    for (const c of stand.colliders) addCol(c);
 
     interactables.push({
       id: vendor.id,
       kind: 'vendor',
-      position: marker.position.clone(),
-      radius: 2.2,
-      mesh: marker,
+      position: stand.interactPos.clone(),
+      radius: 2.6,
+      mesh: stand.keeperRoot,
       vendor,
       label: `${vendor.title} · ${vendor.name}`,
     });

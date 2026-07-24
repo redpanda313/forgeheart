@@ -4624,7 +4624,10 @@ export class ForgeHeartGame {
       const dz = cam.z - it.position.z;
       const horiz = Math.hypot(dx, dz);
       const useHoriz =
-        it.kind === 'harvest' || it.kind === 'flower_pick' || it.kind === 'romance_npc';
+        it.kind === 'harvest' ||
+        it.kind === 'flower_pick' ||
+        it.kind === 'romance_npc' ||
+        it.kind === 'vendor';
       const d = useHoriz ? horiz : cam.distanceTo(it.position);
       const reach = it.radius + (useHoriz ? 0.9 : 0.5);
       if (d < bestD && d <= reach) {

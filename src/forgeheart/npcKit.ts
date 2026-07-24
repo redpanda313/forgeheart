@@ -52,6 +52,15 @@ const PALETTES: Record<NpcVisualRole, Palette[]> = {
   ],
   vendor: [
     { skin: 0xe8c4a0, shirt: 0xc4a35a, pants: 0x4a4038, accent: 0x886622, hair: 0x5a4030 },
+    { skin: 0xd4a888, shirt: 0x8a4a3a, pants: 0x3a3030, accent: 0xc45a3a, hair: 0x2a1814 },
+    { skin: 0xe0c0a8, shirt: 0x3a7a8a, pants: 0x2a3a40, accent: 0x44aacc, hair: 0x4a3028 },
+    { skin: 0xc49878, shirt: 0x5a7a48, pants: 0x3a3a30, accent: 0x88aa44, hair: 0x1a1210 },
+    { skin: 0xf0d0b0, shirt: 0x6a5a8a, pants: 0x3a3048, accent: 0xaa88cc, hair: 0x5a4038 },
+  ],
+  shopkeeper: [
+    { skin: 0xe0b898, shirt: 0x5a6a7a, pants: 0x3a3840, accent: 0xc4a35a, hair: 0x4a3830 },
+    { skin: 0xd4a888, shirt: 0x7a5a48, pants: 0x3a3028, accent: 0xe0a040, hair: 0x2a2018 },
+    { skin: 0xe8c4a8, shirt: 0x4a5a68, pants: 0x2a2a38, accent: 0x88aacc, hair: 0x3a2820 },
   ],
   girl: [
     { skin: 0xf0d0b8, shirt: 0xd47898, pants: 0x6a4058, accent: 0xffaacc, hair: 0x3a2018 },
@@ -63,9 +72,6 @@ const PALETTES: Record<NpcVisualRole, Palette[]> = {
   ],
   rogue: [
     { skin: 0xaa5555, shirt: 0x883333, pants: 0x442222, accent: 0xff6644, hair: 0x331111 },
-  ],
-  shopkeeper: [
-    { skin: 0xe0b898, shirt: 0x5a6a7a, pants: 0x3a3840, accent: 0xc4a35a, hair: 0x4a3830 },
   ],
 };
 
