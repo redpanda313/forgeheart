@@ -1688,11 +1688,19 @@ export interface InventoryState {
   placements: PlacementRecord[];
   /** Romance progress with girl NPCs */
   relationships: RomanceState[];
-  /** Bonded storage factory layouts by track */
-  storageLayouts: Partial<Record<StorageTrack, FactoryLayout>>;
-  /** Brass paid toward each storage factory layout */
+  /**
+   * Bonded storage factory buildings by track.
+   * Each capacity expand can add a new building; older ones stay in the world.
+   */
+  storageLayouts: Partial<Record<StorageTrack, FactoryLayout[]>>;
+  /** Brass paid toward each storage factory layout (sum) */
   storageLayoutPaid: Partial<Record<StorageTrack, number>>;
-  /** Sky Foundry bay-wing factory look */
+  /**
+   * Sky Foundry bay-wing factories (one per expand). Prior wings remain.
+   * Legacy single bayWingLayout is migrated into this array on load.
+   */
+  bayWingLayouts: FactoryLayout[];
+  /** @deprecated use bayWingLayouts[0] — kept during migration */
   bayWingLayout: FactoryLayout | null;
   bayWingLayoutPaid: number;
 }
@@ -1784,9 +1792,43 @@ export function emptyInventory(starterBrass = 40): InventoryState {
     relationships: [],
     storageLayouts: {},
     storageLayoutPaid: {},
+    bayWingLayouts: [],
     bayWingLayout: null,
     bayWingLayoutPaid: 0,
   };
+}
+
+/** Normalize one storage track to a building list (migrates legacy single layout). */
+export function storageBuildings(
+  inv: InventoryState,
+  track: StorageTrack,
+): FactoryLayout[] {
+  const raw = inv.storageLayouts?.[track] as FactoryLayout | FactoryLayout[] | undefined;
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.filter((b) => b?.built);
+  return raw.built ? [raw] : [];
+}
+
+export function bayWingBuildings(inv: InventoryState): FactoryLayout[] {
+  if (Array.isArray(inv.bayWingLayouts) && inv.bayWingLayouts.length) {
+    return inv.bayWingLayouts.filter((b) => b?.built);
+  }
+  if (inv.bayWingLayout?.built) return [inv.bayWingLayout];
+  return [];
+}
+
+export function setStorageBuildings(
+  inv: InventoryState,
+  track: StorageTrack,
+  list: FactoryLayout[],
+): void {
+  if (!inv.storageLayouts) inv.storageLayouts = {};
+  inv.storageLayouts[track] = list.filter((b) => b.built);
+}
+
+export function setBayWingBuildings(inv: InventoryState, list: FactoryLayout[]): void {
+  inv.bayWingLayouts = list.filter((b) => b.built);
+  inv.bayWingLayout = inv.bayWingLayouts[0] ?? null;
 }
 
 /** Market tutorial: buy a sky apartment from the real-estate office */
@@ -2220,7 +2262,9 @@ export function finalizeStallBuild(
 
 /**
  * Finalize factory site (storage expand / bay wing / edit).
- * Only charges when the new quote exceeds the previous build (+ optional upgrade base).
+ * - applyUpgrade + new placement → append building (keeps prior models)
+ * - redesign + replaceIndex → replace that building only
+ * - redesign without index → replace last / only building
  */
 export function finalizeFactoryBuild(
   inv: InventoryState,
@@ -2234,6 +2278,11 @@ export function finalizeFactoryBuild(
     redesign?: boolean;
     /** Bump storage level (storage) or bay level (bay_wing) */
     applyUpgrade?: boolean;
+    /**
+     * When redesigning, which building to replace.
+     * Omit / null when placing an additional building on expand.
+     */
+    replaceIndex?: number | null;
   },
 ): { ok: boolean; msg: string; charged: number } {
   if (!isValidStallPlot(opts.districtId, layout.plotX, layout.plotZ)) {
@@ -2249,24 +2298,31 @@ export function finalizeFactoryBuild(
     built: true,
   };
   const redesign = !!opts.redesign;
-  let prevBuild = 0;
-  if (opts.kind === 'storage' && opts.storageTrack) {
-    const prev = inv.storageLayouts?.[opts.storageTrack];
-    if (prev?.built) {
-      prevBuild = quoteFactoryBuild({ form: prev.form, props: prev.props, baseCost: 0 }).total;
-    }
-  } else {
-    const prev = inv.bayWingLayout;
-    if (prev?.built) {
-      prevBuild = quoteFactoryBuild({ form: prev.form, props: prev.props, baseCost: 0 }).total;
-    }
-  }
+  const replaceIdx =
+    typeof opts.replaceIndex === 'number' && opts.replaceIndex >= 0
+      ? opts.replaceIndex
+      : redesign
+        ? 0
+        : -1; // -1 = append
+
+  let list: FactoryLayout[] =
+    opts.kind === 'storage' && opts.storageTrack
+      ? [...storageBuildings(inv, opts.storageTrack)]
+      : [...bayWingBuildings(inv)];
+
+  const prev =
+    replaceIdx >= 0 && replaceIdx < list.length ? list[replaceIdx]! : null;
+  const prevBuild = prev?.built
+    ? quoteFactoryBuild({ form: prev.form, props: prev.props, baseCost: 0 }).total
+    : 0;
   const newBuild = quoteFactoryBuild({
     form: next.form,
     props: next.props,
     baseCost: 0,
   }).total;
-  const cosmeticsDelta = Math.max(0, newBuild - prevBuild);
+  // New buildings pay full cosmetics; replacements pay only the upgrade delta
+  const cosmeticsDelta =
+    prev && replaceIdx >= 0 ? Math.max(0, newBuild - prevBuild) : newBuild;
   const base = redesign || !opts.applyUpgrade ? 0 : (opts.baseCost ?? 0);
   const charge = base + cosmeticsDelta;
 
@@ -2276,8 +2332,6 @@ export function finalizeFactoryBuild(
       if (from >= STORAGE_MAX_LEVEL) {
         return { ok: false, msg: 'Storage already maxed.', charged: 0 };
       }
-    } else if (opts.kind === 'bay_wing') {
-      // expandBay deducts its own fee — we only charge cosmeticsDelta here
     }
   }
 
@@ -2292,12 +2346,13 @@ export function finalizeFactoryBuild(
     const r = expandBay(inv);
     if (!r.ok) return { ok: false, msg: r.msg, charged: 0 };
     if (cosmeticsDelta > 0) inv.brass -= cosmeticsDelta;
-    inv.bayWingLayout = next;
+    list = [...list, next];
+    setBayWingBuildings(inv, list);
     inv.bayWingLayoutPaid = (inv.bayWingLayoutPaid ?? 0) + cosmeticsDelta;
     return {
       ok: true,
       charged: (opts.baseCost ?? 0) + cosmeticsDelta,
-      msg: `Bay expanded · factory placed (−${(opts.baseCost ?? 0) + cosmeticsDelta}b).`,
+      msg: `Bay expanded · new factory wing placed (−${(opts.baseCost ?? 0) + cosmeticsDelta}b). Prior wings kept.`,
     };
   }
 
@@ -2314,30 +2369,45 @@ export function finalizeFactoryBuild(
       else if (opts.storageTrack === 'crafted') inv.storageCraftedLevel = nextLv;
       else inv.storageInventionsLevel = nextLv;
     }
-    if (!inv.storageLayouts) inv.storageLayouts = {};
+    if (replaceIdx >= 0 && replaceIdx < list.length) {
+      list[replaceIdx] = next;
+    } else {
+      list.push(next);
+    }
+    setStorageBuildings(inv, opts.storageTrack, list);
     if (!inv.storageLayoutPaid) inv.storageLayoutPaid = {};
-    inv.storageLayouts[opts.storageTrack] = next;
     inv.storageLayoutPaid[opts.storageTrack] =
       (inv.storageLayoutPaid[opts.storageTrack] ?? 0) + charge;
+    const n = list.length;
     return {
       ok: true,
       charged: charge,
       msg:
-        charge > 0
-          ? `Factory site set (−${charge}b).`
-          : 'Factory site updated (no extra charge).',
+        replaceIdx >= 0
+          ? charge > 0
+            ? `Storage factory replaced (−${charge}b). ${n} building(s) on site.`
+            : `Storage factory updated. ${n} building(s) on site.`
+          : charge > 0
+            ? `New storage factory placed (−${charge}b). ${n} building(s) kept.`
+            : `New storage factory placed. ${n} building(s) on site.`,
     };
   }
 
-  inv.bayWingLayout = next;
+  // Bay wing redesign / extra wing without capacity bump
+  if (replaceIdx >= 0 && replaceIdx < list.length) {
+    list[replaceIdx] = next;
+  } else {
+    list.push(next);
+  }
+  setBayWingBuildings(inv, list);
   inv.bayWingLayoutPaid = (inv.bayWingLayoutPaid ?? 0) + charge;
   return {
     ok: true,
     charged: charge,
     msg:
       charge > 0
-        ? `Bay factory updated (−${charge}b).`
-        : 'Bay factory updated (no extra charge).',
+        ? `Bay factory updated (−${charge}b). ${list.length} wing(s).`
+        : `Bay factory updated. ${list.length} wing(s).`,
   };
 }
 
@@ -5709,12 +5779,14 @@ export function invToSave(inv: InventoryState) {
     placements: inv.placements.map((p) => ({ ...p })),
     relationships: inv.relationships.map((r) => ({ ...r })),
     storageLayouts: {
-      resources: factoryLayoutToSave(inv.storageLayouts?.resources) ?? undefined,
-      crafted: factoryLayoutToSave(inv.storageLayouts?.crafted) ?? undefined,
-      inventions: factoryLayoutToSave(inv.storageLayouts?.inventions) ?? undefined,
+      resources: storageBuildings(inv, 'resources').map((L) => factoryLayoutToSave(L)),
+      crafted: storageBuildings(inv, 'crafted').map((L) => factoryLayoutToSave(L)),
+      inventions: storageBuildings(inv, 'inventions').map((L) => factoryLayoutToSave(L)),
     },
     storageLayoutPaid: { ...(inv.storageLayoutPaid ?? {}) },
-    bayWingLayout: factoryLayoutToSave(inv.bayWingLayout),
+    bayWingLayouts: bayWingBuildings(inv).map((L) => factoryLayoutToSave(L)),
+    // legacy single field for older readers
+    bayWingLayout: factoryLayoutToSave(bayWingBuildings(inv)[0] ?? null),
     bayWingLayoutPaid: inv.bayWingLayoutPaid ?? 0,
   };
 }
@@ -5911,14 +5983,35 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
   if (o.storageLayouts && typeof o.storageLayouts === 'object') {
     const sl = o.storageLayouts as Record<string, unknown>;
     for (const track of ['resources', 'crafted', 'inventions'] as StorageTrack[]) {
-      const L = factoryLayoutFromSave(sl[track]);
-      if (L) inv.storageLayouts[track] = L;
+      const raw = sl[track];
+      const list: FactoryLayout[] = [];
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          const L = factoryLayoutFromSave(item);
+          if (L?.built) list.push(L);
+        }
+      } else {
+        const L = factoryLayoutFromSave(raw);
+        if (L?.built) list.push(L);
+      }
+      if (list.length) inv.storageLayouts[track] = list;
     }
   }
   if (o.storageLayoutPaid && typeof o.storageLayoutPaid === 'object') {
     inv.storageLayoutPaid = { ...(o.storageLayoutPaid as InventoryState['storageLayoutPaid']) };
   }
-  inv.bayWingLayout = factoryLayoutFromSave(o.bayWingLayout);
+  inv.bayWingLayouts = [];
+  if (Array.isArray(o.bayWingLayouts)) {
+    for (const item of o.bayWingLayouts) {
+      const L = factoryLayoutFromSave(item);
+      if (L?.built) inv.bayWingLayouts.push(L);
+    }
+  }
+  if (!inv.bayWingLayouts.length) {
+    const legacy = factoryLayoutFromSave(o.bayWingLayout);
+    if (legacy?.built) inv.bayWingLayouts.push(legacy);
+  }
+  inv.bayWingLayout = inv.bayWingLayouts[0] ?? null;
   inv.bayWingLayoutPaid = typeof o.bayWingLayoutPaid === 'number' ? o.bayWingLayoutPaid : 0;
   return inv;
 }

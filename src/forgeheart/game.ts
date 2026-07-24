@@ -4784,17 +4784,21 @@ export class ForgeHeartGame {
         this.syncEconomyHud();
         return true;
       }
-      // Shift = edit factory look / move without expanding capacity
+      // Shift = edit last bay factory wing (replace only that building)
+      const wings = this.bayWingBuildingsFor();
       const editOnly =
-        (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) &&
-        !!this.inv.bayWingLayout?.built;
+        (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) && wings.length > 0;
       this.beginSiteBuilder({
         kind: 'bay_wing',
         districtId: 'sky_foundry',
         redesign: editOnly,
         applyUpgrade: !editOnly,
         baseCost: editOnly ? 0 : expandBayCost(this.inv.bayLevel),
+        replaceIndex: editOnly ? wings.length - 1 : null,
       });
+      if (!editOnly) {
+        this.toast('Place a new bay factory wing · prior wings stay. Hold Shift to edit the last wing.', 4);
+      }
       return true;
     }
     if (it.kind === 'invent_desk') {
@@ -4968,6 +4972,8 @@ export class ForgeHeartGame {
     redesign: boolean;
     applyUpgrade: boolean;
     baseCost: number;
+    /** When redesigning, which existing building to replace (omit to append on expand). */
+    replaceIndex?: number | null;
   }) {
     const dist = districtById(opts.districtId);
     if (!dist && opts.kind !== 'home') {
@@ -4977,12 +4983,33 @@ export class ForgeHeartGame {
     this.closeStall();
     this.closeStorageOffice();
     const stall = this.inv.cityStalls[opts.districtId]?.layout;
-    const factory =
-      opts.kind === 'factory' && opts.storageTrack
-        ? this.inv.storageLayouts?.[opts.storageTrack] ?? null
-        : opts.kind === 'bay_wing'
-          ? this.inv.bayWingLayout
-          : null;
+    // Expand capacity = new building (don't preload old plot). Redesign = load that index.
+    let factory: import('./economy').FactoryLayout | null = null;
+    if (opts.kind === 'factory' && opts.storageTrack) {
+      const list = this.storageBuildingsFor(opts.storageTrack);
+      if (opts.redesign) {
+        const idx =
+          typeof opts.replaceIndex === 'number' && opts.replaceIndex >= 0
+            ? opts.replaceIndex
+            : list.length - 1;
+        factory = list[idx] ?? null;
+      }
+      // applyUpgrade / new place: factory stays null → fresh plaza placement
+    } else if (opts.kind === 'bay_wing') {
+      const list = this.bayWingBuildingsFor();
+      if (opts.redesign) {
+        const idx =
+          typeof opts.replaceIndex === 'number' && opts.replaceIndex >= 0
+            ? opts.replaceIndex
+            : list.length - 1;
+        factory = list[idx] ?? null;
+      }
+    }
+    this.siteReplaceIndex = opts.redesign
+      ? typeof opts.replaceIndex === 'number'
+        ? opts.replaceIndex
+        : 0
+      : null;
     const home =
       opts.kind === 'home'
         ? ensureDefaultHomeLayout(this.inv)
@@ -5141,9 +5168,15 @@ export class ForgeHeartGame {
       return { stall: this.inv.cityStalls[s.districtId]?.layout ?? null, factory: null, home: null };
     }
     if (s.kind === 'factory' && s.storageTrack) {
-      return { stall: null, factory: this.inv.storageLayouts?.[s.storageTrack] ?? null, home: null };
+      const list = this.storageBuildingsFor(s.storageTrack);
+      const idx = this.siteReplaceIndex ?? list.length - 1;
+      return { stall: null, factory: list[idx] ?? null, home: null };
     }
-    return { stall: null, factory: this.inv.bayWingLayout, home: null };
+    {
+      const list = this.bayWingBuildingsFor();
+      const idx = this.siteReplaceIndex ?? list.length - 1;
+      return { stall: null, factory: list[idx] ?? null, home: null };
+    }
   }
 
   private siteCharge(): number {
@@ -6113,7 +6146,9 @@ export class ForgeHeartGame {
       baseCost: s.baseCost,
       redesign: s.redesign,
       applyUpgrade: s.applyUpgrade,
+      replaceIndex: s.redesign ? (this.siteReplaceIndex ?? 0) : null,
     });
+    this.siteReplaceIndex = null;
     this.toast(r.msg, 4);
     if (!r.ok) return;
     this.brass = this.inv.brass;
@@ -6222,6 +6257,8 @@ export class ForgeHeartGame {
 
   private romanceNpcId: string | null = null;
   private romanceView: 'menu' | 'gift' | 'story' = 'menu';
+  /** Site builder: which existing factory building to replace (null = append new). */
+  private siteReplaceIndex: number | null = null;
 
   private romanceWorldSeed(): number {
     return this.backstory?.seed ?? 1;
@@ -6484,24 +6521,14 @@ export class ForgeHeartGame {
     const leased = this.inv.cityWorkshopLeased || this.inv.parcelLeased;
     const wg = this.skyCity.workshopGroup;
     wg.visible = leased;
-    // Workshop cosmetic wings
+    // Workshop cosmetic wings (industrial HQ shell only)
     wg.traverse((o) => {
       if (o.name === 'cityWingL2') o.visible = this.inv.bayLevel >= 2;
       if (o.name === 'cityWingL3') o.visible = this.inv.bayLevel >= 3;
     });
-    // Expand yards live on Sky Foundry (separate island)
+    // Expand yards live on Sky Foundry — no legacy auto wing blocks
     const yg = this.skyCity.expandYardGroup;
     yg.visible = leased;
-    yg.traverse((o) => {
-      const min = (o as THREE.Object3D).userData?.expandMinLevel as number | undefined;
-      if (typeof min === 'number') {
-        o.visible = this.inv.bayLevel >= min;
-      }
-      if (o.name.startsWith('expandWingL')) {
-        const n = Number(o.name.replace('expandWingL', ''));
-        if (Number.isFinite(n)) o.visible = this.inv.bayLevel >= n;
-      }
-    });
   }
 
   /**
@@ -8524,10 +8551,17 @@ export class ForgeHeartGame {
     }
     if (!actions) return;
     actions.innerHTML = '';
+    const buildings = this.storageBuildingsFor(track);
+    const did =
+      track === 'resources'
+        ? 'north_observatory'
+        : track === 'crafted'
+          ? 'clocktower'
+          : 'aether_spire';
     if (level >= STORAGE_MAX_LEVEL) {
       const done = document.createElement('p');
       done.className = 'craft-hint';
-      done.textContent = 'This vault is fully bonded.';
+      done.textContent = `This vault is fully bonded · ${buildings.length} building(s) on site.`;
       actions.appendChild(done);
     } else {
       const next = level + 1;
@@ -8536,15 +8570,10 @@ export class ForgeHeartGame {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'craft-do-btn';
-      btn.textContent = `Expand to L${next} · hold ${nextCap.toLocaleString()} · ${cost}b`;
+      btn.textContent = `Expand to L${next} · new building · cap ${nextCap.toLocaleString()} · ${cost}b`;
+      btn.title = 'Raises capacity and places an additional factory (keeps prior buildings).';
       btn.addEventListener('click', () => {
         this.closeStorageOffice();
-        const did =
-          track === 'resources'
-            ? 'north_observatory'
-            : track === 'crafted'
-              ? 'clocktower'
-              : 'aether_spire';
         this.beginSiteBuilder({
           kind: 'factory',
           districtId: did,
@@ -8552,34 +8581,37 @@ export class ForgeHeartGame {
           redesign: false,
           applyUpgrade: true,
           baseCost: cost,
+          replaceIndex: null,
         });
       });
       actions.appendChild(btn);
     }
-    // Edit factory look / move site without upgrading capacity
-    if (this.inv.storageLayouts?.[track]?.built) {
-      const edit = document.createElement('button');
-      edit.type = 'button';
-      edit.className = 'craft-do-btn';
-      edit.textContent = 'Edit factory · move / props';
-      edit.addEventListener('click', () => {
-        this.closeStorageOffice();
-        const did =
-          track === 'resources'
-            ? 'north_observatory'
-            : track === 'crafted'
-              ? 'clocktower'
-              : 'aether_spire';
-        this.beginSiteBuilder({
-          kind: 'factory',
-          districtId: did,
-          storageTrack: track,
-          redesign: true,
-          applyUpgrade: false,
-          baseCost: 0,
+    // Edit / replace each existing building (does not erase others)
+    if (buildings.length) {
+      const head = document.createElement('p');
+      head.className = 'craft-hint';
+      head.textContent = `${buildings.length} factory building(s) — replace one or keep adding on expand:`;
+      actions.appendChild(head);
+      buildings.forEach((b, i) => {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'craft-do-btn';
+        edit.textContent = `Replace building ${i + 1} · ${b.form.replace('_', ' ')}`;
+        edit.title = 'Move / redesign this building only. Others stay.';
+        edit.addEventListener('click', () => {
+          this.closeStorageOffice();
+          this.beginSiteBuilder({
+            kind: 'factory',
+            districtId: did,
+            storageTrack: track,
+            redesign: true,
+            applyUpgrade: false,
+            baseCost: 0,
+            replaceIndex: i,
+          });
         });
+        actions.appendChild(edit);
       });
-      actions.appendChild(edit);
     }
     // Close button wiring (once)
     const close = document.getElementById('storage-close');
@@ -9767,37 +9799,70 @@ export class ForgeHeartGame {
 
   private syncCityFactoryVisuals() {
     if (!this.skyCity?.factoryGroups) return;
-    const entries: { key: string; layout: import('./economy').FactoryLayout | null | undefined }[] = [
-      { key: 'storage_resources', layout: this.inv.storageLayouts?.resources },
-      { key: 'storage_crafted', layout: this.inv.storageLayouts?.crafted },
-      { key: 'storage_inventions', layout: this.inv.storageLayouts?.inventions },
-      { key: 'bay_wing', layout: this.inv.bayWingLayout },
+    const entries: { key: string; layouts: import('./economy').FactoryLayout[] }[] = [
+      { key: 'storage_resources', layouts: this.storageBuildingsFor('resources') },
+      { key: 'storage_crafted', layouts: this.storageBuildingsFor('crafted') },
+      { key: 'storage_inventions', layouts: this.storageBuildingsFor('inventions') },
+      { key: 'bay_wing', layouts: this.bayWingBuildingsFor() },
     ];
-    for (const { key, layout } of entries) {
+    for (const { key, layouts } of entries) {
       const g = this.skyCity.factoryGroups[key];
       if (!g) continue;
       while (g.children.length) g.remove(g.children[0]!);
       this.spatialGrid?.removeChunk(`factory_${key}`);
-      const ok = !!layout?.built;
+      const ok = layouts.length > 0;
       g.visible = ok;
-      if (!ok || !layout) continue;
-      const built = buildFactoryVisual(this.skyCity.mats, layout);
-      built.group.position.set(layout.plotX, 0, layout.plotZ);
-      built.group.rotation.y = layout.yaw;
-      g.add(built.group);
-      const cols = worldFactoryColliders(built, layout.plotX, layout.plotZ, layout.yaw);
-      this.spatialGrid?.setChunk(`factory_${key}`, cols);
-      // Move storage interact toward factory when present
-      if (key.startsWith('storage_')) {
+      if (!ok) continue;
+      const allCols: Collider[] = [];
+      let lastBuilt: ReturnType<typeof buildFactoryVisual> | null = null;
+      let lastLayout: import('./economy').FactoryLayout | null = null;
+      for (let i = 0; i < layouts.length; i++) {
+        const layout = layouts[i]!;
+        if (!layout.built) continue;
+        const built = buildFactoryVisual(this.skyCity.mats, layout);
+        built.group.position.set(layout.plotX, 0, layout.plotZ);
+        built.group.rotation.y = layout.yaw;
+        built.group.name = `FactoryBldg_${key}_${i}`;
+        g.add(built.group);
+        allCols.push(...worldFactoryColliders(built, layout.plotX, layout.plotZ, layout.yaw));
+        lastBuilt = built;
+        lastLayout = layout;
+      }
+      if (allCols.length) this.spatialGrid?.setChunk(`factory_${key}`, allCols);
+      // Move storage interact toward the newest factory
+      if (key.startsWith('storage_') && lastBuilt && lastLayout) {
         const track = key.replace('storage_', '') as StorageTrack;
         const it = this.skyCity.interactables.find((x) => x.id === `storage_${track}`);
         if (it) {
-          const world = rotateLocal(built.interactLocal, layout.yaw, layout.plotX, layout.plotZ);
+          const world = rotateLocal(
+            lastBuilt.interactLocal,
+            lastLayout.yaw,
+            lastLayout.plotX,
+            lastLayout.plotZ,
+          );
           it.position.copy(world);
           it.mesh.position.copy(world);
         }
       }
     }
+  }
+
+  private storageBuildingsFor(track: StorageTrack): import('./economy').FactoryLayout[] {
+    const raw = this.inv.storageLayouts?.[track] as
+      | import('./economy').FactoryLayout
+      | import('./economy').FactoryLayout[]
+      | undefined;
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw.filter((b) => b?.built);
+    return raw.built ? [raw] : [];
+  }
+
+  private bayWingBuildingsFor(): import('./economy').FactoryLayout[] {
+    if (Array.isArray(this.inv.bayWingLayouts) && this.inv.bayWingLayouts.length) {
+      return this.inv.bayWingLayouts.filter((b) => b?.built);
+    }
+    if (this.inv.bayWingLayout?.built) return [this.inv.bayWingLayout];
+    return [];
   }
 
   /** Rebuild player home mesh, colliders, and room interactables. */

@@ -1745,31 +1745,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     const crane = solidBox(mats, mats.brass, 14, 0.6, 1.2, fx + 4, 6.5, fz - 4);
     expandYardGroup.add(crane.mesh);
 
-    // Progressive bay wings — shown by game via name + bayLevel
-    const wingDefs: {
-      name: string;
-      minLevel: number;
-      w: number;
-      h: number;
-      d: number;
-      ox: number;
-      oy: number;
-      oz: number;
-      mat: THREE.Material;
-    }[] = [
-      { name: 'expandWingL2', minLevel: 2, w: 10, h: 2.5, d: 8, ox: -6, oy: 1.5, oz: 4, mat: mats.iron },
-      { name: 'expandWingL3', minLevel: 3, w: 12, h: 3.2, d: 10, ox: 2, oy: 1.9, oz: 8, mat: mats.copper },
-      { name: 'expandWingL4', minLevel: 4, w: 14, h: 3.6, d: 11, ox: -10, oy: 2.1, oz: -2, mat: mats.brass },
-      { name: 'expandWingL5', minLevel: 5, w: 16, h: 4, d: 12, ox: 12, oy: 2.4, oz: 2, mat: mats.iron },
-      { name: 'expandWingL6', minLevel: 6, w: 18, h: 4.5, d: 14, ox: -4, oy: 2.6, oz: -12, mat: mats.copper },
-    ];
-    for (const w of wingDefs) {
-      const box = solidBox(mats, w.mat, w.w, w.h, w.d, fx + w.ox, w.oy, fz + w.oz);
-      box.mesh.name = w.name;
-      box.mesh.userData.expandMinLevel = w.minLevel;
-      box.mesh.visible = false;
-      expandYardGroup.add(box.mesh);
-    }
+    // Bay wings are player-placed factories (syncCityFactoryVisuals) — no auto plaza blocks.
 
     // Expand kiosk (pay brass → raise bayLevel / crew cap)
     const kiosk = new THREE.Mesh(
