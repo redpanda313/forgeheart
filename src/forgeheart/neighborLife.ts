@@ -98,7 +98,13 @@ export function landlordById(id: string): LandlordDef | undefined {
   return LANDLORDS.find((l) => l.id === id);
 }
 
-export const NEIGHBOR_DEFS: NeighborDef[] = [
+/** Stable id for the named owner of each plaza HOME shell */
+export function homeownerNeighborId(districtId: string): string {
+  return `homeowner_${districtId}`;
+}
+
+/** Hand-authored residential-ring neighbors (starter drama cast) */
+export const NEIGHBOR_RING_DEFS: NeighborDef[] = [
   {
     id: 'neighbor_pip',
     name: 'Pip Harper',
@@ -183,8 +189,238 @@ export const NEIGHBOR_DEFS: NeighborDef[] = [
   },
 ];
 
+/**
+ * Plaza HOME shells (one per district) — mirrors CITY_DISTRICTS ids.
+ * Pass A: each has a named owner with full neighbor interact.
+ */
+export interface PlazaHomeDistrictMeta {
+  id: string;
+  name: string;
+  role: string;
+  stallCost: number;
+}
+
+/** Keep in sync with CITY_DISTRICTS in economy.ts */
+export const PLAZA_HOME_DISTRICTS: PlazaHomeDistrictMeta[] = [
+  { id: 'residential', name: 'Residential Ring', role: 'home', stallCost: 90 },
+  { id: 'grand_market', name: 'Grand Market', role: 'market', stallCost: 280 },
+  { id: 'industrial', name: 'Industrial Slips', role: 'industrial', stallCost: 160 },
+  { id: 'harbor', name: 'Cloud Harbor', role: 'harbor', stallCost: 200 },
+  { id: 'clocktower', name: 'Clocktower Bazaar', role: 'premium', stallCost: 340 },
+  { id: 'gearworks', name: 'Gearworks Ward', role: 'industrial', stallCost: 220 },
+  { id: 'spore_gardens', name: 'Spore Gardens', role: 'premium', stallCost: 260 },
+  { id: 'brass_arcade', name: 'Brass Arcade', role: 'premium', stallCost: 300 },
+  { id: 'sky_foundry', name: 'Sky Foundry', role: 'industrial', stallCost: 240 },
+  { id: 'aether_spire', name: 'Aether Spire', role: 'premium', stallCost: 480 },
+  { id: 'mid_ring_east', name: 'East Mid-Ring', role: 'mixed', stallCost: 140 },
+  { id: 'mid_ring_west', name: 'West Mid-Ring', role: 'mixed', stallCost: 140 },
+  { id: 'south_docks', name: 'South Docks', role: 'harbor', stallCost: 180 },
+  { id: 'north_observatory', name: 'North Observatory', role: 'premium', stallCost: 320 },
+];
+
+const HOMEOWNER_FIRST = [
+  'Ash',
+  'Bram',
+  'Cora',
+  'Dax',
+  'Elia',
+  'Fern',
+  'Grit',
+  'Hale',
+  'Ivy',
+  'Joss',
+  'Kade',
+  'Lark',
+  'Moss',
+  'Nia',
+  'Orrin',
+  'Pax',
+  'Quinn',
+  'Rook',
+  'Sage',
+  'Tess',
+  'Una',
+  'Vex',
+  'Wren',
+  'Yara',
+];
+const HOMEOWNER_LAST = [
+  'Weld',
+  'Pike',
+  'Coil',
+  'Drift',
+  'Voss',
+  'Reed',
+  'Thorn',
+  'Gilt',
+  'Marsh',
+  'Crane',
+  'Forge',
+  'Salt',
+  'Spire',
+  'Quill',
+  'Hearth',
+  'Lantern',
+];
+
+function hashStr(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function pick<T>(arr: readonly T[], seed: number, salt: number): T {
+  return arr[(seed + salt * 17) % arr.length]!;
+}
+
+const ROLE_JOB: Record<string, string[]> = {
+  home: ['Plaza caretaker', 'Ring runner', 'Board courier'],
+  market: ['Stall keeper', 'Inventory clerk', 'Market broker'],
+  industrial: ['Yard fitter', 'Haul lead', 'Slip mechanic'],
+  harbor: ['Dock clerk', 'Salt runner', 'Ferry agent'],
+  premium: ['Boutique keeper', 'Aether clerk', 'Gallery host'],
+  mixed: ['Mixed-trade runner', 'Courier', 'Shop assistant'],
+};
+
+const DRAMAS: DramaKind[] = [
+  'behind_on_rent',
+  'lonely',
+  'workplace_fight',
+  'broken_board',
+  'expansion_envy',
+  'sick_relative',
+  'tax_warning',
+  'none',
+];
+
+function basePriceForPlaza(meta: PlazaHomeDistrictMeta): number {
+  const roleMul: Record<string, number> = {
+    home: 1.0,
+    mixed: 1.15,
+    harbor: 1.35,
+    industrial: 1.25,
+    market: 1.55,
+    premium: 2.2,
+  };
+  const mul = roleMul[meta.role] ?? 1.2;
+  const raw = Math.round(meta.stallCost * 220 * mul);
+  // Cheapest plaza homes ~12k; premium can exceed 100k
+  return Math.max(12_000, Math.min(185_000, raw));
+}
+
+function tierLabelForPlaza(meta: PlazaHomeDistrictMeta, price: number): string {
+  if (price < 25_000) return `${meta.name} · modest home`;
+  if (price < 55_000) return `${meta.name} · mid home`;
+  if (price < 100_000) return `${meta.name} · fine home`;
+  return `${meta.name} · premium home`;
+}
+
+export function makePlazaHomeownerDef(
+  meta: PlazaHomeDistrictMeta,
+  index: number,
+): NeighborDef {
+  const seed = hashStr(meta.id);
+  const first = pick(HOMEOWNER_FIRST, seed, 1);
+  const last = pick(HOMEOWNER_LAST, seed, 3);
+  // Avoid colliding with ring cast first names when possible
+  const name = `${first} ${last}`;
+  const jobs = ROLE_JOB[meta.role] ?? ROLE_JOB.mixed!;
+  const jobLabel = pick(jobs, seed, 5);
+  const basePrice = basePriceForPlaza(meta);
+  const drama = DRAMAS[index % DRAMAS.length]!;
+  const landlordRoll = seed % 3;
+  let startHomeOwner: HomeOwnerKind = 'self';
+  let startLandlordId: string | undefined;
+  let startDebt: number | undefined;
+  if (drama === 'behind_on_rent' || drama === 'tax_warning') {
+    startHomeOwner = 'npc_landlord';
+    startLandlordId =
+      landlordRoll === 0
+        ? 'landlord_mira'
+        : landlordRoll === 1
+          ? 'landlord_dredge'
+          : 'landlord_city';
+    startDebt = Math.round(basePrice * (0.06 + (seed % 5) * 0.01));
+  } else if (landlordRoll === 0 && meta.role !== 'premium') {
+    startHomeOwner = 'npc_landlord';
+    startLandlordId = 'landlord_mira';
+  } else if (landlordRoll === 1 && meta.role === 'industrial') {
+    startHomeOwner = 'npc_landlord';
+    startLandlordId = 'landlord_dredge';
+  }
+
+  const landlordName =
+    (startLandlordId && landlordById(startLandlordId)?.name) || 'the landlord';
+  const debtStr = startDebt ? startDebt.toLocaleString() : '';
+
+  const plazaChat = [
+    `I keep a home on ${meta.name}. Work fills the day — stalls, hauls, the whole circuit.`,
+    `This plaza’s my pad. If you’ve got brass and a fair hand, we can talk business.`,
+    `Skyways only between islands. Board out if you’re shopping the city.`,
+  ];
+
+  return {
+    id: homeownerNeighborId(meta.id),
+    name,
+    homeDistrictId: meta.id,
+    jobLabel,
+    startDrama: drama,
+    startHomeOwner,
+    startLandlordId,
+    startDebt,
+    basePrice,
+    priceTierLabel: tierLabelForPlaza(meta, basePrice),
+    chatLines: plazaChat,
+    dramaLines: {
+      behind_on_rent: [
+        `${landlordName} wants ${debtStr} brass or this HOME padlocks.`,
+        `I’m short on rent for ${meta.name}. Still good for work if you’ve got a crew slot.`,
+      ],
+      lonely: [
+        `Quiet nights on ${meta.name}. Company helps more than you’d think.`,
+        `Everyone’s at market. The house feels big with one person in it.`,
+      ],
+      workplace_fight: [
+        `Had words at the job. Pay’s late and my hands want honest work.`,
+        `If your hire board is real, I know a wrench from a rivet.`,
+      ],
+      broken_board: [
+        `Rails cracked last reef run. Grounded until I can patch the deck.`,
+      ],
+      expansion_envy: [
+        `You keep growing. Some of us are stuck on one square of deck on ${meta.name}.`,
+      ],
+      sick_relative: [
+        `Family’s rough this week. Brass for medicine would mean more than small talk.`,
+      ],
+      tax_warning: [
+        `City Lease Office sent a notice. ${debtStr ? debtStr + ' brass' : 'Coin'} or they seize the pad.`,
+      ],
+      none: [`Home’s quiet. Welcome to ${meta.name}.`],
+    },
+  };
+}
+
+/** All plaza HOME owners (Pass A) */
+export const PLAZA_HOMEOWNER_DEFS: NeighborDef[] = PLAZA_HOME_DISTRICTS.map(
+  (m, i) => makePlazaHomeownerDef(m, i),
+);
+
+/** Ring cast + every plaza homeowner */
+export const NEIGHBOR_DEFS: NeighborDef[] = [
+  ...NEIGHBOR_RING_DEFS,
+  ...PLAZA_HOMEOWNER_DEFS,
+];
+
 export function neighborDef(id: string): NeighborDef | undefined {
   return NEIGHBOR_DEFS.find((d) => d.id === id);
+}
+
+export function homeownerDefForDistrict(districtId: string): NeighborDef | undefined {
+  return neighborDef(homeownerNeighborId(districtId));
 }
 
 export function dramaLabel(d: DramaKind): string {

@@ -50,8 +50,12 @@ export type {
 } from './neighborLife';
 export {
   NEIGHBOR_DEFS,
+  NEIGHBOR_RING_DEFS,
+  PLAZA_HOMEOWNER_DEFS,
   LANDLORDS,
   neighborDef,
+  homeownerNeighborId,
+  homeownerDefForDistrict,
   dramaLabel,
   neighborStatusLine,
   neighborInteractLabel,

@@ -13,6 +13,8 @@ import {
   harvestBiomeForDistrict,
   COMMODITIES,
   getRomanceNpcs,
+  homeownerNeighborId,
+  homeownerDefForDistrict,
   type VendorDef,
   type CityDistrictDef,
   type CommodityId,
@@ -587,6 +589,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
   const districtBag = new Map<string, { group: THREE.Group; cols: Collider[] }>();
   const circuits: PlazaCircuit[] = [];
   const brokerDisplays: Record<string, THREE.Group> = {};
+  /** Plaza homeowner person interact follows mesh (Pass A) */
+  const homeownerFollow: { it: CityInteract; npcId: string }[] = [];
   let lowestY = 0;
   let lodFocusX = 0;
   let lodFocusZ = 0;
@@ -1219,16 +1223,19 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       });
     }
 
-    // One enterable NPC home per district (purposeful — owners visit)
+    // One enterable NPC home per district — owned by a named neighbor (Pass A)
     {
       const a = di * 0.7 + 0.8;
       const r = sz * 0.38;
       const hx = cx + Math.cos(a) * r;
       const hz = cz + Math.sin(a) * r;
+      const ownerDef = homeownerDefForDistrict(d.id);
+      const ownerId = homeownerNeighborId(d.id);
+      const ownerName = ownerDef?.name ?? 'Resident';
       const shell = buildEnterableShell('home', mats, {
         floors: 1,
         color: d.color + 0x0a0a08,
-        label: 'HOME',
+        label: `HOME · ${ownerName.split(' ')[0]}`,
       });
       shell.group.position.set(hx, 0, hz);
       shell.group.rotation.y = a + Math.PI;
@@ -1239,14 +1246,71 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         colliders.push(c);
         lowestY = Math.min(lowestY, c.min.y);
       }
+      const doorPos = new THREE.Vector3(
+        hx + shell.doorWorld.x,
+        plazaDeckStandY(DECK_Y),
+        hz + shell.doorWorld.z,
+      );
+      // Door interact → same neighbor panel as talking to the owner
       interactables.push({
-        id: `home_${d.id}_0`,
-        kind: 'npc_home',
-        position: new THREE.Vector3(hx + shell.doorWorld.x, 1.2, hz + shell.doorWorld.z),
-        radius: 2.2,
+        id: ownerId,
+        kind: 'neighbor',
+        position: doorPos.clone(),
+        radius: 2.4,
         mesh: shell.group,
-        label: 'Enter home',
+        label: `${ownerName}’s home · talk`,
         districtId: d.id,
+        lines: ownerDef?.chatLines,
+      });
+      // Visible owner NPC lives here; schedule home → work → market on this plaza
+      const deckStand = plazaDeckStandY(DECK_Y);
+      const homePt = doorPos.clone();
+      homePt.y = deckStand;
+      // Step slightly off the door into the plaza for pathing
+      const outA = a + Math.PI;
+      homePt.x += Math.cos(outA) * 2.2;
+      homePt.z += Math.sin(outA) * 2.2;
+      const workPt = plazaPoint(d, 0.34);
+      workPt.y = deckStand;
+      const marketPt = plazaPoint(d, 0.3);
+      marketPt.y = deckStand;
+      const parts = makeNpcMesh('resident', mats, false, di * 3 + 11);
+      parts.root.position.copy(homePt);
+      dGroup.add(parts.root);
+      const nameTag = labelSprite(ownerName);
+      nameTag.position.set(0, 2.15, 0);
+      setSignWorldWidth(nameTag, 2.6);
+      parts.root.add(nameTag);
+      const personIt: CityInteract = {
+        id: ownerId,
+        kind: 'neighbor',
+        position: homePt.clone(),
+        radius: 2.5,
+        mesh: parts.root,
+        label: `Talk · ${ownerName}`,
+        districtId: d.id,
+        lines: ownerDef?.chatLines,
+      };
+      interactables.push(personIt);
+      homeownerFollow.push({ it: personIt, npcId: ownerId });
+      npcs.push({
+        mesh: parts.root,
+        parts,
+        home: homePt.clone(),
+        work: workPt,
+        market: marketPt,
+        role: 'resident',
+        visual: 'resident',
+        phase: (di * 0.13 + 0.2) % 1,
+        speed: 2.2 + (di % 5) * 0.15,
+        homeInterior: new THREE.Vector3(hx, 1.6, hz),
+        plazaCx: cx,
+        plazaCz: cz,
+        plazaRadius: sz,
+        deckY: deckStand,
+        homeDistrictId: d.id,
+        id: ownerId,
+        displayName: ownerName,
       });
     }
 
@@ -2241,6 +2305,14 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       rf.it.position.set(n.mesh.position.x, n.mesh.position.y + 0.95, n.mesh.position.z);
       // Hide interact when she's LOD-culled
       if (rf.it.mesh) rf.it.mesh.visible = n.mesh.visible;
+    }
+
+    // Plaza homeowners — talk interact follows the person (door interact stays at house)
+    for (const hf of homeownerFollow) {
+      const n = npcs.find((x) => x.id === hf.npcId);
+      if (!n) continue;
+      hf.it.position.set(n.mesh.position.x, n.mesh.position.y + 0.95, n.mesh.position.z);
+      if (hf.it.mesh) hf.it.mesh.visible = n.mesh.visible;
     }
 
     // Pulse lit rogue warning beacons (red skyward signal)

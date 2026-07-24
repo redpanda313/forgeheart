@@ -4686,10 +4686,16 @@ export class ForgeHeartGame {
       const reach = it.radius + (useHoriz ? 0.9 : 0.5);
       if (d < bestD && d <= reach) {
         bestD = d;
-        // Live neighbor labels: drama / debt / owner
-        if (it.kind === 'neighbor' && it.id) {
-          const ns = getInvNeighbor(this.inv, it.id);
-          const def = neighborDef(it.id);
+        // Live neighbor labels: drama / debt / owner (ring + plaza homeowners)
+        if ((it.kind === 'neighbor' || it.kind === 'npc_home') && it.id) {
+          const nid =
+            it.id.startsWith('homeowner_') || it.id.startsWith('neighbor_')
+              ? it.id
+              : it.districtId
+                ? `homeowner_${it.districtId}`
+                : it.id;
+          const ns = getInvNeighbor(this.inv, nid);
+          const def = neighborDef(nid);
           if (ns && def) {
             it.label = neighborInteractLabel(ns, def.name);
           }
@@ -4987,7 +4993,18 @@ export class ForgeHeartGame {
       return true;
     }
     if (it.kind === 'npc_home') {
-      this.toast('You step inside. Soft lamps · lived-in clutter.', 2.5);
+      // Pass A: plaza homes are owned — open neighbor panel when linked
+      const nid =
+        it.id?.startsWith('homeowner_')
+          ? it.id
+          : it.districtId
+            ? `homeowner_${it.districtId}`
+            : null;
+      if (nid && neighborDef(nid)) {
+        this.openNeighborPanel(nid);
+        return true;
+      }
+      this.toast('Empty shell — no owner on record.', 2.5);
       this.audio.playPickup();
       return true;
     }
@@ -6636,12 +6653,15 @@ export class ForgeHeartGame {
     if (!actions || !def || !n) return;
     if (title) title.textContent = def.name;
     if (sub) {
+      const plazaBit = def.id.startsWith('homeowner_')
+        ? ` · plaza home on ${def.homeDistrictId.replace(/_/g, ' ')}`
+        : ' · residential ring';
       sub.textContent =
         this.neighborView === 'gift'
           ? 'Gift brass or goods from your pack'
           : this.neighborView === 'buy'
             ? 'Buy their pad · optional tenant rent'
-            : `${def.jobLabel} · residential neighbor (not romance)`;
+            : `${def.jobLabel}${plazaBit} (neighbor · not romance)`;
     }
     if (status) status.textContent = neighborStatusLine(n);
 
