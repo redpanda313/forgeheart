@@ -2030,9 +2030,11 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     });
   }
 
-  // Romance-eligible girl NPCs — procedural lives from playthrough seed
+  // Romance-eligible girl NPCs — procedural lives; interact with the person (no marker sphere)
   const romanceMap = getRomanceNpcs(romanceSeed);
   const girlIds = Object.keys(romanceMap);
+  /** Romance interactables that follow their NPC mesh each frame */
+  const romanceFollow: { it: CityInteract; npcId: string }[] = [];
   for (let i = 0; i < girlIds.length; i++) {
     const gid = girlIds[i]!;
     const rdef = romanceMap[gid];
@@ -2042,35 +2044,35 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       : ['…'];
     const d = CITY_DISTRICTS[(i * 3 + 1) % CITY_DISTRICTS.length]!;
     const home = plazaPoint(d, 0.32);
+    home.y = DECK_STAND_NPC;
     const parts = makeNpcMesh('girl', mats, false, i + 3);
     parts.root.position.copy(home);
     addMesh(parts.root);
-    const mark = new THREE.Mesh(
-      new THREE.SphereGeometry(0.16, 8, 8),
-      new THREE.MeshStandardMaterial({
-        color: 0xff88aa,
-        emissive: 0xaa3366,
-        emissiveIntensity: 0.5,
-      }),
-    );
-    mark.position.set(home.x + 1.2, 1.2, home.z);
-    addMesh(mark);
-    interactables.push({
+    // Soft name label above her head (moves with the mesh)
+    const nameTag = labelSprite(name);
+    nameTag.position.set(0, 2.15, 0);
+    setSignWorldWidth(nameTag, 2.4);
+    parts.root.add(nameTag);
+    const interactPos = home.clone();
+    interactPos.y = DECK_STAND_NPC + 0.9;
+    const it: CityInteract = {
       id: gid,
       kind: 'romance_npc',
-      position: mark.position.clone(),
-      radius: 2.8,
-      mesh: mark,
+      position: interactPos,
+      radius: 2.4,
+      mesh: parts.root,
       label: `Talk · ${name}`,
       lines: [...lines],
       districtId: d.id,
-    });
+    };
+    interactables.push(it);
+    romanceFollow.push({ it, npcId: gid });
     npcs.push({
       id: gid,
       displayName: name,
       mesh: parts.root,
       parts,
-      home,
+      home: home.clone(),
       work: plazaPoint(d, 0.34),
       market: plazaPoint(d, 0.3),
       role: 'girl',
@@ -2255,6 +2257,15 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     for (const s of skywayLods) {
       const d = Math.hypot(s.x - lodFocusX, s.z - lodFocusZ);
       s.root.visible = d < 320;
+    }
+
+    // Romance talk targets follow the walking girl (no fixed marker sphere)
+    for (const rf of romanceFollow) {
+      const n = npcs.find((x) => x.id === rf.npcId);
+      if (!n) continue;
+      rf.it.position.set(n.mesh.position.x, n.mesh.position.y + 0.95, n.mesh.position.z);
+      // Hide interact when she's LOD-culled
+      if (rf.it.mesh) rf.it.mesh.visible = n.mesh.visible;
     }
 
     // Pulse lit rogue warning beacons (red skyward signal)

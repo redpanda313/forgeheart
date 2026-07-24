@@ -4618,10 +4618,13 @@ export class ForgeHeartGame {
       if (it.kind === 'workshop_chest' && !this.inv.cityWorkshopLeased) continue;
       // Hide non-prompt city robots (markers only show when rogue/downed)
       if (it.kind === 'city_robot' && !it.mesh.visible) continue;
+      // Romance: only when standing near the person (mesh must be visible)
+      if (it.kind === 'romance_npc' && it.mesh && !it.mesh.visible) continue;
       const dx = cam.x - it.position.x;
       const dz = cam.z - it.position.z;
       const horiz = Math.hypot(dx, dz);
-      const useHoriz = it.kind === 'harvest' || it.kind === 'flower_pick';
+      const useHoriz =
+        it.kind === 'harvest' || it.kind === 'flower_pick' || it.kind === 'romance_npc';
       const d = useHoriz ? horiz : cam.distanceTo(it.position);
       const reach = it.radius + (useHoriz ? 0.9 : 0.5);
       if (d < bestD && d <= reach) {

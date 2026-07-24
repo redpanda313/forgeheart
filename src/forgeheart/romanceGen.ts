@@ -122,7 +122,24 @@ const ORIGINS = [
   'St. Brass parish and its stubborn hope',
 ];
 
+/** First-person work phrases after “I …” */
 const VOCATIONS = [
+  'tend plaza gardens for hire',
+  'keep ledgers for a silk trader',
+  'test board thrusters on quiet lanes',
+  'repair small automata nobody else has time for',
+  'copy patent sketches for coin',
+  'walk night deliveries between plazas',
+  'teach children which blooms are safe to touch',
+  'run a tiny stall two days a week',
+  'sing at dock openings when the brass is good',
+  'map wind paths for nervous first-time riders',
+  'sort reef salvage into honest piles',
+  'write letters for people who hate ink',
+];
+
+/** Relative clauses for “the woman who …” */
+const VOCATION_WHO = [
   'tends plaza gardens for hire',
   'keeps ledgers for a silk trader',
   'tests board thrusters on quiet lanes',
@@ -165,24 +182,25 @@ const SOFT_SPOTS = [
   'stories that don’t end in a sale',
 ];
 
+/** First-person fear phrases after “I’m afraid of …” / “I’m scared of …” */
 const FEARS = [
   'being treated like scenery',
   'another winter alone in a loud city',
   'gifts that are really transactions',
   'rushing into the wrong forever',
-  'losing the small freedoms she fought for',
+  'losing the small freedoms I fought for',
   'pretty words with empty hands',
   'becoming someone’s soft escape from responsibility',
 ];
 
 const DREAMS = [
   'a garden that doesn’t rent by the week',
-  'a shop of her own with honest hours',
+  'a shop of my own with honest hours',
   'someone who stays after the patent season ends',
   'enough brass to choose slow days',
-  'to see the outer reefs once without working them',
+  'seeing the outer reefs once without working them',
   'a home loft with two chairs that get used',
-  'to be known for more than a pretty stall smile',
+  'being known for more than a pretty stall smile',
 ];
 
 const SPEECH = [
@@ -236,7 +254,9 @@ export function generateRomancePersona(npcId: string, worldSeed: number): Genera
   const baseName = arch?.baseName ?? capitalize(npcId.replace(/^girl_/, ''));
   const name = `${baseName} ${surname}`;
   const origin = pick(rng, ORIGINS);
-  const vocation = pick(rng, VOCATIONS);
+  const vocIdx = Math.floor(rng() * VOCATIONS.length) % VOCATIONS.length;
+  const vocation = VOCATIONS[vocIdx]!;
+  const vocationWho = VOCATION_WHO[vocIdx] ?? vocation;
   const temperament = pick(rng, TEMPERAMENTS);
   const softSpot = pick(rng, SOFT_SPOTS);
   const fear = pick(rng, FEARS);
@@ -245,15 +265,34 @@ export function generateRomancePersona(npcId: string, worldSeed: number): Genera
 
   const loves = arch?.loves ?? (['flower_gift'] as const);
   const dislikes = arch?.dislikes ?? (['brass_charm'] as const);
+  // Third-person hints for UI status line
   const likesHint = arch?.likesHint ?? 'She has particular tastes.';
   const dislikesHint = arch?.dislikesHint ?? 'Some gifts land wrong.';
+  // First-person when she speaks about her own tastes
+  const likesSelf = pick(rng, [
+    `I light up for the right gifts — ${likesHint.replace(/^She loves /i, 'I love ').replace(/^She wants /i, 'I want ').replace(/^She likes /i, 'I like ')}`,
+    likesHint
+      .replace(/^She loves /i, 'I love ')
+      .replace(/^She wants /i, 'I want ')
+      .replace(/^She likes /i, 'I like '),
+  ]);
+  const dislikesSelf = pick(rng, [
+    dislikesHint
+      .replace(/^She scoffs /i, 'I scoff ')
+      .replace(/^Brass charms and polished wire feel cold to her\./i, 'Brass charms and polished wire feel cold to me.')
+      .replace(/^Silk scarves and soft flower gifts feel frivolous to her\./i, 'Silk scarves and soft flower gifts feel frivolous to me.')
+      .replace(/^Brass charms and polished wire feel impatient to her\./i, 'Brass charms and polished wire feel impatient to me.')
+      .replace(/ to her\./i, ' to me.')
+      .replace(/ her\./i, ' me.'),
+    `And for the record, ${dislikesHint.replace(/^She /i, 'I ').replace(/ to her\./i, ' to me.')}`,
+  ]);
 
   const chat0 = pick(rng, [
-    `Oh— a maker from ${origin.includes('dock') ? 'the docks' : 'somewhere interesting'}? Careful.`,
-    `You look like you ${vocation.split(' ')[0] === 'tests' ? 'ride hard' : 'work hard'}. Do you also stop?`,
+    `Oh — a maker? You look like you work hard. Do you ever stop?`,
     `Most people rush past. You paused. That’s already unusual.`,
     `If you’re here to sell me something, leave. If you’re here to talk… maybe stay.`,
     `I grew up around ${origin}. This plaza is quieter. I like that.`,
+    `Careful. I grew up around ${origin}, and I can tell when someone’s performing.`,
   ]);
   const chat1 = pick(rng, [
     `You again. I’m ${temperament} — don’t take the first silence personally.`,
@@ -266,7 +305,7 @@ export function generateRomancePersona(npcId: string, worldSeed: number): Genera
     `I’ve decided you’re not pure noise. Soft spot confession: ${softSpot}.`,
     `Friendly looks good on you. Don’t waste it on empty brass talk.`,
     `I still ${vocation}, but I save better hours for people who listen.`,
-    `The city can wait. Sit. Tell me a non-ledger story.`,
+    `The city can wait. Sit. Tell me a story that isn’t about a ledger.`,
     `You’re learning my pace. That’s rarer than a clean patent.`,
   ]);
   const chat3 = pick(rng, [
@@ -278,9 +317,9 @@ export function generateRomancePersona(npcId: string, worldSeed: number): Genera
   ]);
   const chat4 = pick(rng, [
     `Stay. My dream is simple — ${dream} — and you keep not laughing at it.`,
-    `Sweetheart is a heavy word. You’re carrying it well.`,
+    `“Sweetheart” is a heavy word. You’re carrying it well.`,
     `I don’t need a speech. Just be here when the wind gets mean.`,
-    `You’ve seen the soft parts. Don’t armor up now.`,
+    `You’ve seen the soft parts. Don’t put the armor back on now.`,
     `The city can have your days. I’d like some of your evenings.`,
   ]);
 
@@ -293,7 +332,7 @@ export function generateRomancePersona(npcId: string, worldSeed: number): Genera
     pick(rng, [
       `By day I ${vocation}. It pays enough to choose who I smile at.`,
       `Work: I ${vocation}. It’s not glamorous. It’s mine.`,
-      `If you need me when I’m busy, look for the woman who ${vocation}.`,
+      `If you need me when I’m busy, look for the woman who ${vocationWho}.`,
     ]),
     pick(rng, [
       `I’m ${temperament}. Gifts that ignore that bounce off.`,
@@ -302,8 +341,8 @@ export function generateRomancePersona(npcId: string, worldSeed: number): Genera
     ]),
     pick(rng, [
       `What I want long-term is ${dream}. Pretty talk without that bores me.`,
-      `Likes: ${likesHint}`,
-      `And for the record — ${dislikesHint}`,
+      likesSelf,
+      dislikesSelf,
     ]),
   ];
 
@@ -347,7 +386,7 @@ export function generateRomancePersona(npcId: string, worldSeed: number): Genera
     chatByStage: [chat0, chat1, chat2, chat3, chat4],
     aboutLines,
     storyReactions,
-    bioLine: `${temperament}. From ${origin}.`,
+    bioLine: `${capitalize(temperament)}. From ${origin}.`,
     seed,
   };
 }
