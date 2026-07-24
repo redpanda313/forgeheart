@@ -13,6 +13,15 @@ import {
   inventionFrameSlots,
   FLOWER_IDS,
 } from './frameAssembly';
+import {
+  generateRomancePersona,
+  ROMANCE_ARCHETYPES,
+  formatPlayerStoryBeat,
+  storyTellSeed,
+  type GeneratedRomancePersona,
+  type RomanceStoryId as GenRomanceStoryId,
+  type PlayerStoryContext,
+} from './romanceGen';
 
 export type CurrencyId = 'brass' | 'aether';
 
@@ -744,128 +753,26 @@ export const ROMANCE_GIFT_IDS = [
 
 export type RomanceGiftId = (typeof ROMANCE_GIFT_IDS)[number];
 
-export interface RomanceNpcDef {
-  id: string;
-  name: string;
-  /** Strong positive gifts */
-  loves: readonly CommodityId[];
-  /** Lowers affinity */
-  dislikes: readonly CommodityId[];
-  /** Idle chat by relationship stage (0–4) */
-  chatByStage: readonly [string, string, string, string, string];
-  /** Lines when player chooses "Learn about her" */
-  aboutLines: readonly string[];
-  likesHint: string;
-  dislikesHint: string;
-  /** Short reply when player shares a personal story */
-  storyReactions: readonly string[];
+/** Procedural romance persona (dialogue + bio); gift prefs stay archetype-stable. */
+export type RomanceNpcDef = GeneratedRomancePersona;
+
+/** Stable romance NPC ids in the empire city. */
+export const ROMANCE_NPC_IDS = Object.keys(ROMANCE_ARCHETYPES);
+
+/**
+ * Build all romance personas for a playthrough seed.
+ * Same seed → same names, jobs, chat — unique across playthroughs.
+ */
+export function getRomanceNpcs(worldSeed: number): Record<string, RomanceNpcDef> {
+  const out: Record<string, RomanceNpcDef> = {};
+  for (const id of ROMANCE_NPC_IDS) {
+    out[id] = generateRomancePersona(id, worldSeed || 1);
+  }
+  return out;
 }
 
-export const ROMANCE_NPCS: Record<string, RomanceNpcDef> = {
-  girl_lira: {
-    id: 'girl_lira',
-    name: 'Lira Voss',
-    loves: [
-      'flower_gift',
-      'bloom_sky',
-      'bloom_brass',
-      'bloom_spore',
-      'bloom_harbor',
-      'bloom_aether',
-    ],
-    dislikes: ['brass_charm', 'polished_wire'],
-    chatByStage: [
-      'Oh— a maker? Careful, I might steal your afternoon.',
-      'You again. The gardens are nicer when you’re not rushing past them.',
-      'Tell me you noticed the new blooms on the ring path.',
-      'I save a bench for people who bring color into my day.',
-      'Stay. The city can wait one more hour.',
-    ],
-    aboutLines: [
-      'I grew up between hanging gardens. Anything with petals still feels like home.',
-      'Cold metal gifts feel like work. Soft blooms feel like you saw me.',
-    ],
-    likesHint: 'She loves flowers and bouquets — any plaza bloom or Cloud Blooms.',
-    dislikesHint: 'Brass charms and polished wire feel cold to her.',
-    storyReactions: [
-      'That… actually explains the way you look at machines.',
-      'You’re building a life, not just a ledger. I like that.',
-      'Keep talking. I want the honest version.',
-    ],
-  },
-  girl_mira: {
-    id: 'girl_mira',
-    name: 'Mira Quinn',
-    loves: ['silk_scarf', 'bloom_spore'],
-    dislikes: ['flower_gift', 'bloom_sky', 'bloom_brass'],
-    chatByStage: [
-      'Your board looks fast. Are you?',
-      'Silk and secrets — those are the only currencies I respect.',
-      'Don’t waste pretty words if your hands are empty.',
-      'You’re learning. Scarves look better on people who listen.',
-      'Come closer. I don’t share this smile with every hauler.',
-    ],
-    aboutLines: [
-      'I trade soft goods because hard goods are boring.',
-      'A Spore-Silk Scarf means you understand quality. Common blooms? That’s tourist trash.',
-    ],
-    likesHint: 'She wants a Spore-Silk Scarf (or rare Spore blooms).',
-    dislikesHint: 'She scoffs at common Cloud Blooms and basic bouquets.',
-    storyReactions: [
-      'Hmm. Ambition looks good on you.',
-      'So the empire isn’t just noise — you have a spine under it.',
-      'Tell me more when you’ve earned the next chapter.',
-    ],
-  },
-  girl_nova: {
-    id: 'girl_nova',
-    name: 'Nova Hale',
-    loves: ['brass_charm', 'polished_wire'],
-    dislikes: ['silk_scarf', 'bloom_harbor', 'flower_gift'],
-    chatByStage: [
-      'Don’t just harvest the reefs… notice me.',
-      'A brass charm would suit my wrist. Something that catches lamp-light.',
-      'You work hard. I respect that more than poetry.',
-      'Walk the foundry paths with me sometime.',
-      'I could get used to you showing up with something gleaming.',
-    ],
-    aboutLines: [
-      'I’m from the industrial ring. Soft scarves snag on gears.',
-      'Give me brass work — charms, polished wire — things that hold an edge.',
-    ],
-    likesHint: 'She loves Brass Charms and Polished Wire.',
-    dislikesHint: 'Silk scarves and soft flower gifts feel frivolous to her.',
-    storyReactions: [
-      'That’s a builder’s story. I can work with that.',
-      'Your crew, your inventing — it suits the way you stand.',
-      'Don’t hide the hard parts. I already guessed some of them.',
-    ],
-  },
-  girl_sage: {
-    id: 'girl_sage',
-    name: 'Sage Wren',
-    loves: ['silk_scarf', 'bloom_aether', 'bloom_spore'],
-    dislikes: ['brass_charm', 'polished_wire'],
-    chatByStage: [
-      'Empire boys always rush. Slow down.',
-      'Spore-silk scarf? Now you’re talking.',
-      'The aether gardens open at dusk. Worth a walk.',
-      'You don’t have to perform for me. Just be present.',
-      'I’ve decided you’re not a rush after all.',
-    ],
-    aboutLines: [
-      'I study slow things — silk, spore light, aether petals.',
-      'A scarf that took patience means more than stamped brass.',
-    ],
-    likesHint: 'She likes Spore-Silk Scarves, Aether blooms, and Spore blooms.',
-    dislikesHint: 'Brass charms and polished wire feel impatient to her.',
-    storyReactions: [
-      'Thank you for not rushing the truth.',
-      'Your lost one… I won’t make you say more than you want.',
-      'That invention of yours — I can hear how proud you are.',
-    ],
-  },
-};
+/** @deprecated use getRomanceNpcs(seed) — kept for imports that expect a map */
+export const ROMANCE_NPCS: Record<string, RomanceNpcDef> = getRomanceNpcs(1);
 
 export const RELATIONSHIP_STAGE_NAMES = [
   'stranger',
@@ -875,8 +782,13 @@ export const RELATIONSHIP_STAGE_NAMES = [
   'sweetheart',
 ] as const;
 
-export function getRomanceDef(npcId: string): RomanceNpcDef | null {
-  return ROMANCE_NPCS[npcId] ?? null;
+/**
+ * Persona for this playthrough. Pass the player's backstory seed so each
+ * new game rolls unique romance lives while gift archetypes stay readable.
+ */
+export function getRomanceDef(npcId: string, worldSeed = 1): RomanceNpcDef | null {
+  if (!ROMANCE_ARCHETYPES[npcId]) return null;
+  return generateRomancePersona(npcId, worldSeed || 1);
 }
 
 export function ensureRomanceState(inv: InventoryState, npcId: string): RomanceState {
@@ -2871,8 +2783,9 @@ export function stallPlacementMul(inv: InventoryState, districtId: string): numb
 export function chatRomanceNpc(
   inv: InventoryState,
   npcId: string,
+  worldSeed = 1,
 ): { ok: boolean; msg: string; stage: RelationshipStage } {
-  const def = getRomanceDef(npcId);
+  const def = getRomanceDef(npcId, worldSeed);
   if (!def) return { ok: false, msg: 'She has already moved on.', stage: 0 };
   const rel = ensureRomanceState(inv, npcId);
   const prev = rel.stage;
@@ -2894,8 +2807,9 @@ export function chatRomanceNpc(
 export function learnRomanceLikes(
   inv: InventoryState,
   npcId: string,
+  worldSeed = 1,
 ): { ok: boolean; msg: string; stage: RelationshipStage } {
-  const def = getRomanceDef(npcId);
+  const def = getRomanceDef(npcId, worldSeed);
   if (!def) return { ok: false, msg: 'She has already moved on.', stage: 0 };
   const rel = ensureRomanceState(inv, npcId);
   const first = !rel.knownLikes;
@@ -2916,8 +2830,9 @@ export function giftRomanceNpc(
   inv: InventoryState,
   npcId: string,
   gift: CommodityId,
+  worldSeed = 1,
 ): { ok: boolean; msg: string; stage: RelationshipStage; delta: number } {
-  const def = getRomanceDef(npcId);
+  const def = getRomanceDef(npcId, worldSeed);
   if (!def) {
     return { ok: false, msg: 'She has already moved on.', stage: 0, delta: 0 };
   }
@@ -2976,13 +2891,7 @@ export function giftRomanceNpc(
   };
 }
 
-export type RomanceStoryId =
-  | 'origin'
-  | 'companion'
-  | 'crew'
-  | 'invention'
-  | 'resources'
-  | 'workshop';
+export type RomanceStoryId = GenRomanceStoryId;
 
 export interface StoryShareContext {
   companionName: string;
@@ -2991,6 +2900,44 @@ export interface StoryShareContext {
   why: string;
   remains: string;
   moral: string;
+  /** Player backstory seed — drives unique tellings per playthrough */
+  worldSeed: number;
+}
+
+function buildPlayerStoryContext(inv: InventoryState, ctx: StoryShareContext): PlayerStoryContext {
+  const workers = inv.workers.filter((w) => !w.unpaid);
+  const invent = [...inv.customRecipes].sort(
+    (a, b) => (b.quality ?? 1) * b.sellValue - (a.quality ?? 1) * a.sellValue,
+  )[0];
+  const matTotal = (['cloud_iron', 'scrap_brass', 'spore_silk', 'sky_salt'] as CommodityId[]).reduce(
+    (s, id) => s + getQty(inv, id),
+    0,
+  );
+  const blooms = (FLOWER_IDS as readonly CommodityId[]).reduce((s, id) => s + getQty(inv, id), 0);
+  return {
+    companionName: ctx.companionName,
+    whoOf: ctx.whoOf,
+    how: ctx.how,
+    why: ctx.why,
+    remains: ctx.remains,
+    moral: ctx.moral,
+    workerNames: workers.map((w) => w.name),
+    workerCount: workers.length,
+    unpaidCount: inv.workers.filter((w) => w.unpaid).length,
+    topInvention: invent
+      ? { name: invent.name, quality: invent.quality ?? 1, sellValue: invent.sellValue }
+      : undefined,
+    inventionCount: inv.customRecipes.length,
+    brass: inv.brass,
+    matTotal,
+    blooms,
+    harvestRuns: inv.harvestRuns,
+    bayLevel: inv.bayLevel,
+    cityWorkshop: inv.cityWorkshopLeased,
+    apartment: inv.apartmentOwned,
+    stalls: ownedCityStallCount(inv),
+    peakBrass: inv.peakBrass ?? inv.brass,
+  };
 }
 
 export function listRomanceStories(
@@ -3006,71 +2953,31 @@ export function listRomanceStories(
 }[] {
   const rel = ensureRomanceState(inv, npcId);
   const shared = new Set(rel.storiesShared ?? []);
-  const workers = inv.workers.filter((w) => !w.unpaid);
-  const invent = [...inv.customRecipes].sort(
-    (a, b) => (b.quality ?? 1) * b.sellValue - (a.quality ?? 1) * a.sellValue,
-  )[0];
-  const matTotal = (['cloud_iron', 'scrap_brass', 'spore_silk', 'sky_salt'] as CommodityId[]).reduce(
-    (s, id) => s + getQty(inv, id),
-    0,
-  );
-  const blooms = (FLOWER_IDS as readonly CommodityId[]).reduce((s, id) => s + getQty(inv, id), 0);
+  const pctx = buildPlayerStoryContext(inv, ctx);
+  const seedBase = ctx.worldSeed || 1;
 
   const beats: {
     id: RomanceStoryId;
     title: string;
     minStage: number;
-    preview: string;
     require?: () => string | null;
   }[] = [
-    {
-      id: 'origin',
-      title: 'Your origin',
-      minStage: 2,
-      preview: `You lost ${ctx.whoOf} to ${ctx.how}. You still carry ${ctx.remains}.`,
-    },
+    { id: 'origin', title: 'Your origin', minStage: 2 },
     {
       id: 'companion',
       title: `${ctx.companionName} — the soul you woke`,
       minStage: 2,
-      preview: `${ctx.companionName} walks with you in brass. You build ${ctx.why}.`,
     },
-    {
-      id: 'crew',
-      title: 'Your crew',
-      minStage: 2,
-      preview:
-        workers.length === 0
-          ? 'You work alone for now.'
-          : `You employ ${workers.length}: ${workers
-              .slice(0, 3)
-              .map((w) => w.name)
-              .join(', ')}${workers.length > 3 ? '…' : ''}.`,
-      require: () => null,
-    },
+    { id: 'crew', title: 'Your crew', minStage: 2 },
     {
       id: 'invention',
       title: 'Proudest invention',
       minStage: 3,
-      preview: invent
-        ? `${invent.name} (Q${invent.quality ?? 1}) — worth ~${invent.sellValue}b a piece.`
-        : 'You have not invented anything yet.',
-      require: () => (invent ? null : 'Invent something first (bay L3 / workshop lab).'),
+      require: () =>
+        pctx.topInvention ? null : 'Invent something first (bay L3 / workshop lab).',
     },
-    {
-      id: 'resources',
-      title: 'What you hold',
-      minStage: 2,
-      preview: `${inv.brass} brass · ${matTotal} raw mats · ${blooms} blooms · ${inv.harvestRuns} hauls logged.`,
-    },
-    {
-      id: 'workshop',
-      title: 'Your workshop path',
-      minStage: 3,
-      preview: `Bay L${inv.bayLevel}${inv.cityWorkshopLeased ? ' · city workshop' : ''}${
-        inv.apartmentOwned ? ' · sky apartment' : ''
-      } · ${ownedCityStallCount(inv)} city stall(s) · ${inv.inventionsMade ?? 0} inventions made.`,
-    },
+    { id: 'resources', title: 'What the shelves taught you', minStage: 2 },
+    { id: 'workshop', title: 'Your workshop path', minStage: 3 },
   ];
 
   return beats.map((b) => {
@@ -3081,12 +2988,14 @@ export function listRomanceStories(
     else if (rel.stage < b.minStage) {
       reason = `Need ${RELATIONSHIP_STAGE_NAMES[b.minStage as RelationshipStage]}+ (now ${RELATIONSHIP_STAGE_NAMES[rel.stage]})`;
     } else if (need) reason = need;
+    const tellSeed = storyTellSeed(seedBase, npcId, b.id, rel.affinity);
+    const preview = formatPlayerStoryBeat(b.id, pctx, tellSeed);
     return {
       id: b.id,
       title: b.title,
       locked,
       reason,
-      preview: b.preview,
+      preview,
     };
   });
 }
@@ -3097,7 +3006,7 @@ export function shareRomanceStory(
   storyId: RomanceStoryId,
   ctx: StoryShareContext,
 ): { ok: boolean; msg: string; stage: RelationshipStage } {
-  const def = getRomanceDef(npcId);
+  const def = getRomanceDef(npcId, ctx.worldSeed);
   if (!def) return { ok: false, msg: 'She has already moved on.', stage: 0 };
   const rel = ensureRomanceState(inv, npcId);
   const options = listRomanceStories(inv, npcId, ctx);
@@ -3115,8 +3024,10 @@ export function shareRomanceStory(
   rel.affinity = Math.min(120, rel.affinity + gain);
   const prev = rel.stage;
   recomputeRomanceStage(rel);
-  const reaction =
-    def.storyReactions[Math.floor(Math.random() * def.storyReactions.length)]!;
+  // Stable reaction pick from her persona seed + story (not Math.random)
+  const reactSeed = storyTellSeed(ctx.worldSeed || 1, npcId, `react:${storyId}`, rel.giftsGiven);
+  const reactIdx = reactSeed % Math.max(1, def.storyReactions.length);
+  const reaction = def.storyReactions[reactIdx] ?? def.storyReactions[0]!;
   const stageBit =
     rel.stage > prev
       ? ` Now ${RELATIONSHIP_STAGE_NAMES[rel.stage]}.`
@@ -3124,7 +3035,7 @@ export function shareRomanceStory(
   return {
     ok: true,
     stage: rel.stage,
-    msg: `You share: ${beat.preview} ${def.name}: “${reaction}”${stageBit}`,
+    msg: `You tell her: “${beat.preview}” ${def.name}: “${reaction}”${stageBit}`,
   };
 }
 

@@ -6217,6 +6217,10 @@ export class ForgeHeartGame {
   private romanceNpcId: string | null = null;
   private romanceView: 'menu' | 'gift' | 'story' = 'menu';
 
+  private romanceWorldSeed(): number {
+    return this.backstory?.seed ?? 1;
+  }
+
   private romanceStoryContext() {
     const bs = this.backstory ?? generateBackstory(1);
     return {
@@ -6226,6 +6230,7 @@ export class ForgeHeartGame {
       why: bs.why,
       remains: bs.remains,
       moral: bs.moral,
+      worldSeed: bs.seed,
     };
   }
 
@@ -6294,7 +6299,8 @@ export class ForgeHeartGame {
   private fillRomancePanel() {
     const npcId = this.romanceNpcId;
     if (!npcId) return;
-    const def = getRomanceDef(npcId);
+    const seed = this.romanceWorldSeed();
+    const def = getRomanceDef(npcId, seed);
     const rel = ensureRomanceState(this.inv, npcId);
     const title = document.getElementById('romance-title');
     const sub = document.getElementById('romance-sub');
@@ -6308,8 +6314,10 @@ export class ForgeHeartGame {
         this.romanceView === 'gift'
           ? 'Choose a gift from your pack'
           : this.romanceView === 'story'
-            ? 'Share something true about your empire'
-            : 'Chat · gift · learn · share your story';
+            ? 'Share something true — each telling is your own words'
+            : def?.bioLine
+              ? def.bioLine
+              : 'Chat · gift · learn · share your story';
     }
     if (status) {
       const likes = rel.knownLikes && def
@@ -6331,13 +6339,13 @@ export class ForgeHeartGame {
 
     if (this.romanceView === 'menu') {
       addBtn('Just chat', () => {
-        const r = chatRomanceNpc(this.inv, npcId);
+        const r = chatRomanceNpc(this.inv, npcId, seed);
         this.romanceLog(r.msg);
         writeSlot(this.activeSlot, this.buildSaveData());
         this.fillRomancePanel();
       });
       addBtn('Learn about her', () => {
-        const r = learnRomanceLikes(this.inv, npcId);
+        const r = learnRomanceLikes(this.inv, npcId, seed);
         this.romanceLog(r.msg);
         writeSlot(this.activeSlot, this.buildSaveData());
         this.fillRomancePanel();
@@ -6390,7 +6398,7 @@ export class ForgeHeartGame {
         addBtn(
           `${COMMODITIES[g].name} ×${this.inv.items[g] ?? 0}${hint}`,
           () => {
-            const r = giftRomanceNpc(this.inv, npcId, g);
+            const r = giftRomanceNpc(this.inv, npcId, g, seed);
             this.romanceLog(r.msg);
             this.audio.playPickup();
             writeSlot(this.activeSlot, this.buildSaveData());
@@ -9540,7 +9548,9 @@ export class ForgeHeartGame {
       fromSave?.backstorySeed ?? this.backstory?.seed ?? ((Math.random() * 0xffffffff) >>> 0);
     this.backstory = generateBackstory(seed);
 
-    this.skyCity = buildSkyCity();
+    this.skyCity = buildSkyCity({
+      romanceSeed: this.backstory?.seed ?? fromSave?.backstorySeed ?? 1,
+    });
     this.scene.add(this.skyCity.group);
     this.spatialGrid = new SpatialColliderGrid(12);
     this.cityStreamer = new CityStreamer(220, 300);

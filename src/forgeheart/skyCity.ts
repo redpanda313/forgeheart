@@ -12,7 +12,7 @@ import {
   CITY_DISTRICTS,
   harvestBiomeForDistrict,
   COMMODITIES,
-  ROMANCE_NPCS,
+  getRomanceNpcs,
   type VendorDef,
   type CityDistrictDef,
   type CommodityId,
@@ -572,7 +572,8 @@ function makeNpcMesh(
  * Build the empire-scale mega-city from CITY_DISTRICTS.
  * Prior city was ~±250; this spans ~±520 with 14 plazas + connectors (~20× area).
  */
-export function buildSkyCity(): SkyCityBuilt {
+export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
+  const romanceSeed = opts?.romanceSeed ?? 1;
   const mats = makeMaterials();
   const group = new THREE.Group();
   group.name = 'SkyCity';
@@ -2029,15 +2030,15 @@ export function buildSkyCity(): SkyCityBuilt {
     });
   }
 
-  // Romance-eligible girl NPCs (named) — stay on their plaza
-  // Prefs/dialogue live in economy.ROMANCE_NPCS (gifts must be craftable/buyable/pickable)
-  const girlIds = ['girl_lira', 'girl_mira', 'girl_nova', 'girl_sage'] as const;
+  // Romance-eligible girl NPCs — procedural lives from playthrough seed
+  const romanceMap = getRomanceNpcs(romanceSeed);
+  const girlIds = Object.keys(romanceMap);
   for (let i = 0; i < girlIds.length; i++) {
     const gid = girlIds[i]!;
-    const rdef = ROMANCE_NPCS[gid];
+    const rdef = romanceMap[gid];
     const name = rdef?.name ?? gid;
     const lines = rdef
-      ? [rdef.chatByStage[0], rdef.chatByStage[1]]
+      ? [rdef.chatByStage[0], rdef.chatByStage[1], rdef.bioLine]
       : ['…'];
     const d = CITY_DISTRICTS[(i * 3 + 1) % CITY_DISTRICTS.length]!;
     const home = plazaPoint(d, 0.32);
