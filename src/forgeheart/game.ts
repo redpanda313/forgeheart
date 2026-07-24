@@ -203,8 +203,22 @@ import {
   formatDistrictStandingLine,
   softGoalObjectiveLine,
   getActiveSoftGoal,
-  noteMetNeighbor,
   empireStandingTier,
+  chatNeighbor,
+  learnNeighbor,
+  giftNeighborGoods,
+  giftNeighborBrass,
+  clearNeighborDebt,
+  hireNeighbor,
+  buyNeighborProperty,
+  setNeighborRentPolicy,
+  tickNeighborRents,
+  listHeldNeighborGifts,
+  getInvNeighbor,
+  neighborDef,
+  neighborStatusLine,
+  neighborInteractLabel,
+  type RentPolicy,
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
@@ -474,7 +488,7 @@ export class ForgeHeartGame {
   private static readonly CITY_ROGUE_FIX_IMMUNE_SEC = 180;
   private cityTime = 0;
   private cityInteractPrompt: CityInteract | null = null;
-  private neighborLineIdx = 0;
+
   private inv: InventoryState = emptyInventory(40);
   private activeVendor: VendorDef | null = null;
   private craftOpen = false;
@@ -856,6 +870,10 @@ export class ForgeHeartGame {
       }
       if (this.bayOpen && e.code === 'Escape') {
         this.closeBay();
+        return;
+      }
+      if (this.neighborPanelId && e.code === 'Escape') {
+        this.closeNeighborPanel();
         return;
       }
       if (this.romanceNpcId && e.code === 'Escape') {
@@ -2697,6 +2715,8 @@ export class ForgeHeartGame {
     this.cityMapOpen = false;
     this.romanceNpcId = null;
     this.romanceView = 'menu';
+    this.neighborPanelId = null;
+    this.neighborView = 'menu';
     this.cityMapSelectedId = null;
     this.cityMapCam = null;
     this.cityMapDrag = null;
@@ -2718,6 +2738,7 @@ export class ForgeHeartGame {
       'nav-compass',
       'city-map-panel',
       'romance-panel',
+      'neighbor-panel',
       'pause-menu',
     ];
     for (const id of ids) {
@@ -4474,7 +4495,8 @@ export class ForgeHeartGame {
       this.stallOpen ||
       this.cityMapOpen ||
       this.activeVendor ||
-      this.romanceNpcId
+      this.romanceNpcId ||
+      this.neighborPanelId
     ) {
       return true;
     }
@@ -4561,6 +4583,13 @@ export class ForgeHeartGame {
       this.upkeepAcc = 0;
       const r = tickBayUpkeep(this.inv);
       this.handleUpkeepResult(r);
+      const rent = tickNeighborRents(this.inv);
+      if (rent.collected > 0 || rent.left.length) {
+        for (const m of rent.msgs) this.toast(m, rent.left.length ? 5 : 2.5);
+        if (rent.left.length) {
+          this.objective = this.megaCityObjective();
+        }
+      }
       this.brass = this.inv.brass;
       this.syncEconomyHud();
       writeSlot(this.activeSlot, this.buildSaveData());
@@ -4655,6 +4684,14 @@ export class ForgeHeartGame {
       const reach = it.radius + (useHoriz ? 0.9 : 0.5);
       if (d < bestD && d <= reach) {
         bestD = d;
+        // Live neighbor labels: drama / debt / owner
+        if (it.kind === 'neighbor' && it.id) {
+          const ns = getInvNeighbor(this.inv, it.id);
+          const def = neighborDef(it.id);
+          if (ns && def) {
+            it.label = neighborInteractLabel(ns, def.name);
+          }
+        }
         this.cityInteractPrompt = it;
       }
     }
@@ -4674,26 +4711,8 @@ export class ForgeHeartGame {
   private tryCityInteract() {
     if (!this.skyCity || !this.cityInteractPrompt) return false;
     const it = this.cityInteractPrompt;
-    if (it.kind === 'neighbor' && it.lines?.length) {
-      const line = it.lines[this.neighborLineIdx % it.lines.length]!;
-      this.neighborLineIdx++;
-      const met = noteMetNeighbor(this.inv);
-      this.toast(line, this.mobile.enabled ? 9.5 : 5);
-      if (met.first) {
-        window.setTimeout(() => {
-          if (this.disposed || !this.megaCityActive) return;
-          this.toast(
-            'Neighbor noted · Standing +2. Drama, hire, and buy-property come next — watch soft goals.',
-            6,
-          );
-          this.objective = this.megaCityObjective();
-          this.syncEconomyHud();
-          writeSlot(this.activeSlot, this.buildSaveData());
-        }, 1200);
-      }
-      this.audio.playPickup();
-      this.objective = this.megaCityObjective();
-      this.syncEconomyHud();
+    if (it.kind === 'neighbor' && it.id) {
+      this.openNeighborPanel(it.id);
       return true;
     }
     if (it.kind === 'vendor' && it.vendor) {
@@ -6295,6 +6314,8 @@ export class ForgeHeartGame {
 
   private romanceNpcId: string | null = null;
   private romanceView: 'menu' | 'gift' | 'story' = 'menu';
+  private neighborPanelId: string | null = null;
+  private neighborView: 'menu' | 'gift' | 'buy' = 'menu';
   /** Site builder: which existing factory building to replace (null = append new). */
   private siteReplaceIndex: number | null = null;
 
@@ -6531,6 +6552,255 @@ export class ForgeHeartGame {
         this.fillRomancePanel();
       });
     }
+  }
+
+  // ——— Neighbor life panel (Tasks 2–3) ———
+
+  private ensureNeighborPanel(): HTMLElement {
+    let el = document.getElementById('neighbor-panel');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'neighbor-panel';
+    el.className = 'market-panel romance-panel neighbor-panel hidden';
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = `
+      <div class="market-card romance-card">
+        <header class="market-head">
+          <div>
+            <h3 id="neighbor-title">Neighbor</h3>
+            <p class="market-sub" id="neighbor-sub">…</p>
+          </div>
+          <button type="button" id="neighbor-close" class="maker-close" title="Close">×</button>
+        </header>
+        <p class="romance-status" id="neighbor-status"></p>
+        <p class="romance-log" id="neighbor-log"></p>
+        <div id="neighbor-actions" class="romance-actions"></div>
+      </div>`;
+    document.getElementById('app')?.appendChild(el);
+    el.querySelector('#neighbor-close')?.addEventListener('click', () => this.closeNeighborPanel());
+    return el;
+  }
+
+  private openNeighborPanel(npcId: string) {
+    this.neighborPanelId = npcId;
+    this.neighborView = 'menu';
+    const el = this.ensureNeighborPanel();
+    el.classList.remove('hidden');
+    el.setAttribute('aria-hidden', 'false');
+    // First open = chat once so "meet neighbor" goal advances
+    const n = getInvNeighbor(this.inv, npcId);
+    if (n && !n.known) {
+      const r = chatNeighbor(this.inv, npcId);
+      this.neighborLog(r.msg);
+    }
+    this.fillNeighborPanel();
+    this.objective = this.megaCityObjective();
+    this.syncEconomyHud();
+    this.syncMobileGameplay();
+    try {
+      this.controls.unlock();
+    } catch {
+      /* ignore */
+    }
+    this.audio.playPickup();
+    writeSlot(this.activeSlot, this.buildSaveData());
+  }
+
+  private closeNeighborPanel() {
+    this.neighborPanelId = null;
+    this.neighborView = 'menu';
+    const el = document.getElementById('neighbor-panel');
+    el?.classList.add('hidden');
+    el?.setAttribute('aria-hidden', 'true');
+    this.syncMobileGameplay();
+    if (!this.paused && !this.disposed) this.controls.lock();
+  }
+
+  private neighborLog(msg: string) {
+    const log = document.getElementById('neighbor-log');
+    if (log) log.textContent = msg;
+    this.toast(msg, Math.min(8, 3.5 + msg.length / 90));
+  }
+
+  private fillNeighborPanel() {
+    const id = this.neighborPanelId;
+    if (!id) return;
+    const def = neighborDef(id);
+    const n = getInvNeighbor(this.inv, id);
+    const title = document.getElementById('neighbor-title');
+    const sub = document.getElementById('neighbor-sub');
+    const status = document.getElementById('neighbor-status');
+    const actions = document.getElementById('neighbor-actions');
+    if (!actions || !def || !n) return;
+    if (title) title.textContent = def.name;
+    if (sub) {
+      sub.textContent =
+        this.neighborView === 'gift'
+          ? 'Gift brass or goods from your pack'
+          : this.neighborView === 'buy'
+            ? 'Buy their pad · optional tenant rent'
+            : `${def.jobLabel} · residential neighbor (not romance)`;
+    }
+    if (status) status.textContent = neighborStatusLine(n);
+
+    actions.innerHTML = '';
+    const addBtn = (
+      label: string,
+      onClick: () => void,
+      opts?: { disabled?: boolean; danger?: boolean },
+    ) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'romance-btn' + (opts?.danger ? ' danger' : '');
+      b.textContent = label;
+      b.disabled = !!opts?.disabled;
+      b.addEventListener('click', onClick);
+      actions.appendChild(b);
+    };
+
+    const after = (msg: string) => {
+      this.neighborLog(msg);
+      this.brass = this.inv.brass;
+      this.objective = this.megaCityObjective();
+      this.syncEconomyHud();
+      writeSlot(this.activeSlot, this.buildSaveData());
+      this.fillNeighborPanel();
+    };
+
+    if (this.neighborView === 'gift') {
+      addBtn('Gift 10 brass', () => {
+        const r = giftNeighborBrass(this.inv, id, 10);
+        after(r.msg);
+        if (r.ok) this.audio.playPickup();
+      });
+      addBtn('Gift 25 brass (strong help)', () => {
+        const r = giftNeighborBrass(this.inv, id, 25);
+        after(r.msg);
+        if (r.ok) this.audio.playPickup();
+      });
+      const held = listHeldNeighborGifts(this.inv);
+      if (!held.length) {
+        const p = document.createElement('p');
+        p.className = 'craft-hint';
+        p.textContent =
+          'No goods gifts in pack. Mats, blooms, Brass Charm, Silk Scarf, or Cloud Blooms bouquet work.';
+        actions.appendChild(p);
+      }
+      for (const g of held) {
+        addBtn(`${COMMODITIES[g].name} ×${this.inv.items[g] ?? 0}`, () => {
+          const r = giftNeighborGoods(this.inv, id, g);
+          after(r.msg);
+          if (r.ok) this.audio.playPickup();
+        });
+      }
+      addBtn('Back', () => {
+        this.neighborView = 'menu';
+        this.fillNeighborPanel();
+      });
+      return;
+    }
+
+    if (this.neighborView === 'buy') {
+      addBtn('Buy pad · keep tenant · FAIR rent', () => {
+        const r = buyNeighborProperty(this.inv, id, {
+          keepTenant: true,
+          rentPolicy: 'fair',
+        });
+        after(r.msg);
+        if (r.ok) {
+          this.audio.playPickup();
+          this.neighborView = 'menu';
+        }
+      });
+      addBtn('Buy pad · keep tenant · CHEAP rent (standing+)', () => {
+        const r = buyNeighborProperty(this.inv, id, {
+          keepTenant: true,
+          rentPolicy: 'cheap',
+        });
+        after(r.msg);
+        if (r.ok) {
+          this.audio.playPickup();
+          this.neighborView = 'menu';
+        }
+      });
+      addBtn(
+        'Buy pad · keep tenant · PREDATORY rent (risk leave)',
+        () => {
+          const r = buyNeighborProperty(this.inv, id, {
+            keepTenant: true,
+            rentPolicy: 'predatory',
+          });
+          after(r.msg);
+          if (r.ok) {
+            this.audio.playPickup();
+            this.neighborView = 'menu';
+          }
+        },
+        { danger: true },
+      );
+      addBtn('Buy pad · empty (no tenant)', () => {
+        const r = buyNeighborProperty(this.inv, id, { keepTenant: false });
+        after(r.msg);
+        if (r.ok) {
+          this.audio.playPickup();
+          this.neighborView = 'menu';
+        }
+      });
+      addBtn('Back', () => {
+        this.neighborView = 'menu';
+        this.fillNeighborPanel();
+      });
+      return;
+    }
+
+    // Menu
+    addBtn('Chat', () => {
+      const r = chatNeighbor(this.inv, id);
+      after(r.msg);
+    });
+    addBtn('Learn situation', () => {
+      const r = learnNeighbor(this.inv, id);
+      after(r.msg);
+    });
+    addBtn('Gift brass / goods…', () => {
+      this.neighborView = 'gift';
+      this.fillNeighborPanel();
+    });
+    if (n.debt && n.debt.amount > 0) {
+      addBtn(`Clear debt to ${n.debt.landlordName} (${n.debt.amount}b)`, () => {
+        const r = clearNeighborDebt(this.inv, id);
+        after(r.msg);
+        if (r.ok) this.audio.playPickup();
+      });
+    }
+    addBtn(
+      n.hiredAsWorkerId ? 'Already on your crew' : 'Offer hire (crew slot)',
+      () => {
+        const r = hireNeighbor(this.inv, id);
+        after(r.msg);
+        if (r.ok) {
+          this.audio.playPickup();
+          this.rebuildWorkerAgents();
+          this.syncWorkerAgentsLoadout();
+        }
+      },
+      { disabled: !!n.hiredAsWorkerId },
+    );
+    if (n.homeOwner !== 'player') {
+      addBtn('Buy their property…', () => {
+        this.neighborView = 'buy';
+        this.fillNeighborPanel();
+      });
+    } else if (n.isPlayerTenant && !n.vacated) {
+      const setPol = (p: RentPolicy) => {
+        const r = setNeighborRentPolicy(this.inv, id, p);
+        after(r.msg);
+      };
+      addBtn('Rent → cheap', () => setPol('cheap'));
+      addBtn('Rent → fair', () => setPol('fair'));
+      addBtn('Rent → predatory', () => setPol('predatory'), { danger: true });
+    }
+    addBtn('Leave', () => this.closeNeighborPanel());
   }
 
   private openMedallionAssign() {
@@ -9683,7 +9953,6 @@ export class ForgeHeartGame {
     this.won = false;
     this.tutorial = 'race'; // city phase flag lives on levelId mega_city
     this.cityTime = 0.25;
-    this.neighborLineIdx = 0;
     this.velocity.set(0, 0, 0);
     this.onGround = true;
     this.respawnCd = 0;

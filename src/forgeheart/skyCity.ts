@@ -1452,9 +1452,10 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     });
   }
 
-  // Neighbors on residential ring
+  // Neighbors on residential ring — ids match neighborLife NEIGHBOR_DEFS
   const neighborSpots = [
     {
+      id: 'neighbor_pip',
       x: residential.x + 26,
       z: residential.z + 22,
       name: 'Pip Harper',
@@ -1465,6 +1466,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       ],
     },
     {
+      id: 'neighbor_sera',
       x: residential.x - 24,
       z: residential.z - 24,
       name: 'Sera Quinn',
@@ -1474,6 +1476,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       ],
     },
     {
+      id: 'neighbor_bolt',
       x: residential.x + 28,
       z: residential.z - 18,
       name: 'Bolt Voss',
@@ -1506,13 +1509,14 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     lab.position.set(n.x, 3.8, n.z + 2);
     addMesh(lab);
     interactables.push({
-      id: `neighbor_${n.name}`,
+      id: n.id,
       kind: 'neighbor',
       position: mark.position.clone(),
       radius: 2.4,
       mesh: mark,
       label: `Talk to ${n.name}`,
       lines: n.lines,
+      districtId: 'residential',
     });
   }
 
