@@ -31,7 +31,8 @@ import {
   dramaLabel,
   neighborStatusLine,
   NEIGHBOR_GIFT_IDS,
-  RENT_INCOME,
+  rentIncomeForPad,
+  quoteNeighborPadPrice,
   PREDATORY_LEAVE_CHANCE,
   landlordById,
   type NeighborLifeState,
@@ -59,6 +60,9 @@ export {
   emptyNeighborLife,
   ensureNeighborLife,
   getNeighborState,
+  rentIncomeForPad,
+  quoteNeighborPadPrice,
+  RENT_RATE_OF_VALUE,
 } from './neighborLife';
 
 export type CurrencyId = 'brass' | 'aether';
@@ -2571,9 +2575,14 @@ export function learnNeighbor(
         : n.homeOwner === 'self'
           ? 'Owns their own pad.'
           : 'City-held pad.';
+  const quote = quoteNeighborPadPrice(def, n.affinity);
+  const fairRent = rentIncomeForPad(def.basePrice, 'fair');
   return {
     ok: true,
-    msg: `${def.name} · ${def.jobLabel} · ${ownerBit} · ${neighborStatusLine(n)}`,
+    msg:
+      `${def.name} · ${def.jobLabel} · ${ownerBit} · ${def.priceTierLabel} ` +
+      `list ${quote.list.toLocaleString()}b (your price ~${quote.price.toLocaleString()}b) · ` +
+      `fair rent ~${fairRent.toLocaleString()}b/tick · ${neighborStatusLine(n)}`,
   };
 }
 
@@ -2619,7 +2628,7 @@ export function giftNeighborGoods(
   applyStanding(inv, stand, { districtId: def.homeDistrictId, districtDelta: stand + 1 });
   // Partial debt help: practical goods reduce debt a little (brass is better)
   if (n.debt && n.debt.amount > 0 && (gift === 'scrap_brass' || gift === 'cloud_iron')) {
-    const cut = Math.min(n.debt.amount, 4);
+    const cut = Math.min(n.debt.amount, 80);
     n.debt.amount -= cut;
     n.debtPaidToward += cut;
     if (n.debt.amount <= 0) {
@@ -2794,6 +2803,7 @@ export function hireNeighbor(
 /**
  * Buy the neighbor’s pad from them or their NPC landlord (Task 3).
  * Real plot grid comes in Task 4 — this is virtual deed + optional tenancy.
+ * Prices are empire-scale (10k–100k+) with per-pad variance.
  */
 export function buyNeighborProperty(
   inv: InventoryState,
@@ -2810,25 +2820,34 @@ export function buyNeighborProperty(
     return { ok: false, msg: 'Pad already gone.' };
   }
 
-  // Base price by ownership fiction
-  let price = 120;
-  if (n.homeOwner === 'self') price = 95;
-  if (n.homeOwner === 'npc_landlord') price = 140;
-  // Affinity discount
-  price = Math.max(40, Math.round(price - n.affinity * 0.6));
-  // If debt remains, landlord wants debt cleared in the deal (or folded into price)
+  const quote = quoteNeighborPadPrice(def, n.affinity);
+  let price = quote.price;
+  // NPC landlord portfolios cost a buyout premium; owner-occupiers slightly softer
+  if (n.homeOwner === 'npc_landlord') {
+    price = Math.round(price * 1.08);
+  } else if (n.homeOwner === 'self') {
+    price = Math.round(price * 0.97);
+  }
+  // Outstanding debt must be settled in the deal (full amount to landlord)
   let debtFold = 0;
   if (n.debt && n.debt.amount > 0) {
     debtFold = n.debt.amount;
-    price += Math.floor(debtFold * 0.5); // buyout premium on top of debt
+    price += debtFold;
   }
   const total = price;
   if (inv.brass < total) {
     return {
       ok: false,
-      msg: `Need ${total} brass to buy pad` +
-        (debtFold ? ` (includes debt fold from ${n.debt!.landlordName})` : '') +
-        ` — you have ${inv.brass}.`,
+      msg:
+        `Need ${total.toLocaleString()} brass for ${def.priceTierLabel} pad` +
+        (debtFold
+          ? ` (list ~${quote.list.toLocaleString()}` +
+            (quote.discount ? ` −${quote.discount.toLocaleString()} affinity` : '') +
+            ` + ${debtFold.toLocaleString()}b debt to ${n.debt!.landlordName})`
+          : quote.discount
+            ? ` (list ${quote.list.toLocaleString()} −${quote.discount.toLocaleString()} affinity)`
+            : ` (list ${quote.list.toLocaleString()})`) +
+        ` — you have ${inv.brass.toLocaleString()}.`,
     };
   }
   inv.brass -= total;
@@ -2847,6 +2866,7 @@ export function buyNeighborProperty(
 
   const keep = opts?.keepTenant !== false; // default keep as tenant
   const policy: RentPolicy = opts?.rentPolicy ?? 'fair';
+  const rentPerTick = rentIncomeForPad(def.basePrice, policy);
   if (keep && !n.vacated) {
     n.isPlayerTenant = true;
     n.rentPolicy = policy;
@@ -2870,10 +2890,11 @@ export function buyNeighborProperty(
   return {
     ok: true,
     msg:
-      `Bought ${def.name}’s pad (−${total}b)` +
-      (debtFold ? ` · cleared ${debtFold}b landlord debt` : '') +
+      `Bought ${def.name}’s pad (−${total.toLocaleString()}b · ${def.priceTierLabel})` +
+      (debtFold ? ` · cleared ${debtFold.toLocaleString()}b landlord debt` : '') +
+      (quote.discount ? ` · affinity saved ${quote.discount.toLocaleString()}b` : '') +
       (keep
-        ? ` · tenant stays at ${policy} rent (${RENT_INCOME[policy]}b / upkeep tick)`
+        ? ` · tenant stays at ${policy} rent (${rentPerTick.toLocaleString()}b / upkeep tick)`
         : ' · empty pad') +
       '. Full plot grid comes later — deed is virtual for now.',
   };
@@ -2895,6 +2916,7 @@ export function setNeighborRentPolicy(
   }
   const prev = n.rentPolicy;
   n.rentPolicy = policy;
+  const rent = rentIncomeForPad(def.basePrice, policy);
   if (policy === 'cheap') {
     bumpNeighborAffinity(n, 4);
     applyStanding(inv, 2, { districtId: def.homeDistrictId, districtDelta: 3 });
@@ -2904,7 +2926,7 @@ export function setNeighborRentPolicy(
   }
   return {
     ok: true,
-    msg: `${def.name} rent ${prev ?? '—'} → ${policy} (${RENT_INCOME[policy]}b / tick).`,
+    msg: `${def.name} rent ${prev ?? '—'} → ${policy} (${rent.toLocaleString()}b / tick · ${def.priceTierLabel}).`,
   };
 }
 
@@ -2925,7 +2947,8 @@ export function tickNeighborRents(inv: InventoryState): NeighborRentTickResult {
       continue;
     }
     const def = neighborDef(n.id);
-    const income = RENT_INCOME[n.rentPolicy];
+    const base = def?.basePrice ?? 10_000;
+    const income = rentIncomeForPad(base, n.rentPolicy);
     inv.brass += income;
     collected += income;
     notePeakBrass(inv);

@@ -53,6 +53,13 @@ export interface NeighborDef {
   startHomeOwner: HomeOwnerKind;
   startLandlordId?: string;
   startDebt?: number;
+  /**
+   * List price for buying the pad (brass). Varies by quality/location.
+   * Cheapest empire pads ~10k; premium pads 100k+.
+   */
+  basePrice: number;
+  /** Short tier tag for UI (Ring walk / Courtyard / Foundry-view) */
+  priceTierLabel: string;
 }
 
 export interface NeighborState {
@@ -100,7 +107,11 @@ export const NEIGHBOR_DEFS: NeighborDef[] = [
     startDrama: 'behind_on_rent',
     startHomeOwner: 'npc_landlord',
     startLandlordId: 'landlord_mira',
-    startDebt: 48,
+    /** Cheapest ring-walk pad — entry landlord play */
+    basePrice: 10_000,
+    priceTierLabel: 'Ring walk · modest',
+    /** ~1.5 months fair rent behind */
+    startDebt: 1_200,
     chatLines: [
       'Empire city! Lease stalls on many plazas — Spore Gardens & Aether Spire pay invent premiums.',
       'Expand your bay forever. Raise worker pay for long program lists.',
@@ -108,7 +119,7 @@ export const NEIGHBOR_DEFS: NeighborDef[] = [
     ],
     dramaLines: {
       behind_on_rent: [
-        'Mira Coil wants forty-eight brass by week’s end or I’m out on the ring walk.',
+        'Mira Coil wants twelve hundred brass by week’s end or I’m out on the ring walk.',
         'I can still work — I just can’t float rent and food. If you know a soft landlord…',
       ],
       none: ['Things are quiet for once. Thanks for looking in.'],
@@ -121,6 +132,9 @@ export const NEIGHBOR_DEFS: NeighborDef[] = [
     jobLabel: 'Board courier',
     startDrama: 'lonely',
     startHomeOwner: 'self',
+    /** Mid-tier self-owned courtyard pad */
+    basePrice: 42_000,
+    priceTierLabel: 'Courtyard · mid',
     chatLines: [
       'One board purchase forever. Q anywhere. Islands only connect by wind skyways.',
       'Invent at the city workshop or L3 bay, craft, stock premium plazas.',
@@ -144,7 +158,11 @@ export const NEIGHBOR_DEFS: NeighborDef[] = [
     startDrama: 'workplace_fight',
     startHomeOwner: 'npc_landlord',
     startLandlordId: 'landlord_dredge',
-    startDebt: 32,
+    /** Premium foundry-view pad — late empire buy */
+    basePrice: 125_000,
+    priceTierLabel: 'Foundry-view · premium',
+    /** Large arrears on a high pad */
+    startDebt: 6_500,
     chatLines: [
       'Industrial slips west. Hire a crew, raise pay grades, run harvest→craft→stock programs.',
       'Shops tax upkeep — earn more than you burn with a retail network.',
@@ -155,7 +173,7 @@ export const NEIGHBOR_DEFS: NeighborDef[] = [
         'If you’ve got a real hire board… I still know a wrench from a rivet.',
       ],
       behind_on_rent: [
-        'Dredge doesn’t joke. Thirty-two brass or the pad padlocks.',
+        'Dredge doesn’t joke. Sixty-five hundred brass or the pad padlocks.',
       ],
       expansion_envy: [
         'You keep growing the bay. Some of us are stuck on the same square of deck.',
@@ -256,6 +274,21 @@ export function ensureNeighborLife(life: NeighborLifeState | null | undefined): 
   for (const def of NEIGHBOR_DEFS) {
     if (!byId.has(def.id)) {
       life.neighbors.push(seedNeighborState(def));
+    } else {
+      // Migrate pre-scale tiny debts (old 32/48b era) up to current startDebt
+      const n = byId.get(def.id)!;
+      if (
+        n.debt &&
+        n.debt.amount > 0 &&
+        n.debt.amount < 200 &&
+        def.startDebt &&
+        def.startDebt > n.debt.amount &&
+        n.homeOwner !== 'player'
+      ) {
+        n.debt.amount = def.startDebt;
+        n.debt.landlordName =
+          landlordById(n.debt.landlordId)?.name ?? n.debt.landlordName;
+      }
     }
   }
   life.rentTickAcc = typeof life.rentTickAcc === 'number' ? life.rentTickAcc : 0;
@@ -386,11 +419,43 @@ export function neighborLifeFromSave(raw: unknown): NeighborLifeState {
   return base;
 }
 
+/**
+ * Rent as a fraction of pad basePrice per bay-upkeep tick (~28s).
+ * Tuned so a 10k pad at fair ≈ 50b/tick; 125k pad ≈ 625b/tick.
+ * Cheap is soft (standing); predatory pays more but risk of leave.
+ */
+export const RENT_RATE_OF_VALUE: Record<RentPolicy, number> = {
+  cheap: 0.002, // 0.20% of value / tick
+  fair: 0.005, // 0.50% of value / tick
+  predatory: 0.009, // 0.90% of value / tick
+};
+
+/** @deprecated fixed amounts — use rentIncomeForPad */
 export const RENT_INCOME: Record<RentPolicy, number> = {
-  cheap: 2,
-  fair: 5,
-  predatory: 9,
+  cheap: 20,
+  fair: 50,
+  predatory: 90,
 };
 
 /** Chance tenant leaves on a rent tick under predatory policy */
 export const PREDATORY_LEAVE_CHANCE = 0.18;
+
+/** Min rent floor so free/broken data never pays zero */
+export const RENT_INCOME_FLOOR = 8;
+
+export function rentIncomeForPad(basePrice: number, policy: RentPolicy): number {
+  const raw = Math.round(basePrice * RENT_RATE_OF_VALUE[policy]);
+  return Math.max(RENT_INCOME_FLOOR, raw);
+}
+
+/** List price after affinity goodwill (up to ~12% off at affinity 100). */
+export function quoteNeighborPadPrice(
+  def: NeighborDef,
+  affinity: number,
+): { list: number; price: number; discount: number } {
+  const list = def.basePrice;
+  const aff = Math.max(0, Math.min(100, affinity));
+  const discount = Math.round(list * (aff * 0.0012));
+  const price = Math.max(Math.round(list * 0.88), list - discount);
+  return { list, price, discount };
+}

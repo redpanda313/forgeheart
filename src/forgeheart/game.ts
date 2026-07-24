@@ -218,6 +218,8 @@ import {
   neighborDef,
   neighborStatusLine,
   neighborInteractLabel,
+  quoteNeighborPadPrice,
+  rentIncomeForPad,
   type RentPolicy,
   ensureTutorialMarketCrew,
   assignMedallion,
@@ -6668,16 +6670,24 @@ export class ForgeHeartGame {
     };
 
     if (this.neighborView === 'gift') {
-      addBtn('Gift 10 brass', () => {
-        const r = giftNeighborBrass(this.inv, id, 10);
+      addBtn('Gift 100 brass', () => {
+        const r = giftNeighborBrass(this.inv, id, 100);
         after(r.msg);
         if (r.ok) this.audio.playPickup();
       });
-      addBtn('Gift 25 brass (strong help)', () => {
-        const r = giftNeighborBrass(this.inv, id, 25);
+      addBtn('Gift 500 brass (strong help)', () => {
+        const r = giftNeighborBrass(this.inv, id, 500);
         after(r.msg);
         if (r.ok) this.audio.playPickup();
       });
+      if (n.debt && n.debt.amount > 0) {
+        const due = n.debt.amount;
+        addBtn(`Gift ${due.toLocaleString()}b (full remaining debt)`, () => {
+          const r = giftNeighborBrass(this.inv, id, due);
+          after(r.msg);
+          if (r.ok) this.audio.playPickup();
+        });
+      }
       const held = listHeldNeighborGifts(this.inv);
       if (!held.length) {
         const p = document.createElement('p');
@@ -6701,30 +6711,53 @@ export class ForgeHeartGame {
     }
 
     if (this.neighborView === 'buy') {
-      addBtn('Buy pad · keep tenant · FAIR rent', () => {
-        const r = buyNeighborProperty(this.inv, id, {
-          keepTenant: true,
-          rentPolicy: 'fair',
-        });
-        after(r.msg);
-        if (r.ok) {
-          this.audio.playPickup();
-          this.neighborView = 'menu';
-        }
-      });
-      addBtn('Buy pad · keep tenant · CHEAP rent (standing+)', () => {
-        const r = buyNeighborProperty(this.inv, id, {
-          keepTenant: true,
-          rentPolicy: 'cheap',
-        });
-        after(r.msg);
-        if (r.ok) {
-          this.audio.playPickup();
-          this.neighborView = 'menu';
-        }
-      });
+      const quote = quoteNeighborPadPrice(def, n.affinity);
+      let est = quote.price;
+      if (n.homeOwner === 'npc_landlord') est = Math.round(est * 1.08);
+      else if (n.homeOwner === 'self') est = Math.round(est * 0.97);
+      const debt = n.debt?.amount ?? 0;
+      const totalEst = est + debt;
+      const fairR = rentIncomeForPad(def.basePrice, 'fair');
+      const cheapR = rentIncomeForPad(def.basePrice, 'cheap');
+      const predR = rentIncomeForPad(def.basePrice, 'predatory');
+      const hint = document.createElement('p');
+      hint.className = 'craft-hint';
+      hint.textContent =
+        `${def.priceTierLabel} · list ${quote.list.toLocaleString()}b` +
+        (quote.discount ? ` · affinity −${quote.discount.toLocaleString()}b` : '') +
+        (debt ? ` · +${debt.toLocaleString()}b debt in deal` : '') +
+        ` · ~${totalEst.toLocaleString()}b total · rent/tick cheap ${cheapR.toLocaleString()} / fair ${fairR.toLocaleString()} / predatory ${predR.toLocaleString()}`;
+      actions.appendChild(hint);
       addBtn(
-        'Buy pad · keep tenant · PREDATORY rent (risk leave)',
+        `Buy · tenant FAIR (~${totalEst.toLocaleString()}b · ${fairR.toLocaleString()}/tick)`,
+        () => {
+          const r = buyNeighborProperty(this.inv, id, {
+            keepTenant: true,
+            rentPolicy: 'fair',
+          });
+          after(r.msg);
+          if (r.ok) {
+            this.audio.playPickup();
+            this.neighborView = 'menu';
+          }
+        },
+      );
+      addBtn(
+        `Buy · tenant CHEAP (~${totalEst.toLocaleString()}b · ${cheapR.toLocaleString()}/tick · standing+)`,
+        () => {
+          const r = buyNeighborProperty(this.inv, id, {
+            keepTenant: true,
+            rentPolicy: 'cheap',
+          });
+          after(r.msg);
+          if (r.ok) {
+            this.audio.playPickup();
+            this.neighborView = 'menu';
+          }
+        },
+      );
+      addBtn(
+        `Buy · tenant PREDATORY (~${totalEst.toLocaleString()}b · ${predR.toLocaleString()}/tick · risk leave)`,
         () => {
           const r = buyNeighborProperty(this.inv, id, {
             keepTenant: true,
@@ -6738,7 +6771,7 @@ export class ForgeHeartGame {
         },
         { danger: true },
       );
-      addBtn('Buy pad · empty (no tenant)', () => {
+      addBtn(`Buy empty pad (~${totalEst.toLocaleString()}b · no rent)`, () => {
         const r = buyNeighborProperty(this.inv, id, { keepTenant: false });
         after(r.msg);
         if (r.ok) {
