@@ -1537,6 +1537,11 @@ h1 {
   opacity: 0.45;
   cursor: not-allowed;
 }
+.romance-btn.active {
+  outline: 1px solid var(--gold);
+  background: rgba(196, 163, 90, 0.2);
+}
+
 .romance-btn.danger {
   border-color: rgba(220, 100, 100, 0.55);
   color: #f0c0c0;

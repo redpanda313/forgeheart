@@ -15,6 +15,8 @@ import {
   getRomanceNpcs,
   homeownerNeighborId,
   homeownerDefForDistrict,
+  plotWorldCenter,
+  PLOT_GRID,
   type VendorDef,
   type CityDistrictDef,
   type CommodityId,
@@ -62,7 +64,9 @@ export type CityInteractKind =
   | 'player_home'
   | 'home_workshop'
   | 'home_invent'
-  | 'home_decorate';
+  | 'home_decorate'
+  | 'lease_office'
+  | 'plot_marker';
 
 /** Plaza work a city chassis is assigned to while owned. */
 export type CityRobotJobId =
@@ -227,6 +231,10 @@ export interface SkyCityBuilt {
   circuits: PlazaCircuit[];
   /** Broker frame display groups by district */
   brokerDisplays: Record<string, THREE.Group>;
+  /** Recolor 3×3 plot pads from ownership state */
+  syncPlotOwnership: (
+    plots: { id: string; owner: string; forSale: boolean }[],
+  ) => void;
 }
 
 function hashDistrictFlower(districtId: string, flowerId: string, index: number): number {
@@ -1005,6 +1013,53 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       placeScenery(dGroup, mats, 'vehicle', di % 5, cx - 14, cz + 8, 0.4, 1.0, 0.5);
     }
 
+    // Task 4: 3×3 plot grid overlay (ownership tint updated from game when owned)
+    {
+      const plotRoot = new THREE.Group();
+      plotRoot.name = `Plots_${d.id}`;
+      dGroup.add(plotRoot);
+      for (let cy = 0; cy < PLOT_GRID; cy++) {
+        for (let cxCell = 0; cxCell < PLOT_GRID; cxCell++) {
+          const { x: px, z: pz, cellSize } = plotWorldCenter(d, cxCell, cy);
+          const half = cellSize * 0.46;
+          const pad = new THREE.Mesh(
+            new THREE.PlaneGeometry(half * 2, half * 2),
+            new THREE.MeshStandardMaterial({
+              color: 0x556677,
+              transparent: true,
+              opacity: 0.22,
+              roughness: 0.9,
+              metalness: 0.05,
+              depthWrite: false,
+            }),
+          );
+          pad.rotation.x = -Math.PI / 2;
+          pad.position.set(px, DECK_Y + 0.04, pz);
+          pad.name = `plot_${d.id}_${cxCell}_${cy}`;
+          pad.userData.plotId = `plot_${d.id}_${cxCell}_${cy}`;
+          plotRoot.add(pad);
+          // Corner pegs
+          for (const [sx, sz] of [
+            [-1, -1],
+            [1, -1],
+            [-1, 1],
+            [1, 1],
+          ] as const) {
+            const peg = new THREE.Mesh(
+              new THREE.BoxGeometry(0.12, 0.35, 0.12),
+              new THREE.MeshStandardMaterial({
+                color: 0x8899aa,
+                emissive: 0x223344,
+                emissiveIntensity: 0.25,
+              }),
+            );
+            peg.position.set(px + sx * half * 0.92, DECK_Y + 0.2, pz + sz * half * 0.92);
+            plotRoot.add(peg);
+          }
+        }
+      }
+    }
+
     // Stall lease marker — visual filled later from player layout
     const stallG = new THREE.Group();
     stallG.name = `Stall_${d.id}`;
@@ -1219,6 +1274,55 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         radius: 2.5,
         mesh: bm,
         label: `Sell robot frames · ${d.name}`,
+        districtId: d.id,
+      });
+    }
+
+    // Task 5: leasing offices (any plaza catalog) — Grand Market + Residential
+    if (d.id === 'grand_market' || d.id === 'residential') {
+      const ox = cx + (d.id === 'grand_market' ? -sz * 0.32 : sz * 0.34);
+      const oz = cz + (d.id === 'grand_market' ? sz * 0.3 : -sz * 0.28);
+      const shell = buildEnterableShell('office', mats, {
+        floors: 1,
+        color: d.id === 'grand_market' ? 0x6a5a48 : 0x5a5348,
+        label: 'LEASE OFFICE',
+      });
+      shell.group.position.set(ox, 0, oz);
+      dGroup.add(shell.group);
+      const worldCols = offsetColliders(shell.colliders, ox, 0, oz);
+      for (const c of worldCols) {
+        dCols.push(c);
+        colliders.push(c);
+        lowestY = Math.min(lowestY, c.min.y);
+      }
+      const door = new THREE.Vector3(
+        ox + shell.doorWorld.x,
+        1.25,
+        oz + shell.doorWorld.z,
+      );
+      const mark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.22, 8, 8),
+        new THREE.MeshStandardMaterial({
+          color: 0xc4a35a,
+          emissive: 0x886622,
+          emissiveIntensity: 0.55,
+        }),
+      );
+      mark.position.copy(door);
+      dGroup.add(mark);
+      const lab = labelSprite(
+        d.id === 'grand_market' ? 'LEASE OFFICE · EMPIRE' : 'LEASE OFFICE · RING',
+      );
+      lab.position.set(ox, 3.6, oz);
+      setSignWorldWidth(lab, 4.2);
+      dGroup.add(lab);
+      interactables.push({
+        id: `lease_office_${d.id}`,
+        kind: 'lease_office',
+        position: door.clone(),
+        radius: 2.8,
+        mesh: mark,
+        label: 'City leasing office · buy plaza plots',
         districtId: d.id,
       });
     }
@@ -2291,6 +2395,36 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     }
   };
 
+  const syncPlotOwnership = (
+    plots: { id: string; owner: string; forSale: boolean }[],
+  ) => {
+    const byId = new Map(plots.map((p) => [p.id, p]));
+    group.traverse((obj) => {
+      const pid = (obj as THREE.Object3D).userData?.plotId as string | undefined;
+      if (!pid || !(obj instanceof THREE.Mesh)) return;
+      const p = byId.get(pid);
+      if (!p) return;
+      const mat = obj.material as THREE.MeshStandardMaterial;
+      if (!mat?.color) return;
+      if (p.owner === 'player') {
+        mat.color.setHex(0xd4a017);
+        mat.opacity = 0.38;
+        mat.emissive?.setHex(0x664400);
+        if (mat.emissiveIntensity != null) mat.emissiveIntensity = 0.35;
+      } else if (p.forSale) {
+        mat.color.setHex(0x44aa66);
+        mat.opacity = 0.28;
+        mat.emissive?.setHex(0x113322);
+        if (mat.emissiveIntensity != null) mat.emissiveIntensity = 0.2;
+      } else {
+        mat.color.setHex(0x556677);
+        mat.opacity = 0.2;
+        mat.emissive?.setHex(0x000000);
+        if (mat.emissiveIntensity != null) mat.emissiveIntensity = 0.05;
+      }
+    });
+  };
+
   const animate = (cityTime: number, dt: number) => {
     // Skyway distance LOD — hide far ribbon groups
     for (const s of skywayLods) {
@@ -2491,6 +2625,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     lowestY: lowestY - 2,
     circuits,
     brokerDisplays,
+    syncPlotOwnership,
   };
   built.mapSnapshot = buildMapSnapshot(built);
   return built;

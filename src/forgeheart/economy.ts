@@ -39,6 +39,26 @@ import {
   type NeighborState,
   type RentPolicy,
 } from './neighborLife';
+import {
+  emptyPlazaPlots,
+  ensurePlazaPlots,
+  plazaPlotsToSave,
+  plazaPlotsFromSave,
+  quotePlotBuyPrice,
+  getPlot,
+  collectPlotRents,
+  plotsInDistrict,
+  plotWorldCenter,
+  plotOwnerLabel,
+  plotMapColor,
+  playerOwnedPlots,
+  PLOT_GRID,
+  plotId,
+  type PlazaPlotsState,
+  type PlotState,
+  type DistrictLite,
+  type ZoningHint,
+} from './plazaPlots';
 
 export type {
   NeighborLifeState,
@@ -1760,6 +1780,8 @@ export interface InventoryState {
   softGoalFlags: SoftGoalFlags;
   /** Neighbor drama, debt, hire, landlord rent (Tasks 2–3) */
   neighborLife: NeighborLifeState;
+  /** Plaza 3×3 plot ownership (Tasks 4–6) */
+  plazaPlots: PlazaPlotsState;
 }
 
 const WORKER_NAMES = [
@@ -1856,7 +1878,25 @@ export function emptyInventory(starterBrass = 40): InventoryState {
     districtStanding: {},
     softGoalFlags: {},
     neighborLife: emptyNeighborLife(),
+    plazaPlots: emptyPlazaPlots(districtsLite()),
   };
+}
+
+function districtsLite(): DistrictLite[] {
+  return CITY_DISTRICTS.map((d) => ({
+    id: d.id,
+    name: d.name,
+    x: d.x,
+    z: d.z,
+    size: d.size,
+    role: d.role,
+    stallCost: d.stallCost,
+  }));
+}
+
+export function ensureInvPlots(inv: InventoryState): PlazaPlotsState {
+  inv.plazaPlots = ensurePlazaPlots(inv.plazaPlots, districtsLite());
+  return inv.plazaPlots;
 }
 
 /** Normalize one storage track to a building list (migrates legacy single layout). */
@@ -2287,10 +2327,11 @@ export const SOFT_GOALS: SoftGoalDef[] = [
   },
   {
     id: 'own_plot',
-    title: 'Own a neighbor pad',
-    hint: 'Buy property on neighbor panel · virtual deed until plaza plots',
+    title: 'Own plaza land',
+    hint: 'Leasing office (Market / Residential) · or buy a neighbor’s home plot',
     empireOnly: true,
-    isDone: (inv) => !!inv.softGoalFlags?.ownedPlot,
+    isDone: (inv) =>
+      !!inv.softGoalFlags?.ownedPlot || playerOwnedPlotCount(inv) > 0,
   },
   {
     id: 'hire_neighbor',
@@ -2891,6 +2932,31 @@ export function buyNeighborProperty(
     applyStanding(inv, 1, { districtId: def.homeDistrictId, districtDelta: 2 });
   }
 
+  // Task 4: transfer linked plaza plot deed (no second charge)
+  ensureInvPlots(inv);
+  let plotBit = '';
+  const linked = inv.plazaPlots.plots.find(
+    (p) =>
+      p.districtId === def.homeDistrictId &&
+      (p.npcOwnerId === neighborId || p.tenantNeighborId === neighborId) &&
+      p.owner !== 'player',
+  );
+  if (linked) {
+    linked.owner = 'player';
+    linked.forSale = false;
+    linked.npcOwnerId = null;
+    if (keep && !n.vacated) {
+      linked.tenantNeighborId = neighborId;
+      linked.rentPolicy = policy;
+      linked.vacant = false;
+    } else {
+      linked.tenantNeighborId = null;
+      linked.rentPolicy = null;
+      linked.vacant = true;
+    }
+    plotBit = ` · grid plot (${linked.cellX},${linked.cellY}) deeded`;
+  }
+
   return {
     ok: true,
     msg:
@@ -2900,7 +2966,7 @@ export function buyNeighborProperty(
       (keep
         ? ` · tenant stays at ${policy} rent (${rentPerTick.toLocaleString()}b / upkeep tick)`
         : ' · empty pad') +
-      '. Full plot grid comes later — deed is virtual for now.',
+      plotBit,
   };
 }
 
@@ -6701,6 +6767,7 @@ export function invToSave(inv: InventoryState) {
     districtStanding: { ...(inv.districtStanding ?? {}) },
     softGoalFlags: { ...(inv.softGoalFlags ?? {}) },
     neighborLife: neighborLifeToSave(ensureNeighborLife(inv.neighborLife)),
+    plazaPlots: plazaPlotsToSave(ensurePlazaPlots(inv.plazaPlots, districtsLite())),
   };
 }
 
@@ -6951,5 +7018,185 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
     if (n.hiredAsWorkerId) inv.softGoalFlags.hiredNeighbor = true;
     if (n.homeOwner === 'player') inv.softGoalFlags.ownedPlot = true;
   }
+  inv.plazaPlots = plazaPlotsFromSave(o.plazaPlots, districtsLite());
+  if (playerOwnedPlotCount(inv) > 0) inv.softGoalFlags.ownedPlot = true;
   return inv;
+}
+
+export function playerOwnedPlotCount(inv: InventoryState): number {
+  ensureInvPlots(inv);
+  return inv.plazaPlots.plots.filter((p) => p.owner === 'player').length;
+}
+
+export type { PlotState, PlazaPlotsState, ZoningHint };
+export {
+  quotePlotBuyPrice,
+  getPlot,
+  plotId,
+  plotWorldCenter,
+  plotOwnerLabel,
+  plotMapColor,
+  plotsInDistrict,
+  playerOwnedPlots,
+  PLOT_GRID,
+};
+
+/**
+ * Buy a plaza plot (Task 4–5). Optional tenant stay for NPC home plots (Task 6).
+ */
+export function buyPlazaPlot(
+  inv: InventoryState,
+  plotKey: string,
+  opts?: { keepTenant?: boolean; rentPolicy?: RentPolicy },
+): { ok: boolean; msg: string; plot?: PlotState } {
+  ensureInvPlots(inv);
+  ensureStandingState(inv);
+  const plot = getPlot(inv.plazaPlots, plotKey);
+  if (!plot) return { ok: false, msg: 'Unknown plot.' };
+  if (plot.owner === 'player') return { ok: false, msg: 'You already own this plot.' };
+  if (!plot.forSale && plot.owner !== 'npc') {
+    return { ok: false, msg: 'This plot is not for sale.' };
+  }
+
+  let affinity = 0;
+  let clearedDebt = false;
+  if (plot.npcOwnerId) {
+    const n = getInvNeighbor(inv, plot.npcOwnerId);
+    if (n) {
+      affinity = n.affinity;
+      clearedDebt = !n.debt && n.debtPaidToward > 0;
+    }
+  }
+  const price = quotePlotBuyPrice(plot, {
+    affinity,
+    clearedDebtWithOwner: clearedDebt,
+  });
+  if (inv.brass < price) {
+    return {
+      ok: false,
+      msg: `Need ${price.toLocaleString()} brass for this plot (you have ${inv.brass.toLocaleString()}).`,
+    };
+  }
+  inv.brass -= price;
+  const prevOwner = plot.owner;
+  const prevNpc = plot.npcOwnerId;
+  plot.owner = 'player';
+  plot.forSale = false;
+  plot.npcOwnerId = null;
+  inv.softGoalFlags.ownedPlot = true;
+
+  const keep = opts?.keepTenant !== false;
+  const policy: RentPolicy = opts?.rentPolicy ?? 'fair';
+  const hadTenant =
+    !!plot.tenantNeighborId ||
+    (prevOwner === 'npc' && !!prevNpc);
+
+  if (keep && hadTenant && !plot.vacant) {
+    const tid = plot.tenantNeighborId ?? prevNpc;
+    plot.tenantNeighborId = tid;
+    plot.rentPolicy = policy;
+    plot.vacant = false;
+    // Sync neighbor life if homeowner
+    if (tid) {
+      const n = getInvNeighbor(inv, tid);
+      if (n) {
+        n.homeOwner = 'player';
+        n.isPlayerTenant = true;
+        n.rentPolicy = policy;
+        n.landlordId = null;
+        if (n.drama === 'behind_on_rent') n.drama = 'none';
+        if (n.debt) {
+          n.debtPaidToward += n.debt.amount;
+          n.debt = null;
+          inv.softGoalFlags.clearedNeighborDebt = true;
+        }
+      }
+    }
+    if (policy === 'cheap') {
+      applyStanding(inv, 3, { districtId: plot.districtId, districtDelta: 5 });
+    } else if (policy === 'fair') {
+      applyStanding(inv, 2, { districtId: plot.districtId, districtDelta: 3 });
+    } else {
+      applyStanding(inv, -2, { districtId: plot.districtId, districtDelta: -3 });
+    }
+  } else {
+    plot.tenantNeighborId = null;
+    plot.rentPolicy = null;
+    plot.vacant = true;
+    applyStanding(inv, 1, { districtId: plot.districtId, districtDelta: 2 });
+  }
+
+  const rentBit =
+    plot.rentPolicy && plot.tenantNeighborId
+      ? ` · tenant @ ${plot.rentPolicy} (${rentIncomeForPad(plot.listPrice, plot.rentPolicy).toLocaleString()}b/tick)`
+      : ' · vacant lot';
+  const dist = districtById(plot.districtId);
+  return {
+    ok: true,
+    plot,
+    msg:
+      `Deed · ${dist?.name ?? plot.districtId} plot (${plot.cellX},${plot.cellY}) ` +
+      `−${price.toLocaleString()}b · ${plot.zoningHint}${rentBit}`,
+  };
+}
+
+export function setPlotRentPolicy(
+  inv: InventoryState,
+  plotKey: string,
+  policy: RentPolicy,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  const plot = getPlot(inv.plazaPlots, plotKey);
+  if (!plot || plot.owner !== 'player') {
+    return { ok: false, msg: 'You don’t own that plot.' };
+  }
+  if (!plot.tenantNeighborId || plot.vacant) {
+    return { ok: false, msg: 'No tenant on this plot.' };
+  }
+  plot.rentPolicy = policy;
+  const n = getInvNeighbor(inv, plot.tenantNeighborId);
+  if (n) n.rentPolicy = policy;
+  const rent = rentIncomeForPad(plot.listPrice, policy);
+  if (policy === 'cheap') applyStanding(inv, 2, { districtId: plot.districtId, districtDelta: 3 });
+  if (policy === 'predatory') applyStanding(inv, -2, { districtId: plot.districtId, districtDelta: -3 });
+  return {
+    ok: true,
+    msg: `Plot rent → ${policy} (${rent.toLocaleString()}b/tick).`,
+  };
+}
+
+/** Combined neighbor-pad + plaza-plot rent tick */
+export function tickAllLandlordRents(inv: InventoryState): {
+  collected: number;
+  msgs: string[];
+  left: string[];
+} {
+  const nb = tickNeighborRents(inv);
+  ensureInvPlots(inv);
+  const pr = collectPlotRents(
+    inv.plazaPlots,
+    (n) => {
+      inv.brass += n;
+      notePeakBrass(inv);
+    },
+    (empire, districtId, districtDelta) => {
+      applyStanding(inv, empire, { districtId, districtDelta });
+    },
+  );
+  // Sync vacated plot tenants to neighbor state
+  for (const L of pr.left) {
+    const n = getInvNeighbor(inv, L.tenantId);
+    if (n) {
+      n.vacated = true;
+      n.isPlayerTenant = false;
+      n.rentPolicy = null;
+    }
+  }
+  const collected = nb.collected + pr.collected;
+  const msgs = [...nb.msgs, ...pr.msgs];
+  const left = [
+    ...nb.left.map((x) => x.name),
+    ...pr.left.map((x) => x.tenantId),
+  ];
+  return { collected, msgs, left };
 }

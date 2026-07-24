@@ -744,6 +744,31 @@ export function buildLiveMarkers(
     });
   }
 
+  // Player-owned plaza plots (Tasks 4–6)
+  if (inv.plazaPlots?.plots?.length) {
+    for (const p of inv.plazaPlots.plots) {
+      if (p.owner !== 'player') continue;
+      const dist = districtById(p.districtId);
+      if (!dist) continue;
+      const cell = dist.size * 0.26;
+      const ox = dist.x - cell + p.cellX * cell;
+      const oz = dist.z - cell + p.cellY * cell;
+      out.push({
+        id: p.id,
+        kind: 'attention',
+        label: `Plot (${p.cellX},${p.cellY})`,
+        x: ox,
+        z: oz,
+        detail: p.tenantNeighborId
+          ? `Yours · ${p.rentPolicy ?? 'no rent'} tenant`
+          : p.vacant
+            ? 'Yours · vacant'
+            : 'Yours',
+        attention: p.vacant,
+      });
+    }
+  }
+
   // Attention: open empty stalls, haggles, unleased workshop
   for (const [did, stall] of Object.entries(inv.cityStalls ?? {})) {
     if (!stall.owned) continue;

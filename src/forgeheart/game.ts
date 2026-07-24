@@ -212,7 +212,6 @@ import {
   hireNeighbor,
   buyNeighborProperty,
   setNeighborRentPolicy,
-  tickNeighborRents,
   listHeldNeighborGifts,
   getInvNeighbor,
   neighborDef,
@@ -221,6 +220,13 @@ import {
   quoteNeighborPadPrice,
   rentIncomeForPad,
   type RentPolicy,
+  buyPlazaPlot,
+  setPlotRentPolicy,
+  tickAllLandlordRents,
+  ensureInvPlots,
+  quotePlotBuyPrice,
+  plotsInDistrict,
+  playerOwnedPlotCount,
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
@@ -872,6 +878,10 @@ export class ForgeHeartGame {
       }
       if (this.bayOpen && e.code === 'Escape') {
         this.closeBay();
+        return;
+      }
+      if (this.leaseOfficeOpen && e.code === 'Escape') {
+        this.closeLeaseOffice();
         return;
       }
       if (this.neighborPanelId && e.code === 'Escape') {
@@ -2719,6 +2729,7 @@ export class ForgeHeartGame {
     this.romanceView = 'menu';
     this.neighborPanelId = null;
     this.neighborView = 'menu';
+    this.leaseOfficeOpen = false;
     this.cityMapSelectedId = null;
     this.cityMapCam = null;
     this.cityMapDrag = null;
@@ -2741,6 +2752,7 @@ export class ForgeHeartGame {
       'city-map-panel',
       'romance-panel',
       'neighbor-panel',
+      'lease-office-panel',
       'pause-menu',
     ];
     for (const id of ids) {
@@ -4498,7 +4510,8 @@ export class ForgeHeartGame {
       this.cityMapOpen ||
       this.activeVendor ||
       this.romanceNpcId ||
-      this.neighborPanelId
+      this.neighborPanelId ||
+      this.leaseOfficeOpen
     ) {
       return true;
     }
@@ -4585,12 +4598,13 @@ export class ForgeHeartGame {
       this.upkeepAcc = 0;
       const r = tickBayUpkeep(this.inv);
       this.handleUpkeepResult(r);
-      const rent = tickNeighborRents(this.inv);
+      const rent = tickAllLandlordRents(this.inv);
       if (rent.collected > 0 || rent.left.length) {
         for (const m of rent.msgs) this.toast(m, rent.left.length ? 5 : 2.5);
         if (rent.left.length) {
           this.objective = this.megaCityObjective();
         }
+        this.syncPlotOwnershipVisuals();
       }
       this.brass = this.inv.brass;
       this.syncEconomyHud();
@@ -4721,6 +4735,10 @@ export class ForgeHeartGame {
     const it = this.cityInteractPrompt;
     if (it.kind === 'neighbor' && it.id) {
       this.openNeighborPanel(it.id);
+      return true;
+    }
+    if (it.kind === 'lease_office') {
+      this.openLeaseOffice();
       return true;
     }
     if (it.kind === 'vendor' && it.vendor) {
@@ -6335,6 +6353,8 @@ export class ForgeHeartGame {
   private romanceView: 'menu' | 'gift' | 'story' = 'menu';
   private neighborPanelId: string | null = null;
   private neighborView: 'menu' | 'gift' | 'buy' = 'menu';
+  private leaseOfficeOpen = false;
+  private leaseDistrictFilter: string | null = null;
   /** Site builder: which existing factory building to replace (null = append new). */
   private siteReplaceIndex: number | null = null;
 
@@ -6854,6 +6874,211 @@ export class ForgeHeartGame {
       addBtn('Rent → predatory', () => setPol('predatory'), { danger: true });
     }
     addBtn('Leave', () => this.closeNeighborPanel());
+  }
+
+  // ——— Lease office (Tasks 4–5) ———
+
+  private syncPlotOwnershipVisuals() {
+    if (!this.skyCity) return;
+    ensureInvPlots(this.inv);
+    this.skyCity.syncPlotOwnership(
+      this.inv.plazaPlots.plots.map((p) => ({
+        id: p.id,
+        owner: p.owner,
+        forSale: p.forSale,
+      })),
+    );
+  }
+
+  private ensureLeaseOfficePanel(): HTMLElement {
+    let el = document.getElementById('lease-office-panel');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'lease-office-panel';
+    el.className = 'market-panel romance-panel lease-office-panel hidden';
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = `
+      <div class="market-card romance-card" style="max-width:min(520px,96vw);max-height:85vh;overflow:auto">
+        <header class="market-head">
+          <div>
+            <h3 id="lease-title">City Leasing Office</h3>
+            <p class="market-sub" id="lease-sub">3×3 plaza plots · buy land across the empire</p>
+          </div>
+          <button type="button" id="lease-close" class="maker-close" title="Close">×</button>
+        </header>
+        <p class="romance-status" id="lease-status"></p>
+        <p class="romance-log" id="lease-log"></p>
+        <div id="lease-districts" class="romance-actions" style="margin-bottom:0.5rem"></div>
+        <div id="lease-plots" class="romance-actions"></div>
+      </div>`;
+    document.getElementById('app')?.appendChild(el);
+    el.querySelector('#lease-close')?.addEventListener('click', () => this.closeLeaseOffice());
+    return el;
+  }
+
+  private openLeaseOffice() {
+    this.leaseOfficeOpen = true;
+    ensureInvPlots(this.inv);
+    if (!this.leaseDistrictFilter) this.leaseDistrictFilter = 'residential';
+    const el = this.ensureLeaseOfficePanel();
+    el.classList.remove('hidden');
+    el.setAttribute('aria-hidden', 'false');
+    this.fillLeaseOffice();
+    this.syncMobileGameplay();
+    try {
+      this.controls.unlock();
+    } catch {
+      /* ignore */
+    }
+    this.audio.playPickup();
+    this.toast('Leasing office · pick a plaza, then a plot. Gold pads are yours.', 4);
+  }
+
+  private closeLeaseOffice() {
+    this.leaseOfficeOpen = false;
+    const el = document.getElementById('lease-office-panel');
+    el?.classList.add('hidden');
+    el?.setAttribute('aria-hidden', 'true');
+    this.syncMobileGameplay();
+    if (!this.paused && !this.disposed) this.controls.lock();
+  }
+
+  private fillLeaseOffice() {
+    ensureInvPlots(this.inv);
+    const status = document.getElementById('lease-status');
+    const log = document.getElementById('lease-log');
+    const distEl = document.getElementById('lease-districts');
+    const plotsEl = document.getElementById('lease-plots');
+    if (!distEl || !plotsEl) return;
+    const owned = playerOwnedPlotCount(this.inv);
+    if (status) {
+      status.textContent = `You own ${owned} plot(s) · Brass ${this.inv.brass.toLocaleString()} · ${formatEmpireStandingLine(this.inv)}`;
+    }
+
+    distEl.innerHTML = '';
+    for (const d of CITY_DISTRICTS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className =
+        'romance-btn' + (this.leaseDistrictFilter === d.id ? ' active' : '');
+      const nOwned = plotsInDistrict(this.inv.plazaPlots, d.id).filter(
+        (p) => p.owner === 'player',
+      ).length;
+      b.textContent = `${d.name}${nOwned ? ` · ${nOwned} owned` : ''}`;
+      b.addEventListener('click', () => {
+        this.leaseDistrictFilter = d.id;
+        this.fillLeaseOffice();
+      });
+      distEl.appendChild(b);
+    }
+
+    plotsEl.innerHTML = '';
+    const did = this.leaseDistrictFilter ?? 'residential';
+    const dist = districtById(did);
+    const list = plotsInDistrict(this.inv.plazaPlots, did).slice().sort((a, b) => {
+      if (a.cellY !== b.cellY) return a.cellY - b.cellY;
+      return a.cellX - b.cellX;
+    });
+
+    const head = document.createElement('p');
+    head.className = 'craft-hint';
+    head.textContent = `${dist?.name ?? did} · 3×3 grid · zone preference: ${list[0]?.zoningHint ?? 'mixed'} (light zoning)`;
+    plotsEl.appendChild(head);
+
+    for (const p of list) {
+      const row = document.createElement('div');
+      row.style.cssText =
+        'display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center;margin:0.35rem 0;padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.08)';
+      const aff = p.npcOwnerId
+        ? getInvNeighbor(this.inv, p.npcOwnerId)?.affinity ?? 0
+        : 0;
+      const price = quotePlotBuyPrice(p, { affinity: aff });
+      const ownerBit =
+        p.owner === 'player'
+          ? 'YOURS'
+          : p.owner === 'city'
+            ? 'City'
+            : `NPC${p.tenantNeighborId ? ' · tenant' : ''}`;
+      const label = document.createElement('span');
+      label.style.cssText = 'flex:1;min-width:10rem;font-size:0.78rem';
+      label.textContent = `(${p.cellX},${p.cellY}) ${ownerBit} · ${p.listPrice.toLocaleString()}b list · ${p.zoningHint}${p.vacant ? ' · vacant' : ''}`;
+      row.appendChild(label);
+
+      if (p.owner === 'player') {
+        if (p.tenantNeighborId && !p.vacant) {
+          for (const pol of ['cheap', 'fair', 'predatory'] as const) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'romance-btn' + (pol === 'predatory' ? ' danger' : '');
+            btn.textContent = pol;
+            btn.addEventListener('click', () => {
+              const r = setPlotRentPolicy(this.inv, p.id, pol);
+              if (log) log.textContent = r.msg;
+              this.toast(r.msg, 3);
+              this.brass = this.inv.brass;
+              writeSlot(this.activeSlot, this.buildSaveData());
+              this.fillLeaseOffice();
+              this.syncEconomyHud();
+            });
+            row.appendChild(btn);
+          }
+        } else {
+          const tag = document.createElement('span');
+          tag.className = 'craft-hint';
+          tag.textContent = 'Owned · no tenant';
+          row.appendChild(tag);
+        }
+      } else if (p.forSale) {
+        const buyFair = document.createElement('button');
+        buyFair.type = 'button';
+        buyFair.className = 'romance-btn';
+        buyFair.textContent = `Buy ${price.toLocaleString()}b${p.tenantNeighborId ? ' +tenant' : ''}`;
+        buyFair.addEventListener('click', () => {
+          const r = buyPlazaPlot(this.inv, p.id, {
+            keepTenant: !!p.tenantNeighborId,
+            rentPolicy: 'fair',
+          });
+          if (log) log.textContent = r.msg;
+          this.toast(r.msg, 5);
+          if (r.ok) {
+            this.audio.playPickup();
+            this.brass = this.inv.brass;
+            this.objective = this.megaCityObjective();
+            this.syncPlotOwnershipVisuals();
+            writeSlot(this.activeSlot, this.buildSaveData());
+            this.syncEconomyHud();
+          }
+          this.fillLeaseOffice();
+        });
+        row.appendChild(buyFair);
+        if (p.tenantNeighborId) {
+          const buyEmpty = document.createElement('button');
+          buyEmpty.type = 'button';
+          buyEmpty.className = 'romance-btn danger';
+          buyEmpty.textContent = 'Buy vacant';
+          buyEmpty.addEventListener('click', () => {
+            const r = buyPlazaPlot(this.inv, p.id, { keepTenant: false });
+            if (log) log.textContent = r.msg;
+            this.toast(r.msg, 5);
+            if (r.ok) {
+              this.audio.playPickup();
+              this.brass = this.inv.brass;
+              this.syncPlotOwnershipVisuals();
+              writeSlot(this.activeSlot, this.buildSaveData());
+              this.syncEconomyHud();
+            }
+            this.fillLeaseOffice();
+          });
+          row.appendChild(buyEmpty);
+        }
+      } else {
+        const tag = document.createElement('span');
+        tag.className = 'craft-hint';
+        tag.textContent = 'Not listed';
+        row.appendChild(tag);
+      }
+      plotsEl.appendChild(row);
+    }
   }
 
   private openMedallionAssign() {
@@ -10047,11 +10272,13 @@ export class ForgeHeartGame {
 
     ensureStandingState(this.inv);
     bootstrapStandingFromProgress(this.inv);
+    ensureInvPlots(this.inv);
+    this.syncPlotOwnershipVisuals();
     this.objective = this.megaCityObjective();
     this.setHelp(
       this.boardOwned || this.inv.playerBoard.owned
-        ? 'Home · E · Q board · M map · wind skyways · I · Esc'
-        : 'Home · E neighbor · M map · board shop · wind skyways only',
+        ? 'Home · E · Q board · M map · lease office · wind skyways · I · Esc'
+        : 'Home · E neighbor · M map · lease office · board shop',
     );
     this.flash(fromSave ? 'HOME — EMPIRE SKY CITY' : 'YOUR SKY APARTMENT');
     this.toast(
