@@ -231,9 +231,19 @@ export interface SkyCityBuilt {
   circuits: PlazaCircuit[];
   /** Broker frame display groups by district */
   brokerDisplays: Record<string, THREE.Group>;
-  /** Recolor 3×3 plot pads from ownership state */
+  /** Recolor plot pads + rebuild simple structure meshes from ownership/builds */
   syncPlotOwnership: (
-    plots: { id: string; owner: string; forSale: boolean }[],
+    plots: {
+      id: string;
+      owner: string;
+      forSale: boolean;
+      districtId?: string;
+      cellX?: number;
+      cellY?: number;
+      rotation?: number;
+      buildings?: { kind: string }[];
+      isEdge?: boolean;
+    }[],
   ) => void;
 }
 
@@ -2395,13 +2405,71 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     }
   };
 
+  const plotStructRoot = new THREE.Group();
+  plotStructRoot.name = 'PlotStructures';
+  group.add(plotStructRoot);
+
+  const ensurePlotPadMesh = (
+    districtId: string,
+    cellX: number,
+    cellY: number,
+    plotKey: string,
+  ) => {
+    let found: THREE.Mesh | null = null;
+    group.traverse((obj) => {
+      if (found) return;
+      if ((obj as THREE.Object3D).userData?.plotId === plotKey && obj instanceof THREE.Mesh) {
+        found = obj;
+      }
+    });
+    if (found) return found;
+    const d = CITY_DISTRICTS.find((x) => x.id === districtId);
+    if (!d) return null;
+    const { x: px, z: pz, cellSize } = plotWorldCenter(d, cellX, cellY);
+    const half = cellSize * 0.46;
+    const pad = new THREE.Mesh(
+      new THREE.PlaneGeometry(half * 2, half * 2),
+      new THREE.MeshStandardMaterial({
+        color: 0x556677,
+        transparent: true,
+        opacity: 0.22,
+        roughness: 0.9,
+        metalness: 0.05,
+        depthWrite: false,
+      }),
+    );
+    pad.rotation.x = -Math.PI / 2;
+    pad.position.set(px, DECK_Y + 0.04, pz);
+    pad.name = plotKey;
+    pad.userData.plotId = plotKey;
+    group.add(pad);
+    return pad;
+  };
+
   const syncPlotOwnership = (
-    plots: { id: string; owner: string; forSale: boolean }[],
+    plots: {
+      id: string;
+      owner: string;
+      forSale: boolean;
+      districtId?: string;
+      cellX?: number;
+      cellY?: number;
+      rotation?: number;
+      buildings?: { kind: string }[];
+      isEdge?: boolean;
+    }[],
   ) => {
     const byId = new Map(plots.map((p) => [p.id, p]));
+    // Ensure pads for edge plots
+    for (const p of plots) {
+      if (p.districtId != null && p.cellX != null && p.cellY != null) {
+        ensurePlotPadMesh(p.districtId, p.cellX, p.cellY, p.id);
+      }
+    }
     group.traverse((obj) => {
       const pid = (obj as THREE.Object3D).userData?.plotId as string | undefined;
       if (!pid || !(obj instanceof THREE.Mesh)) return;
+      if (obj.parent === plotStructRoot) return;
       const p = byId.get(pid);
       if (!p) return;
       const mat = obj.material as THREE.MeshStandardMaterial;
@@ -2422,7 +2490,86 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         mat.emissive?.setHex(0x000000);
         if (mat.emissiveIntensity != null) mat.emissiveIntensity = 0.05;
       }
+      // Rotate square pad visual (Task 8)
+      if (typeof p.rotation === 'number') {
+        obj.rotation.z = (-p.rotation * Math.PI) / 180;
+      }
     });
+
+    // Rebuild simple structure meshes for player plots
+    while (plotStructRoot.children.length) {
+      const c = plotStructRoot.children[0]!;
+      plotStructRoot.remove(c);
+      if (c instanceof THREE.Mesh) {
+        c.geometry?.dispose?.();
+      }
+    }
+    for (const p of plots) {
+      if (p.owner !== 'player' || !p.districtId || p.cellX == null || p.cellY == null) {
+        continue;
+      }
+      const d = CITY_DISTRICTS.find((x) => x.id === p.districtId);
+      if (!d) continue;
+      const { x: px, z: pz, cellSize } = plotWorldCenter(d, p.cellX, p.cellY);
+      const yaw = ((p.rotation ?? 0) * Math.PI) / 180;
+      const kinds = p.buildings?.map((b) => b.kind) ?? [];
+      const g = new THREE.Group();
+      g.position.set(px, DECK_Y, pz);
+      g.rotation.y = yaw;
+      const addBox = (w: number, h: number, dpth: number, y: number, color: number) => {
+        const m = new THREE.Mesh(
+          new THREE.BoxGeometry(w, h, dpth),
+          new THREE.MeshStandardMaterial({
+            color,
+            roughness: 0.75,
+            metalness: 0.15,
+          }),
+        );
+        m.position.y = y;
+        g.add(m);
+      };
+      if (kinds.includes('apartment') || kinds.includes('home')) {
+        addBox(cellSize * 0.55, 2.4, cellSize * 0.4, 1.2, 0x8a7060);
+      }
+      if (kinds.includes('factory')) {
+        addBox(cellSize * 0.5, 1.8, cellSize * 0.45, 0.9, 0x5a5850);
+        addBox(0.35, 2.2, 0.35, 2.2, 0x444440);
+      }
+      if (kinds.includes('retail')) {
+        addBox(cellSize * 0.5, 1.6, cellSize * 0.35, 0.8, 0x6a7a88);
+      }
+      if (kinds.includes('garden')) {
+        const soil = new THREE.Mesh(
+          new THREE.CylinderGeometry(cellSize * 0.28, cellSize * 0.3, 0.25, 8),
+          new THREE.MeshStandardMaterial({ color: 0x3a4830 }),
+        );
+        soil.position.y = 0.15;
+        g.add(soil);
+        for (let i = 0; i < 5; i++) {
+          const fl = new THREE.Mesh(
+            new THREE.SphereGeometry(0.12, 6, 6),
+            new THREE.MeshStandardMaterial({
+              color: 0xd4a84a,
+              emissive: 0x664400,
+              emissiveIntensity: 0.4,
+            }),
+          );
+          fl.position.set(
+            Math.cos(i * 1.4) * cellSize * 0.15,
+            0.55,
+            Math.sin(i * 1.4) * cellSize * 0.15,
+          );
+          g.add(fl);
+        }
+      }
+      if (kinds.includes('decor')) {
+        addBox(0.25, 1.4, 0.25, 0.7, 0xc4a35a);
+      }
+      if (kinds.includes('bridge')) {
+        addBox(cellSize * 0.85, 0.18, cellSize * 0.28, 0.25, 0x6a6558);
+      }
+      if (g.children.length) plotStructRoot.add(g);
+    }
   };
 
   const animate = (cityTime: number, dt: number) => {

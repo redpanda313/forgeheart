@@ -54,10 +54,22 @@ import {
   playerOwnedPlots,
   PLOT_GRID,
   plotId,
+  PLOT_BUILD_CATALOG,
+  quotePlotBuild,
+  applyPlotBuild,
+  hasAdjacentOwned,
+  rotatePlayerPlot,
+  swapPlotWithAdjacent,
+  listEdgeCandidates,
+  createEdgePlot,
+  plotPrimaryBuilding,
+  plotHasBuild,
+  plotRentIncome,
   type PlazaPlotsState,
   type PlotState,
   type DistrictLite,
   type ZoningHint,
+  type PlotBuildKind,
 } from './plazaPlots';
 
 export type {
@@ -7028,7 +7040,7 @@ export function playerOwnedPlotCount(inv: InventoryState): number {
   return inv.plazaPlots.plots.filter((p) => p.owner === 'player').length;
 }
 
-export type { PlotState, PlazaPlotsState, ZoningHint };
+export type { PlotState, PlazaPlotsState, ZoningHint, PlotBuildKind };
 export {
   quotePlotBuyPrice,
   getPlot,
@@ -7039,6 +7051,13 @@ export {
   plotsInDistrict,
   playerOwnedPlots,
   PLOT_GRID,
+  PLOT_BUILD_CATALOG,
+  quotePlotBuild,
+  hasAdjacentOwned,
+  listEdgeCandidates,
+  plotPrimaryBuilding,
+  plotHasBuild,
+  plotRentIncome,
 };
 
 /**
@@ -7156,12 +7175,110 @@ export function setPlotRentPolicy(
   plot.rentPolicy = policy;
   const n = getInvNeighbor(inv, plot.tenantNeighborId);
   if (n) n.rentPolicy = policy;
-  const rent = rentIncomeForPad(plot.listPrice, policy);
+  const rent = plotRentIncome(plot);
   if (policy === 'cheap') applyStanding(inv, 2, { districtId: plot.districtId, districtDelta: 3 });
   if (policy === 'predatory') applyStanding(inv, -2, { districtId: plot.districtId, districtDelta: -3 });
   return {
     ok: true,
     msg: `Plot rent → ${policy} (${rent.toLocaleString()}b/tick).`,
+  };
+}
+
+/** Task 7: develop an owned plot */
+export function developPlot(
+  inv: InventoryState,
+  plotKey: string,
+  kind: PlotBuildKind,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  ensureStandingState(inv);
+  const plot = getPlot(inv.plazaPlots, plotKey);
+  if (!plot) return { ok: false, msg: 'Unknown plot.' };
+  const adj = hasAdjacentOwned(inv.plazaPlots, plot);
+  const q = quotePlotBuild(plot, kind);
+  if (!q.ok) return { ok: false, msg: q.msg ?? 'Cannot build.' };
+  if (inv.brass < q.cost) {
+    return {
+      ok: false,
+      msg: `Need ${q.cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
+    };
+  }
+  const r = applyPlotBuild(plot, kind, { adjacentOwned: adj });
+  if (!r.ok) return { ok: false, msg: r.msg };
+  inv.brass -= r.cost;
+  if (r.offZone) {
+    applyStanding(inv, -1, { districtId: plot.districtId, districtDelta: -2 });
+  } else if (kind === 'decor') {
+    applyStanding(inv, 1, { districtId: plot.districtId, districtDelta: 2 });
+  } else {
+    applyStanding(inv, 1, { districtId: plot.districtId, districtDelta: 1 });
+  }
+  // Retail front: ensure district stall owned/open
+  if (kind === 'retail') {
+    const stall = ensureCityStall(inv, plot.districtId);
+    if (!stall.owned) {
+      // Bind without full stallCost if already paid retail build — soft grant
+      stall.owned = true;
+      stall.open = true;
+    }
+    plot.retailBound = true;
+  }
+  return { ok: true, msg: r.msg };
+}
+
+/** Task 8 */
+export function rotatePlot(
+  inv: InventoryState,
+  plotKey: string,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  return rotatePlayerPlot(inv.plazaPlots, plotKey);
+}
+
+export function movePlot(
+  inv: InventoryState,
+  plotKey: string,
+  dir: 0 | 1 | 2 | 3,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  return swapPlotWithAdjacent(inv.plazaPlots, plotKey, dir);
+}
+
+/** Task 9: buy edge attachment cell then optionally take ownership immediately */
+export function buyEdgePlot(
+  inv: InventoryState,
+  districtId: string,
+  cellX: number,
+  cellY: number,
+): { ok: boolean; msg: string; plot?: PlotState } {
+  ensureInvPlots(inv);
+  ensureStandingState(inv);
+  const d = districtById(districtId);
+  if (!d) return { ok: false, msg: 'Unknown district.' };
+  const lite = districtsLite().find((x) => x.id === districtId)!;
+  const cands = listEdgeCandidates(inv.plazaPlots, districtId, lite);
+  const cand = cands.find((c) => c.cellX === cellX && c.cellY === cellY);
+  if (!cand) {
+    return { ok: false, msg: 'That edge cell is not available (must attach to existing plots).' };
+  }
+  if (inv.brass < cand.price) {
+    return {
+      ok: false,
+      msg: `Need ${cand.price.toLocaleString()} brass for edge growth (you have ${inv.brass.toLocaleString()}).`,
+    };
+  }
+  inv.brass -= cand.price;
+  const plot = createEdgePlot(inv.plazaPlots, lite, cellX, cellY);
+  plot.owner = 'player';
+  plot.forSale = false;
+  plot.vacant = true;
+  plot.isEdge = true;
+  inv.softGoalFlags.ownedPlot = true;
+  applyStanding(inv, 2, { districtId, districtDelta: 3 });
+  return {
+    ok: true,
+    plot,
+    msg: `Edge plot (${cellX},${cellY}) on ${d.name} (−${cand.price.toLocaleString()}b). Soft-infinite land.`,
   };
 }
 

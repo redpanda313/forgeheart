@@ -227,6 +227,15 @@ import {
   quotePlotBuyPrice,
   plotsInDistrict,
   playerOwnedPlotCount,
+  developPlot,
+  rotatePlot,
+  movePlot,
+  buyEdgePlot,
+  PLOT_BUILD_CATALOG,
+  quotePlotBuild,
+  listEdgeCandidates,
+  plotPrimaryBuilding,
+  plotRentIncome,
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
@@ -6886,6 +6895,12 @@ export class ForgeHeartGame {
         id: p.id,
         owner: p.owner,
         forSale: p.forSale,
+        districtId: p.districtId,
+        cellX: p.cellX,
+        cellY: p.cellY,
+        rotation: p.rotation,
+        buildings: p.buildings.map((b) => ({ kind: b.kind })),
+        isEdge: p.isEdge,
       })),
     );
   }
@@ -6902,7 +6917,7 @@ export class ForgeHeartGame {
         <header class="market-head">
           <div>
             <h3 id="lease-title">City Leasing Office</h3>
-            <p class="market-sub" id="lease-sub">3×3 plaza plots · buy land across the empire</p>
+            <p class="market-sub" id="lease-sub">Plots · build · rotate/move · edge growth</p>
           </div>
           <button type="button" id="lease-close" class="maker-close" title="Close">×</button>
         </header>
@@ -7005,7 +7020,86 @@ export class ForgeHeartGame {
       row.appendChild(label);
 
       if (p.owner === 'player') {
+        const prim = plotPrimaryBuilding(p);
+        const buildHint = document.createElement('span');
+        buildHint.className = 'craft-hint';
+        buildHint.style.flexBasis = '100%';
+        buildHint.textContent = prim
+          ? `Built: ${prim.kind} · rot ${p.rotation}°${p.isEdge ? ' · edge' : ''}`
+          : `Empty lot · rot ${p.rotation}°${p.isEdge ? ' · edge' : ''}`;
+        row.appendChild(buildHint);
+
+        // Develop catalog
+        for (const def of PLOT_BUILD_CATALOG) {
+          const q = quotePlotBuild(p, def.kind);
+          if (!q.ok) continue;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'romance-btn';
+          btn.textContent = `${def.name} ${q.cost.toLocaleString()}b${q.offZone ? ' ★' : ''}`;
+          btn.title = def.blurb + (q.offZone ? ' (off-zone surcharge)' : '');
+          btn.addEventListener('click', () => {
+            const r = developPlot(this.inv, p.id, def.kind);
+            if (log) log.textContent = r.msg;
+            this.toast(r.msg, 4);
+            if (r.ok) {
+              this.audio.playPickup();
+              this.brass = this.inv.brass;
+              this.syncPlotOwnershipVisuals();
+              writeSlot(this.activeSlot, this.buildSaveData());
+              this.syncEconomyHud();
+              this.syncCityStallVisuals();
+            }
+            this.fillLeaseOffice();
+          });
+          row.appendChild(btn);
+        }
+
+        // Rotate / move
+        const rot = document.createElement('button');
+        rot.type = 'button';
+        rot.className = 'romance-btn';
+        rot.textContent = 'Rotate 90°';
+        rot.addEventListener('click', () => {
+          const r = rotatePlot(this.inv, p.id);
+          if (log) log.textContent = r.msg;
+          this.toast(r.msg, 2);
+          if (r.ok) {
+            this.syncPlotOwnershipVisuals();
+            writeSlot(this.activeSlot, this.buildSaveData());
+          }
+          this.fillLeaseOffice();
+        });
+        row.appendChild(rot);
+        for (const [dir, label] of [
+          [0, '→'],
+          [1, '↓'],
+          [2, '←'],
+          [3, '↑'],
+        ] as const) {
+          const mv = document.createElement('button');
+          mv.type = 'button';
+          mv.className = 'romance-btn';
+          mv.textContent = `Move ${label}`;
+          mv.addEventListener('click', () => {
+            const r = movePlot(this.inv, p.id, dir);
+            if (log) log.textContent = r.msg;
+            this.toast(r.msg, 3);
+            if (r.ok) {
+              this.syncPlotOwnershipVisuals();
+              writeSlot(this.activeSlot, this.buildSaveData());
+            }
+            this.fillLeaseOffice();
+          });
+          row.appendChild(mv);
+        }
+
         if (p.tenantNeighborId && !p.vacant) {
+          const rentTag = document.createElement('span');
+          rentTag.className = 'craft-hint';
+          rentTag.style.flexBasis = '100%';
+          rentTag.textContent = `Rent ~${plotRentIncome(p).toLocaleString()}b/tick · policy:`;
+          row.appendChild(rentTag);
           for (const pol of ['cheap', 'fair', 'predatory'] as const) {
             const btn = document.createElement('button');
             btn.type = 'button';
@@ -7078,6 +7172,48 @@ export class ForgeHeartGame {
         row.appendChild(tag);
       }
       plotsEl.appendChild(row);
+    }
+
+    // Task 9: edge growth
+    if (dist) {
+      const lite = {
+        id: dist.id,
+        name: dist.name,
+        x: dist.x,
+        z: dist.z,
+        size: dist.size,
+        role: dist.role,
+        stallCost: dist.stallCost,
+      };
+      const edges = listEdgeCandidates(this.inv.plazaPlots, did, lite).slice(0, 8);
+      if (edges.length) {
+        const eh = document.createElement('p');
+        eh.className = 'craft-hint';
+        eh.style.marginTop = '0.75rem';
+        eh.textContent =
+          'Edge growth (soft-infinite) — attach cells to this plaza:';
+        plotsEl.appendChild(eh);
+        for (const e of edges) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'romance-btn';
+          btn.textContent = `Buy edge (${e.cellX},${e.cellY}) · ${e.price.toLocaleString()}b`;
+          btn.addEventListener('click', () => {
+            const r = buyEdgePlot(this.inv, e.districtId, e.cellX, e.cellY);
+            if (log) log.textContent = r.msg;
+            this.toast(r.msg, 4);
+            if (r.ok) {
+              this.audio.playPickup();
+              this.brass = this.inv.brass;
+              this.syncPlotOwnershipVisuals();
+              writeSlot(this.activeSlot, this.buildSaveData());
+              this.syncEconomyHud();
+            }
+            this.fillLeaseOffice();
+          });
+          plotsEl.appendChild(btn);
+        }
+      }
     }
   }
 
