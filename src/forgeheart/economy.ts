@@ -1703,6 +1703,15 @@ export interface InventoryState {
   /** @deprecated use bayWingLayouts[0] — kept during migration */
   bayWingLayout: FactoryLayout | null;
   bayWingLayoutPaid: number;
+  /**
+   * Soft empire reputation (0–100). Brand-lite until explicit brand ships.
+   * Fed by fair labor, retail, gifts, repairs; sunk by unpaid wages / bad gifts.
+   */
+  empireStanding: number;
+  /** Per-district standing (−20–100), keyed by CITY_DISTRICTS id */
+  districtStanding: Record<string, number>;
+  /** Soft-goal flags that are not implied by other inventory fields */
+  softGoalFlags: SoftGoalFlags;
 }
 
 const WORKER_NAMES = [
@@ -1795,6 +1804,9 @@ export function emptyInventory(starterBrass = 40): InventoryState {
     bayWingLayouts: [],
     bayWingLayout: null,
     bayWingLayoutPaid: 0,
+    empireStanding: 0,
+    districtStanding: {},
+    softGoalFlags: {},
   };
 }
 
@@ -1853,6 +1865,7 @@ export function leaseCityWorkshop(inv: InventoryState): { ok: boolean; msg: stri
   if (inv.bayLevel < 3) {
     inv.bayLevel = Math.max(inv.bayLevel, 3);
   }
+  applyStanding(inv, 4, { districtId: 'industrial', districtDelta: 6 });
   return {
     ok: true,
     msg: `City workshop leased (−${CITY_WORKSHOP_COST}). Invent unlocked · expand bay forever · lease stalls across plazas.`,
@@ -1865,6 +1878,7 @@ export function repairRogueRobot(
 ): { ok: boolean; msg: string } {
   inv.brass += ROGUE_REPAIR_PAY;
   notePeakBrass(inv);
+  applyStanding(inv, 2);
   const owner = opts?.ownerName ? opts.ownerName : 'its owner';
   const job = opts?.jobLabel ? ` (${opts.jobLabel})` : '';
   return {
@@ -1930,6 +1944,7 @@ export function buyRobotWorker(inv: InventoryState): { ok: boolean; msg: string;
   if (frame) applyFrameToWorker(w, frame);
   inv.workers.push(w);
   inv.laborerHired = true;
+  applyStanding(inv, 1);
   const q = frame ? ` · ${frame.name} (Q${frame.quality.toFixed(2)})` : ' · broker chassis';
   return {
     ok: true,
@@ -2070,6 +2085,7 @@ export function buyApartment(inv: InventoryState): { ok: boolean; msg: string } 
   inv.apartmentOwned = true;
   ensureDefaultHomeLayout(inv);
   notePeakBrass(inv);
+  applyStanding(inv, 5, { districtId: 'residential', districtDelta: 5 });
   return {
     ok: true,
     msg: `Deed signed · sky cottage yours (−${APARTMENT_COST} brass). Improve it from the door!`,
@@ -2078,6 +2094,359 @@ export function buyApartment(inv: InventoryState): { ok: boolean; msg: string } 
 
 export function notePeakBrass(inv: InventoryState): void {
   if (inv.brass > inv.peakBrass) inv.peakBrass = inv.brass;
+}
+
+// ——— Soft goals & reputation (Task 1) ———
+
+export interface SoftGoalFlags {
+  /** Talked to a residential neighbor at least once in the empire city */
+  metNeighbor?: boolean;
+  /** Cleared NPC landlord debt (Task 3+) */
+  clearedNeighborDebt?: boolean;
+  /** Hired a neighbor out of drama (Task 2+) */
+  hiredNeighbor?: boolean;
+  /** Owned at least one plaza plot (Task 4+) */
+  ownedPlot?: boolean;
+}
+
+export type StandingTierId =
+  | 'newcomer'
+  | 'noticed'
+  | 'friendly'
+  | 'respected'
+  | 'pillar';
+
+export interface StandingTier {
+  id: StandingTierId;
+  label: string;
+  min: number;
+  /** One-line “what good looks like” */
+  blurb: string;
+}
+
+export const STANDING_TIERS: StandingTier[] = [
+  {
+    id: 'newcomer',
+    min: 0,
+    label: 'Newcomer',
+    blurb: 'The city barely knows your name.',
+  },
+  {
+    id: 'noticed',
+    min: 10,
+    label: 'Noticed',
+    blurb: 'Shopkeepers nod. Neighbors watch.',
+  },
+  {
+    id: 'friendly',
+    min: 25,
+    label: 'Friendly',
+    blurb: 'Fair deals and help open doors.',
+  },
+  {
+    id: 'respected',
+    min: 45,
+    label: 'Respected',
+    blurb: 'Your brand carries weight on the plazas.',
+  },
+  {
+    id: 'pillar',
+    min: 70,
+    label: 'Pillar',
+    blurb: 'Empire-scale reputation — landlord and employer.',
+  },
+];
+
+export const EMPIRE_STANDING_MIN = 0;
+export const EMPIRE_STANDING_MAX = 100;
+export const DISTRICT_STANDING_MIN = -20;
+export const DISTRICT_STANDING_MAX = 100;
+
+export interface SoftGoalDef {
+  id: string;
+  title: string;
+  hint: string;
+  /** Only relevant after apartment deed (empire soft goals) */
+  empireOnly?: boolean;
+  isDone: (inv: InventoryState) => boolean;
+}
+
+/** Soft goal chain for empire (and apartment pre-goal). */
+export const SOFT_GOALS: SoftGoalDef[] = [
+  {
+    id: 'apartment',
+    title: 'Deed a sky apartment',
+    hint: 'Training market · 1000 brass · Real Estate east',
+    isDone: (inv) => inv.apartmentOwned,
+  },
+  {
+    id: 'workshop',
+    title: 'Lease empire workshop',
+    hint: 'Industrial slips west · craft · hire · invent',
+    empireOnly: true,
+    isDone: (inv) => inv.cityWorkshopLeased || inv.parcelLeased,
+  },
+  {
+    id: 'neighbor',
+    title: 'Meet a neighbor',
+    hint: 'Residential ring · E talk · drama and hire come later',
+    empireOnly: true,
+    isDone: (inv) => !!inv.softGoalFlags?.metNeighbor,
+  },
+  {
+    id: 'hire',
+    title: 'Hire crew',
+    hint: 'Workshop hire board · humans or robots',
+    empireOnly: true,
+    isDone: (inv) => inv.workers.length >= 1,
+  },
+  {
+    id: 'stall',
+    title: 'Open a plaza stall',
+    hint: 'Lease a district shop · stock shelf · stay open',
+    empireOnly: true,
+    isDone: (inv) => ownedCityStallCount(inv) >= 1 || inv.stall.owned,
+  },
+  {
+    id: 'invent',
+    title: 'Invent a product',
+    hint: 'Bay L3 / workshop invent desk',
+    empireOnly: true,
+    isDone: (inv) => inv.customRecipes.length >= 1,
+  },
+  {
+    id: 'network',
+    title: 'Retail network (3 shops)',
+    hint: 'Multi-plaza stalls · premium plazas pay invent bonus',
+    empireOnly: true,
+    isDone: (inv) => ownedCityStallCount(inv) >= 3,
+  },
+  {
+    id: 'standing_friendly',
+    title: 'Reach Friendly standing',
+    hint: 'Hire fairly · repair rogues · gifts · open shops',
+    empireOnly: true,
+    isDone: (inv) => (inv.empireStanding ?? 0) >= 25,
+  },
+  // Future RE / drama goals (complete via flags when those systems land)
+  {
+    id: 'clear_debt',
+    title: 'Clear a neighbor’s debt',
+    hint: 'Coming: pay NPC landlord debt for reputation',
+    empireOnly: true,
+    isDone: (inv) => !!inv.softGoalFlags?.clearedNeighborDebt,
+  },
+  {
+    id: 'own_plot',
+    title: 'Own a plaza plot',
+    hint: 'Coming: leasing offices · 3×3 plaza grids',
+    empireOnly: true,
+    isDone: (inv) => !!inv.softGoalFlags?.ownedPlot,
+  },
+];
+
+export function ensureStandingState(inv: InventoryState): void {
+  if (typeof inv.empireStanding !== 'number' || Number.isNaN(inv.empireStanding)) {
+    inv.empireStanding = 0;
+  }
+  if (!inv.districtStanding || typeof inv.districtStanding !== 'object') {
+    inv.districtStanding = {};
+  }
+  if (!inv.softGoalFlags || typeof inv.softGoalFlags !== 'object') {
+    inv.softGoalFlags = {};
+  }
+  inv.empireStanding = clampStanding(
+    inv.empireStanding,
+    EMPIRE_STANDING_MIN,
+    EMPIRE_STANDING_MAX,
+  );
+}
+
+function clampStanding(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, Math.round(n * 10) / 10));
+}
+
+export function standingTierFor(score: number): StandingTier {
+  let best = STANDING_TIERS[0]!;
+  for (const t of STANDING_TIERS) {
+    if (score >= t.min) best = t;
+  }
+  return best;
+}
+
+export function empireStandingTier(inv: InventoryState): StandingTier {
+  ensureStandingState(inv);
+  return standingTierFor(inv.empireStanding);
+}
+
+export function getDistrictStanding(inv: InventoryState, districtId: string): number {
+  ensureStandingState(inv);
+  return inv.districtStanding[districtId] ?? 0;
+}
+
+export function districtStandingTier(
+  inv: InventoryState,
+  districtId: string,
+): StandingTier {
+  return standingTierFor(getDistrictStanding(inv, districtId));
+}
+
+/**
+ * Apply empire and optional district standing delta.
+ * Future systems (rent tiers, plot gifts) call this with a districtId.
+ */
+export function applyStanding(
+  inv: InventoryState,
+  empireDelta: number,
+  opts?: { districtId?: string; districtDelta?: number },
+): void {
+  ensureStandingState(inv);
+  if (empireDelta) {
+    inv.empireStanding = clampStanding(
+      inv.empireStanding + empireDelta,
+      EMPIRE_STANDING_MIN,
+      EMPIRE_STANDING_MAX,
+    );
+  }
+  const did = opts?.districtId;
+  if (did) {
+    const dDelta = opts?.districtDelta ?? empireDelta;
+    if (dDelta) {
+      const cur = inv.districtStanding[did] ?? 0;
+      inv.districtStanding[did] = clampStanding(
+        cur + dDelta,
+        DISTRICT_STANDING_MIN,
+        DISTRICT_STANDING_MAX,
+      );
+    }
+  }
+}
+
+/** One-line HUD / map summary */
+export function formatEmpireStandingLine(inv: InventoryState): string {
+  ensureStandingState(inv);
+  const tier = empireStandingTier(inv);
+  const next = STANDING_TIERS.find((t) => t.min > inv.empireStanding);
+  const nextBit = next ? ` · next ${next.label} at ${next.min}` : ' · peak tier';
+  return `Standing ${Math.round(inv.empireStanding)} · ${tier.label}${nextBit}`;
+}
+
+export function formatDistrictStandingLine(
+  inv: InventoryState,
+  districtId: string,
+): string {
+  ensureStandingState(inv);
+  const dist = districtById(districtId);
+  const score = getDistrictStanding(inv, districtId);
+  const tier = standingTierFor(score);
+  const name = dist?.name ?? districtId;
+  return `${name}: ${Math.round(score)} · ${tier.label}`;
+}
+
+export interface SoftGoalView {
+  id: string;
+  title: string;
+  hint: string;
+  done: boolean;
+  active: boolean;
+}
+
+/** Goals relevant to current play phase, in chain order. */
+export function listSoftGoalViews(inv: InventoryState): SoftGoalView[] {
+  ensureStandingState(inv);
+  const empire = inv.apartmentOwned;
+  const filtered = SOFT_GOALS.filter((g) => {
+    if (g.empireOnly && !empire) return false;
+    // Hide far-future RE stubs until player has engaged the social/retail loop
+    if (
+      (g.id === 'clear_debt' || g.id === 'own_plot') &&
+      ownedCityStallCount(inv) < 1 &&
+      !inv.softGoalFlags?.metNeighbor
+    ) {
+      return false;
+    }
+    return true;
+  });
+  let foundActive = false;
+  return filtered.map((g) => {
+    const done = g.isDone(inv);
+    const active = !done && !foundActive;
+    if (active) foundActive = true;
+    return {
+      id: g.id,
+      title: g.title,
+      hint: g.hint,
+      done,
+      active,
+    };
+  });
+}
+
+export function getActiveSoftGoal(inv: InventoryState): SoftGoalView | null {
+  return listSoftGoalViews(inv).find((g) => g.active) ?? null;
+}
+
+/** Objective string driven by soft goals (empire) */
+export function softGoalObjectiveLine(inv: InventoryState): string {
+  const active = getActiveSoftGoal(inv);
+  if (!active) {
+    const tier = empireStandingTier(inv);
+    const shops = ownedCityStallCount(inv);
+    return `Empire · ${tier.label} · ${shops} shops · ${inv.workers.length} crew · ${formatEmpireStandingLine(inv)}`;
+  }
+  return `${active.title} · ${active.hint}`;
+}
+
+/** Mark neighbor hello (Task 1 soft goal); later drama builds on this. */
+export function noteMetNeighbor(inv: InventoryState): { first: boolean } {
+  ensureStandingState(inv);
+  if (inv.softGoalFlags.metNeighbor) return { first: false };
+  inv.softGoalFlags.metNeighbor = true;
+  applyStanding(inv, 2, { districtId: 'residential', districtDelta: 4 });
+  return { first: true };
+}
+
+/**
+ * One-time bootstrap for older saves that never tracked standing —
+ * award soft credit for accomplishments already earned (not a free farm).
+ */
+export function bootstrapStandingFromProgress(inv: InventoryState): void {
+  ensureStandingState(inv);
+  const flag = inv as InventoryState & { _standingBootstrapped?: boolean };
+  if (flag._standingBootstrapped) return;
+  // Only bootstrap if completely flat (new field on old save)
+  const anyDistrict = Object.keys(inv.districtStanding).length > 0;
+  if (inv.empireStanding > 0 || anyDistrict) {
+    flag._standingBootstrapped = true;
+    return;
+  }
+  let empire = 0;
+  if (inv.apartmentOwned) empire += 5;
+  if (inv.cityWorkshopLeased) {
+    empire += 4;
+    inv.districtStanding.industrial = (inv.districtStanding.industrial ?? 0) + 6;
+  }
+  if (inv.workers.length) empire += Math.min(8, inv.workers.length * 2);
+  const shops = ownedCityStallCount(inv);
+  if (shops) {
+    empire += Math.min(12, shops * 3);
+    for (const [did, stall] of Object.entries(inv.cityStalls ?? {})) {
+      if (stall.owned) {
+        inv.districtStanding[did] = (inv.districtStanding[did] ?? 0) + 5;
+      }
+    }
+  }
+  if (inv.customRecipes.length) empire += Math.min(6, inv.customRecipes.length * 2);
+  if (inv.repairsDone > 0) empire += Math.min(6, inv.repairsDone);
+  inv.empireStanding = clampStanding(empire, EMPIRE_STANDING_MIN, EMPIRE_STANDING_MAX);
+  for (const k of Object.keys(inv.districtStanding)) {
+    inv.districtStanding[k] = clampStanding(
+      inv.districtStanding[k]!,
+      DISTRICT_STANDING_MIN,
+      DISTRICT_STANDING_MAX,
+    );
+  }
+  flag._standingBootstrapped = true;
 }
 
 export function emptyStall(): StallState {
@@ -2946,6 +3315,10 @@ export function giftRomanceNpc(
   rel.affinity = Math.max(0, Math.min(120, rel.affinity + delta));
   if (delta > 0) rel.giftsGiven += 1;
   recomputeRomanceStage(rel);
+  // Soft brand: good gifts raise standing; misreads cost a little face
+  if (delta >= 16) applyStanding(inv, 2);
+  else if (delta > 0) applyStanding(inv, 1);
+  else if (delta < 0) applyStanding(inv, -1);
   const stageBit =
     rel.stage > prev
       ? ` Now ${RELATIONSHIP_STAGE_NAMES[rel.stage]}.`
@@ -3344,6 +3717,7 @@ export function hireLaborer(inv: InventoryState): { ok: boolean; msg: string; wo
   };
   inv.workers.push(w);
   inv.laborerHired = true;
+  applyStanding(inv, 2);
   return {
     ok: true,
     worker: w,
@@ -3875,6 +4249,7 @@ export function leaseStall(inv: InventoryState): { ok: boolean; msg: string } {
   inv.brass -= STALL_LEASE_COST;
   inv.stall.owned = true;
   inv.stall.open = true;
+  applyStanding(inv, 2);
   return {
     ok: true,
     msg: `Leased plaza stall (−${STALL_LEASE_COST}). Stock it or enable auto-list. Open for business.`,
@@ -3901,6 +4276,7 @@ export function leaseCityStall(
   inv.brass -= dist.stallCost;
   stall.owned = true;
   stall.open = true;
+  applyStanding(inv, 3, { districtId, districtDelta: 5 });
   const n = ownedCityStallCount(inv);
   return {
     ok: true,
@@ -4977,6 +5353,8 @@ export function tickBayUpkeep(inv: InventoryState): UpkeepResult {
       w.unpaid = true;
     }
     const closedShops = forceCloseOwnedOpenStalls(inv);
+    // Reputation sink: stiffing crew damages brand (once per new unpaid wave)
+    if (unpaidWorkers.length) applyStanding(inv, -3);
     const crewBit =
       inv.workers.length > 0
         ? `Crew unpaid (${inv.workers.map((w) => w.name).join(', ')}).`
@@ -5305,6 +5683,7 @@ export function inventCustomRecipe(
   };
   inv.customRecipes.push(recipe);
   inv.inventionsMade = (inv.inventionsMade ?? 0) + 1;
+  applyStanding(inv, 2);
   const slotBlurb = inventSlotBlurb(a, b);
   const gearTip =
     inv.customRecipes.length <= 1
@@ -5788,6 +6167,9 @@ export function invToSave(inv: InventoryState) {
     // legacy single field for older readers
     bayWingLayout: factoryLayoutToSave(bayWingBuildings(inv)[0] ?? null),
     bayWingLayoutPaid: inv.bayWingLayoutPaid ?? 0,
+    empireStanding: inv.empireStanding ?? 0,
+    districtStanding: { ...(inv.districtStanding ?? {}) },
+    softGoalFlags: { ...(inv.softGoalFlags ?? {}) },
   };
 }
 
@@ -6013,5 +6395,22 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
   }
   inv.bayWingLayout = inv.bayWingLayouts[0] ?? null;
   inv.bayWingLayoutPaid = typeof o.bayWingLayoutPaid === 'number' ? o.bayWingLayoutPaid : 0;
+  inv.empireStanding = typeof o.empireStanding === 'number' ? o.empireStanding : 0;
+  inv.districtStanding = {};
+  if (o.districtStanding && typeof o.districtStanding === 'object') {
+    for (const [k, v] of Object.entries(o.districtStanding as Record<string, unknown>)) {
+      if (typeof v === 'number') inv.districtStanding[k] = v;
+    }
+  }
+  inv.softGoalFlags = {};
+  if (o.softGoalFlags && typeof o.softGoalFlags === 'object') {
+    const f = o.softGoalFlags as SoftGoalFlags;
+    if (f.metNeighbor) inv.softGoalFlags.metNeighbor = true;
+    if (f.clearedNeighborDebt) inv.softGoalFlags.clearedNeighborDebt = true;
+    if (f.hiredNeighbor) inv.softGoalFlags.hiredNeighbor = true;
+    if (f.ownedPlot) inv.softGoalFlags.ownedPlot = true;
+  }
+  ensureStandingState(inv);
+  bootstrapStandingFromProgress(inv);
   return inv;
 }

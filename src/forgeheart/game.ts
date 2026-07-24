@@ -197,6 +197,14 @@ import {
   harvestRogueRobot,
   buyRobotWorker,
   ensureEliasRobotWorker,
+  ensureStandingState,
+  bootstrapStandingFromProgress,
+  formatEmpireStandingLine,
+  formatDistrictStandingLine,
+  softGoalObjectiveLine,
+  getActiveSoftGoal,
+  noteMetNeighbor,
+  empireStandingTier,
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
@@ -4088,6 +4096,7 @@ export class ForgeHeartGame {
   private syncEconomyHud() {
     if (!this.economyActive && !this.megaCityActive) return;
     notePeakBrass(this.inv);
+    ensureStandingState(this.inv);
     this.weaponEl.textContent = `${this.inv.brass} BRASS`;
     const extras: string[] = [];
     if (this.megaCityActive) {
@@ -4096,6 +4105,8 @@ export class ForgeHeartGame {
       if (shops > 0) extras.push(`${shops} shops`);
       if ((this.inv.inventionsMade ?? 0) > 0) extras.push(`Inv ${this.inv.inventionsMade}`);
       extras.push(`Day ${Math.floor(this.cityTime * 100)}%`);
+      const tier = empireStandingTier(this.inv);
+      extras.push(`${tier.label} ${Math.round(this.inv.empireStanding)}`);
     } else if (!this.inv.apartmentOwned) {
       extras.push(`${Math.min(this.inv.brass, APARTMENT_COST)}/${APARTMENT_COST}`);
     } else {
@@ -4117,6 +4128,18 @@ export class ForgeHeartGame {
         : this.inv.apartmentOwned
           ? 'Sky City · Market Training (complete)'
           : 'Sky City · Market Training';
+    }
+    const standEl = document.getElementById('standing-line');
+    if (standEl) {
+      if (this.megaCityActive || this.inv.apartmentOwned) {
+        standEl.classList.remove('hidden');
+        const goal = getActiveSoftGoal(this.inv);
+        const goalBit = goal ? `Goal: ${goal.title}` : empireStandingTier(this.inv).blurb;
+        standEl.textContent = `${formatEmpireStandingLine(this.inv)} · ${goalBit}`;
+      } else {
+        standEl.classList.add('hidden');
+        standEl.textContent = '';
+      }
     }
     const pct = document.getElementById('resolve-pct');
     if (pct) pct.textContent = String(Math.round(this.health));
@@ -4654,8 +4677,23 @@ export class ForgeHeartGame {
     if (it.kind === 'neighbor' && it.lines?.length) {
       const line = it.lines[this.neighborLineIdx % it.lines.length]!;
       this.neighborLineIdx++;
+      const met = noteMetNeighbor(this.inv);
       this.toast(line, this.mobile.enabled ? 9.5 : 5);
+      if (met.first) {
+        window.setTimeout(() => {
+          if (this.disposed || !this.megaCityActive) return;
+          this.toast(
+            'Neighbor noted · Standing +2. Drama, hire, and buy-property come next — watch soft goals.',
+            6,
+          );
+          this.objective = this.megaCityObjective();
+          this.syncEconomyHud();
+          writeSlot(this.activeSlot, this.buildSaveData());
+        }, 1200);
+      }
       this.audio.playPickup();
+      this.objective = this.megaCityObjective();
+      this.syncEconomyHud();
       return true;
     }
     if (it.kind === 'vendor' && it.vendor) {
@@ -6981,12 +7019,30 @@ export class ForgeHeartGame {
 
     const detail = document.getElementById('city-map-detail');
     if (detail) {
-      detail.textContent = describeSelection(
+      let text = describeSelection(
         snap,
         this.cityMapLive,
         this.cityMapSelectedId,
         { x: pos.x, z: pos.z },
       );
+      // District standing on plaza selection (Task 1)
+      if (this.cityMapSelectedId) {
+        const pad = snap.pads.find((p) => p.id === this.cityMapSelectedId);
+        const lm = snap.landmarks.find((l) => l.id === this.cityMapSelectedId);
+        const did = pad?.id ?? lm?.districtId;
+        if (did) {
+          text += `\n${formatDistrictStandingLine(this.inv, did)}`;
+        }
+      }
+      text += `\n${formatEmpireStandingLine(this.inv)}`;
+      const goal = getActiveSoftGoal(this.inv);
+      if (goal) text += `\nGoal: ${goal.title} — ${goal.hint}`;
+      detail.textContent = text;
+    }
+    const standMap = document.getElementById('city-map-standing');
+    if (standMap) {
+      const tier = empireStandingTier(this.inv);
+      standMap.textContent = `${formatEmpireStandingLine(this.inv)} · ${tier.blurb}`;
     }
     const attn = document.getElementById('city-map-attn');
     if (attn) {
@@ -9667,6 +9723,8 @@ export class ForgeHeartGame {
       cityBoard.position.y = 0.55;
     }
 
+    ensureStandingState(this.inv);
+    bootstrapStandingFromProgress(this.inv);
     this.objective = this.megaCityObjective();
     this.setHelp(
       this.boardOwned || this.inv.playerBoard.owned
@@ -9680,11 +9738,18 @@ export class ForgeHeartGame {
     );
     window.setTimeout(() => {
       if (this.disposed || !this.megaCityActive) return;
+      const goal = getActiveSoftGoal(this.inv);
       this.toast(
-        'Workshop: craft · hire · invent. Expand yards: board west to Sky Foundry. Q wind skyways.',
+        goal
+          ? `Soft goal: ${goal.title} — ${goal.hint}`
+          : 'Workshop: craft · hire · invent. Expand yards: board west to Sky Foundry. Q wind skyways.',
         7,
       );
     }, 6500);
+    window.setTimeout(() => {
+      if (this.disposed || !this.megaCityActive) return;
+      this.toast(formatEmpireStandingLine(this.inv) + ' · M map shows district standing.', 6);
+    }, 14000);
 
     this.audio.setWind(0.35);
     this.syncEconomyHud();
@@ -9694,32 +9759,31 @@ export class ForgeHeartGame {
   }
 
   private megaCityObjective(): string {
-    const shops = ownedCityStallCount(this.inv);
-    if (!this.inv.cityWorkshopLeased) {
-      return 'Industrial west · lease empire workshop (craft · hire · invent)';
+    ensureStandingState(this.inv);
+    // Soft-goal chain drives empire objectives (Task 1)
+    const soft = softGoalObjectiveLine(this.inv);
+    // Keep board/harvest nudges only when soft goal is workshop/neighbor early
+    const active = getActiveSoftGoal(this.inv);
+    if (active?.id === 'workshop' || active?.id === 'neighbor' || active?.id === 'hire') {
+      return soft;
     }
-    if (!this.inv.playerBoard.owned && !this.boardOwned) {
+    if (
+      active &&
+      active.id !== 'standing_friendly' &&
+      active.id !== 'clear_debt' &&
+      active.id !== 'own_plot'
+    ) {
+      return soft;
+    }
+    // Late game: soft goal + empire summary
+    const shops = ownedCityStallCount(this.inv);
+    if (!this.inv.playerBoard.owned && !this.boardOwned && this.inv.cityWorkshopLeased) {
       return 'Board shop · Q wind skyways · harvest reefs have different mats';
     }
-    if (this.inv.harvestRuns < 3) {
-      return 'Harvest specialized reefs · Harbor salt · Spore silk · Foundry scrap';
+    if (this.inv.bayLevel < 4 && shops >= 3) {
+      return `Sky Foundry expand yards · bay L${this.inv.bayLevel} → more crew · ${soft}`;
     }
-    if (this.inv.workers.length < 1) {
-      return 'Hire board at workshop · equip workers · raise pay for long programs';
-    }
-    if (this.inv.customRecipes.length < 1) {
-      return 'Invent desk · craft inventions · stock premium plaza stalls';
-    }
-    if (shops < 1) {
-      return 'Lease multi-plaza stalls · Spore Gardens / Aether Spire invent premium';
-    }
-    if (shops < 3) {
-      return `Empire shops ${shops}/3+ · expand bay · crew stock stalls across the map`;
-    }
-    if (this.inv.bayLevel < 4) {
-      return `Sky Foundry expand yards · bay L${this.inv.bayLevel} → more crew · shops ${shops}`;
-    }
-    return `Empire: ${shops} shops · ${this.inv.workers.length} crew · invent sold ${this.inv.inventionsSold ?? 0}`;
+    return soft;
   }
 
   private openStall() {
