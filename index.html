@@ -435,14 +435,25 @@
           <p class="market-log" id="stall-log"></p>
         </div>
       </div>
-      <div id="stall-wizard" class="stall-wizard hidden" aria-hidden="true">
+      <div id="stall-wizard" class="stall-wizard dock-expanded hidden" aria-hidden="true">
         <div class="stall-wizard-card">
           <header class="stall-wizard-head">
-            <div>
+            <div class="stall-wizard-head-text">
               <h3 id="stall-wizard-title">Build site</h3>
               <p class="market-sub" id="stall-wizard-sub">Place the selection box on the plaza, then build.</p>
             </div>
-            <button type="button" id="stall-wizard-cancel" class="maker-close">×</button>
+            <div class="stall-wizard-head-actions">
+              <button
+                type="button"
+                id="stall-wizard-dock-toggle"
+                class="stall-wizard-dock-toggle"
+                title="Expand or collapse menu (Tab)"
+                aria-expanded="true"
+              >
+                Menu
+              </button>
+              <button type="button" id="stall-wizard-cancel" class="maker-close" title="Cancel">×</button>
+            </div>
           </header>
           <p class="market-wallet" id="stall-wizard-quote">Quote —</p>
           <p class="stall-wizard-step" id="stall-wizard-step">Step 1 · Plot</p>
@@ -451,6 +462,9 @@
             <button type="button" id="stall-wizard-back" class="stall-wizard-btn">Back</button>
             <button type="button" id="stall-wizard-next" class="stall-wizard-btn primary">Next</button>
           </div>
+          <p class="stall-wizard-dock-hint" id="stall-wizard-dock-hint">
+            Tab · menu ↔ aim · Enter confirms
+          </p>
         </div>
       </div>
       <div id="program-panel" class="market-panel program-panel hidden" aria-hidden="true">

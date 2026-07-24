@@ -413,6 +413,14 @@ export class ForgeHeartGame {
   private plotBuild: PlotBuildSession | null = null;
   private plotBuildSelect: THREE.Group | null = null;
   private plotBuildGhost: THREE.Group | null = null;
+  /**
+   * Build wizard dock: expanded = pick from menu (pointer free);
+   * collapsed = aim / fly the world (pointer lock on desktop).
+   */
+  private buildDockExpanded = true;
+  /** User forced expand while aiming — keep open until they collapse or leave step */
+  private buildDockPinned = false;
+  private buildDockUiWired = false;
   /** Accumulates two-finger twist before snapping home yaw 90°. */
   private siteRotateAcc = 0;
   private velocity = new THREE.Vector3();
@@ -744,7 +752,12 @@ export class ForgeHeartGame {
     this.mobile.attach({
       applyTouchLook: (dx, dy) => this.applyTouchLook(dx, dy),
       applyTouchRotate: (deltaRad) => this.applyTouchRotate(deltaRad),
-      isSiteRotateEnabled: () => !!this.siteBuilder && !this.paused && !this.disposed,
+      isSiteRotateEnabled: () =>
+        (!!this.siteBuilder ||
+          (!!this.plotBuild && this.plotBuild.step !== 'choose')) &&
+        !this.paused &&
+        !this.disposed &&
+        !this.buildDockExpanded,
       setFireHeld: (v) => this.setFireHeld(v),
       setPaused: (p) => this.setPaused(p),
       isPaused: () => this.isPaused(),
@@ -1523,17 +1536,37 @@ export class ForgeHeartGame {
   private handleMakerKey(code: string): boolean {
     // Plot develop / transform mode
     if (this.plotBuild) {
+      // Tab · toggle menu ↔ aim (desktop + mobile external keyboards)
+      if (code === 'Tab') {
+        this.toggleBuildDock();
+        return true;
+      }
+      if (code === 'KeyM' && !this.buildDockExpanded) {
+        this.setBuildDockExpanded(true, true);
+        return true;
+      }
       if (code === 'Escape') {
         if (this.plotBuild.step === 'place' || this.plotBuild.step === 'transform') {
           this.plotBuild.step = 'choose';
           this.plotBuild.buildKind = null;
           this.plotBuild.transform = null;
+          this.buildDockPinned = false;
+          this.setBuildDockExpanded(true, false);
           this.rebuildPlotBuildGhosts();
           this.refreshPlotBuildUi();
           this.toast('Back to catalog.', 2);
           return true;
         }
         this.cancelPlotBuildMode();
+        return true;
+      }
+      // While menu is expanded, don't steal keys needed for typing / UI — only Esc/Tab handled
+      if (this.buildDockExpanded) {
+        if (code === 'Enter' || code === 'NumpadEnter') {
+          // Enter still confirms from expanded place/transform
+          if (this.plotBuild.step !== 'choose') this.confirmPlotBuildMode();
+          return true;
+        }
         return true;
       }
       if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
@@ -1585,6 +1618,10 @@ export class ForgeHeartGame {
 
     // Site builder (stall / factory / bay wing)
     if (this.siteBuilder) {
+      if (code === 'Tab') {
+        this.toggleBuildDock();
+        return true;
+      }
       if (code === 'Escape') {
         // Esc while aiming a prop → back to catalog (don't cancel whole build)
         if (this.siteBuilder.step === 'props' && this.siteBuilder.activePropId) {
@@ -2281,7 +2318,18 @@ export class ForgeHeartGame {
    * Homes snap to 90° after enough twist; other sites rotate continuously.
    */
   applyTouchRotate(deltaRad: number) {
-    if (this.disposed || this.paused || !this.siteBuilder) return;
+    if (this.disposed || this.paused) return;
+    if (this.plotBuild && !this.buildDockExpanded) {
+      this.siteRotateAcc += deltaRad;
+      const threshold = 0.22;
+      while (Math.abs(this.siteRotateAcc) >= threshold) {
+        const dir = this.siteRotateAcc > 0 ? 1 : -1;
+        this.nudgePlotBuildYaw(dir as 1 | -1);
+        this.siteRotateAcc -= dir * threshold;
+      }
+      return;
+    }
+    if (!this.siteBuilder) return;
     const s = this.siteBuilder;
     const aimingItem =
       (s.step === 'props' && !!s.activePropId) || (s.step === 'rooms' && !!s.activeRoomKind);
@@ -5253,6 +5301,9 @@ export class ForgeHeartGame {
     this.siteBuilder.placeYaw = 0;
     this.siteBuilder.interiorDecor = false;
     this.siteRotateAcc = 0;
+    this.buildDockPinned = false;
+    this.buildDockExpanded = false; // start in aim mode for site box
+    this.wireBuildDockUi();
     if (opts.kind === 'home') {
       this.siteBuilder.yaw = snapHomeYaw(this.siteBuilder.yaw);
       this.hideLiveHomeBuild(true);
@@ -5273,6 +5324,7 @@ export class ForgeHeartGame {
     }
     this.rebuildSiteGhost();
     this.refreshSiteBuilderUi();
+    this.setBuildDockExpanded(false, false); // aim the site box first
     const label =
       opts.kind === 'stall'
         ? 'shop'
@@ -5284,8 +5336,8 @@ export class ForgeHeartGame {
     const mobileHint = this.mobile.enabled ? ' · two-finger twist or ⟲⟳ rotates' : '';
     this.toast(
       opts.redesign
-        ? `Edit ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (open ENTRY face = front)' : ''}${mobileHint}, Enter locks.`
-        : `Place ${label} — look or arrows move the box, [/] rotates${opts.kind === 'home' ? ' (open ENTRY face = front)' : ''}${mobileHint}, Enter/click locks.`,
+        ? `Edit ${label} — aim view (collapsed menu). Tab/Menu opens tools.${mobileHint}`
+        : `Place ${label} — aim the box, Enter locks. Tab opens menu for options.${mobileHint}`,
       5,
     );
     this.setHelp(
@@ -5359,8 +5411,12 @@ export class ForgeHeartGame {
     }
     setHomeStructureTranslucent(this.skyCity?.apartmentGroup, false);
     this.siteBuilder = null;
+    this.buildDockPinned = false;
+    this.buildDockExpanded = true;
     const panel = document.getElementById('stall-wizard');
     panel?.classList.add('hidden');
+    panel?.classList.remove('dock-collapsed');
+    panel?.classList.add('dock-expanded');
     panel?.setAttribute('aria-hidden', 'true');
     if (wasHome && restoreHome) this.syncHomeVisuals();
     this.syncMobileGameplay();
@@ -5529,21 +5585,6 @@ export class ForgeHeartGame {
   }
 
   /** Lock look when aiming site/prop; unlock for catalog / structure picks */
-  private syncSiteBuilderPointer() {
-    const s = this.siteBuilder;
-    if (!s) return;
-    const aiming =
-      (s.step === 'site' && !s.sitePlaced) ||
-      (s.step === 'props' && !!s.activePropId) ||
-      (s.step === 'rooms' && !!s.activeRoomKind);
-    try {
-      if (aiming) this.controls.lock();
-      else this.controls.unlock();
-    } catch {
-      /* ignore */
-    }
-  }
-
   private rebuildSiteGhost() {
     const s = this.siteBuilder;
     if (!s || !this.skyCity) return;
@@ -6318,7 +6359,8 @@ export class ForgeHeartGame {
       body.appendChild(p);
     }
 
-    this.syncSiteBuilderPointer();
+    this.wireBuildDockUi();
+    this.syncBuildDockToStep();
   }
 
   private confirmSiteBuilder() {
@@ -7021,6 +7063,112 @@ export class ForgeHeartGame {
     );
   }
 
+  // ——— Build wizard dock (menu ↔ aim) ———
+
+  private wireBuildDockUi() {
+    if (this.buildDockUiWired) return;
+    this.buildDockUiWired = true;
+    const toggle = document.getElementById('stall-wizard-dock-toggle');
+    toggle?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.toggleBuildDock();
+    });
+  }
+
+  private toggleBuildDock() {
+    this.setBuildDockExpanded(!this.buildDockExpanded, true);
+  }
+
+  /**
+   * Expanded: full catalog / options, pointer free for clicks.
+   * Collapsed: compact strip so the world is clear for flying & aiming.
+   */
+  private setBuildDockExpanded(expanded: boolean, userAction: boolean) {
+    if (!this.plotBuild && !this.siteBuilder) return;
+    this.buildDockExpanded = expanded;
+    if (userAction) this.buildDockPinned = expanded;
+    if (!expanded) this.buildDockPinned = false;
+    this.applyBuildDockDom();
+    this.syncBuildDockPointer();
+    this.syncMobileGameplay();
+    this.mobile.syncSiteRotateButtons();
+  }
+
+  private applyBuildDockDom() {
+    const panel = document.getElementById('stall-wizard');
+    if (!panel || panel.classList.contains('hidden')) return;
+    panel.classList.toggle('dock-expanded', this.buildDockExpanded);
+    panel.classList.toggle('dock-collapsed', !this.buildDockExpanded);
+    const toggle = document.getElementById('stall-wizard-dock-toggle');
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', this.buildDockExpanded ? 'true' : 'false');
+      toggle.textContent = this.buildDockExpanded ? 'Aim view' : 'Menu';
+      toggle.title = this.buildDockExpanded
+        ? 'Collapse menu and aim the world (Tab)'
+        : 'Expand menu to pick tools (Tab · M)';
+    }
+    const hint = document.getElementById('stall-wizard-dock-hint');
+    if (hint) {
+      if (this.mobile.enabled) {
+        hint.textContent = this.buildDockExpanded
+          ? 'Pick a tool · menu collapses when you place'
+          : 'Fly & aim · tap Menu to change tools · Confirm places';
+      } else {
+        hint.textContent = this.buildDockExpanded
+          ? 'Tab / Aim view · collapse to fly & look · Enter confirms'
+          : 'Tab / Menu · open tools · WASD fly · mouse look · Enter confirms';
+      }
+    }
+  }
+
+  /** Desktop: unlock pointer in menu mode so buttons work; lock when aiming. */
+  private syncBuildDockPointer() {
+    if (this.mobile.enabled || this.paused || this.disposed) return;
+    if (!this.gameMakerActive || (!this.plotBuild && !this.siteBuilder)) return;
+    try {
+      if (this.buildDockExpanded) {
+        this.controls.unlock();
+      } else {
+        this.controls.lock();
+        this.canvas.requestPointerLock?.();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Auto dock state from builder step (respects user pin while aiming). */
+  private syncBuildDockToStep() {
+    if (this.plotBuild) {
+      const aiming =
+        this.plotBuild.step === 'place' || this.plotBuild.step === 'transform';
+      if (aiming) {
+        if (!this.buildDockPinned) this.setBuildDockExpanded(false, false);
+        else this.applyBuildDockDom();
+      } else {
+        this.buildDockPinned = false;
+        this.setBuildDockExpanded(true, false);
+      }
+      return;
+    }
+    if (this.siteBuilder) {
+      const s = this.siteBuilder;
+      const aiming =
+        (s.step === 'site' && !s.sitePlaced) ||
+        (s.step === 'props' && !!s.activePropId) ||
+        (s.step === 'rooms' && !!s.activeRoomKind);
+      if (aiming) {
+        if (!this.buildDockPinned) this.setBuildDockExpanded(false, false);
+        else this.applyBuildDockDom();
+      } else {
+        // Catalog / structure pick / finalize: prefer expanded
+        this.buildDockPinned = false;
+        this.setBuildDockExpanded(true, false);
+      }
+    }
+  }
+
   // ——— Plot build mode (site-builder style) ———
 
   private beginPlotBuildMode(plotId: string) {
@@ -7038,6 +7186,9 @@ export class ForgeHeartGame {
     this.closeLeaseOffice();
     this.closeNeighborPanel();
     this.plotBuild = makePlotBuildSession(plot, d);
+    this.buildDockPinned = false;
+    this.buildDockExpanded = true;
+    this.wireBuildDockUi();
     this.enterGameMaker();
     this.makerTool = 'select';
     this.cityEditor?.updateGhost(null, 0);
@@ -7051,14 +7202,17 @@ export class ForgeHeartGame {
     this.camera.lookAt(this.plotBuild.centerX, 1, this.plotBuild.centerZ);
     this.rebuildPlotBuildGhosts();
     this.refreshPlotBuildUi();
+    this.setBuildDockExpanded(true, false);
     this.toast(
-      'Plot build mode — pick a structure or transform, aim the ghost, Enter confirms · Esc cancels.',
-      5,
+      this.mobile.enabled
+        ? 'Plot build — pick a tool (menu). It collapses when you place so you can fly & aim.'
+        : 'Plot build — pick a tool in the menu. Tab switches Menu ↔ Aim. Enter confirms.',
+      5.5,
     );
     this.setHelp(
       this.mobile.enabled
-        ? 'PLOT · pick build · ⟲⟳ rotate · Enter confirm · Esc back'
-        : 'PLOT · pick build · [/] rotate · arrows face bridge/move · Enter confirm · Esc cancel',
+        ? 'PLOT · Menu pick · collapses to aim · Confirm · Esc back'
+        : 'PLOT · Tab menu/aim · [/] rotate · Enter confirm · Esc cancel',
     );
     this.syncMobileGameplay();
   }
@@ -7073,8 +7227,12 @@ export class ForgeHeartGame {
       this.plotBuildGhost = null;
     }
     this.plotBuild = null;
+    this.buildDockPinned = false;
+    this.buildDockExpanded = true;
     const panel = document.getElementById('stall-wizard');
     panel?.classList.add('hidden');
+    panel?.classList.remove('dock-collapsed');
+    panel?.classList.add('dock-expanded');
     panel?.setAttribute('aria-hidden', 'true');
     this.syncMobileGameplay();
   }
@@ -7233,6 +7391,7 @@ export class ForgeHeartGame {
           s.step = 'place';
           s.quotedCost = q.cost;
           s.offZone = q.offZone;
+          this.buildDockPinned = false;
           this.rebuildPlotBuildGhosts();
           this.refreshPlotBuildUi();
         });
@@ -7258,33 +7417,37 @@ export class ForgeHeartGame {
           s.transform = tool;
           s.buildKind = null;
           s.step = 'transform';
+          this.buildDockPinned = false;
           this.rebuildPlotBuildGhosts();
           this.refreshPlotBuildUi();
         });
         body.appendChild(btn);
       }
+      this.syncBuildDockToStep();
       return;
     }
 
     if (s.step === 'place' && s.buildKind) {
       const name = plotBuildCatalogLabel(s.buildKind);
-      if (stepEl) stepEl.textContent = `Step 2 · Place ${name}`;
+      if (stepEl) stepEl.textContent = `Placing · ${name}`;
+      if (title) title.textContent = name;
       if (quoteEl) {
-        quoteEl.textContent = `Quote ${s.quotedCost.toLocaleString()}b${s.offZone ? ' · off-zone' : ''} · brass ${this.inv.brass.toLocaleString()}`;
+        quoteEl.textContent = `${s.quotedCost.toLocaleString()}b${s.offZone ? ' · off-zone' : ''} · you ${this.inv.brass.toLocaleString()}b`;
       }
       if (nextBtn) {
-        nextBtn.textContent = 'Confirm build';
+        nextBtn.textContent = 'Confirm';
         nextBtn.disabled = this.inv.brass < s.quotedCost;
       }
-      if (backBtn) backBtn.textContent = 'Back';
+      if (backBtn) backBtn.textContent = 'Catalog';
       body.innerHTML = '';
       const p = document.createElement('p');
       p.className = 'stall-wizard-hint';
       p.textContent =
         s.buildKind === 'bridge'
-          ? `Rope bridge · face with arrows/IJKL (now ${['+X', '+Z', '−X', '−Z'][s.bridgeFacing]}) · [/] cycles · needs adjacent owned plot · Enter confirms.`
-          : `Ghost shows ${name} on this plot · [/] rotates · fly to inspect · Enter confirms payment.`;
+          ? `Rope bridge · face ${['+X', '+Z', '−X', '−Z'][s.bridgeFacing]} · arrows / ⟲⟳ · needs adjacent owned plot.`
+          : `Ghost on plot · [/] or ⟲⟳ rotates · fly to inspect · Confirm pays.`;
       body.appendChild(p);
+      this.syncBuildDockToStep();
       return;
     }
 
@@ -7293,20 +7456,29 @@ export class ForgeHeartGame {
         stepEl.textContent =
           s.transform === 'rotate' ? 'Transform · Rotate' : 'Transform · Move';
       }
-      if (quoteEl) quoteEl.textContent = 'Free · preview on selection box';
+      if (title) {
+        title.textContent = s.transform === 'rotate' ? 'Rotate plot' : 'Move plot';
+      }
+      if (quoteEl) {
+        quoteEl.textContent =
+          s.transform === 'rotate'
+            ? `Preview ${s.previewYaw}°`
+            : `Dir ${['→ +X', '↓ +Z', '← −X', '↑ −Z'][s.moveDir]}`;
+      }
       if (nextBtn) {
         nextBtn.textContent = 'Confirm';
         nextBtn.disabled = false;
       }
-      if (backBtn) backBtn.textContent = 'Back';
+      if (backBtn) backBtn.textContent = 'Catalog';
       body.innerHTML = '';
       const p = document.createElement('p');
       p.className = 'stall-wizard-hint';
       p.textContent =
         s.transform === 'rotate'
-          ? `Preview yaw ${s.previewYaw}° · [/] snaps 90° · Enter applies.`
-          : `Move direction ${['+X →', '+Z ↓', '−X ←', '−Z ↑'][s.moveDir]} · arrows set dir · Enter swaps with free/owned neighbor cell.`;
+          ? `Preview yaw ${s.previewYaw}° · [/] snaps 90° · Confirm applies.`
+          : `Move ${['→', '↓', '←', '↑'][s.moveDir]} · arrows set dir · Confirm swaps with free/owned cell.`;
       body.appendChild(p);
+      this.syncBuildDockToStep();
     }
   }
 
