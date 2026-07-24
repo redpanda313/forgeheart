@@ -228,7 +228,6 @@ import {
   plotsInDistrict,
   playerOwnedPlotCount,
   developPlot,
-  rotatePlot,
   movePlot,
   buyEdgePlot,
   PLOT_BUILD_CATALOG,
@@ -236,6 +235,8 @@ import {
   listEdgeCandidates,
   plotPrimaryBuilding,
   plotRentIncome,
+  plotWorldCenter,
+  hasAdjacentOwned,
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
@@ -343,6 +344,13 @@ import {
   siteChargePreview,
   siteStepsFor,
 } from './siteSession';
+import {
+  type PlotBuildSession,
+  makePlotBuildSession,
+  makePlotSelectionBox,
+  makePlotBuildGhost,
+  plotBuildCatalogLabel,
+} from './plotBuild';
 
 /** Game Maker interaction mode */
 type MakerTool = 'place' | 'select' | 'copy' | 'city';
@@ -401,6 +409,10 @@ export class ForgeHeartGame {
   private siteBuilder: SiteSession | null = null;
   private siteGhost: THREE.Group | null = null;
   private sitePropGhost: THREE.Group | null = null;
+  /** Plaza plot develop / transform mode (lease-office builds) */
+  private plotBuild: PlotBuildSession | null = null;
+  private plotBuildSelect: THREE.Group | null = null;
+  private plotBuildGhost: THREE.Group | null = null;
   /** Accumulates two-finger twist before snapping home yaw 90°. */
   private siteRotateAcc = 0;
   private velocity = new THREE.Vector3();
@@ -889,6 +901,10 @@ export class ForgeHeartGame {
         this.closeBay();
         return;
       }
+      if (this.plotBuild && e.code === 'Escape') {
+        this.cancelPlotBuildMode();
+        return;
+      }
       if (this.leaseOfficeOpen && e.code === 'Escape') {
         this.closeLeaseOffice();
         return;
@@ -995,6 +1011,14 @@ export class ForgeHeartGame {
         if (this.gameMakerActive) {
           if (this.makerPaletteOpen) return;
           e.preventDefault();
+          if (this.plotBuild) {
+            const t = e.target as HTMLElement | null;
+            if (t?.closest?.('#stall-wizard')) return;
+            // Confirm only when placing / transforming (not catalog)
+            if (this.plotBuild.step === 'choose') return;
+            this.confirmPlotBuildMode();
+            return;
+          }
           if (this.siteBuilder) {
             // Ignore clicks on the wizard panel
             const t = e.target as HTMLElement | null;
@@ -1098,6 +1122,7 @@ export class ForgeHeartGame {
   exitGameMaker() {
     if (!this.gameMakerActive) return;
     if (this.siteBuilder) this.clearSiteBuilderVisuals();
+    if (this.plotBuild) this.clearPlotBuildVisuals();
     this.gameMakerActive = false;
     this.clearCityGhost();
     this.setMakerPaletteOpen(false);
@@ -1496,6 +1521,66 @@ export class ForgeHeartGame {
 
   /** Returns true if key was consumed by maker edit tools */
   private handleMakerKey(code: string): boolean {
+    // Plot develop / transform mode
+    if (this.plotBuild) {
+      if (code === 'Escape') {
+        if (this.plotBuild.step === 'place' || this.plotBuild.step === 'transform') {
+          this.plotBuild.step = 'choose';
+          this.plotBuild.buildKind = null;
+          this.plotBuild.transform = null;
+          this.rebuildPlotBuildGhosts();
+          this.refreshPlotBuildUi();
+          this.toast('Back to catalog.', 2);
+          return true;
+        }
+        this.cancelPlotBuildMode();
+        return true;
+      }
+      if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+        this.confirmPlotBuildMode();
+        return true;
+      }
+      if (code === 'BracketRight' || code === 'Equal' || code === 'NumpadAdd') {
+        this.nudgePlotBuildYaw(1);
+        return true;
+      }
+      if (code === 'BracketLeft' || code === 'Minus' || code === 'NumpadSubtract') {
+        this.nudgePlotBuildYaw(-1);
+        return true;
+      }
+      // Arrow / IJKL: cycle bridge facing or move direction
+      if (
+        code === 'ArrowRight' ||
+        code === 'KeyL' ||
+        code === 'ArrowDown' ||
+        code === 'KeyK' ||
+        code === 'ArrowLeft' ||
+        code === 'KeyJ' ||
+        code === 'ArrowUp' ||
+        code === 'KeyI'
+      ) {
+        const dir: 0 | 1 | 2 | 3 =
+          code === 'ArrowRight' || code === 'KeyL'
+            ? 0
+            : code === 'ArrowDown' || code === 'KeyK'
+              ? 1
+              : code === 'ArrowLeft' || code === 'KeyJ'
+                ? 2
+                : 3;
+        if (this.plotBuild.buildKind === 'bridge' && this.plotBuild.step === 'place') {
+          this.plotBuild.bridgeFacing = dir;
+          this.rebuildPlotBuildGhosts();
+          this.refreshPlotBuildUi();
+        } else if (this.plotBuild.transform === 'move' && this.plotBuild.step === 'transform') {
+          this.plotBuild.moveDir = dir;
+          this.rebuildPlotBuildGhosts();
+          this.refreshPlotBuildUi();
+        }
+        return true;
+      }
+      return true; // swallow other maker keys while in plot mode
+    }
+
     if (!this.cityEditor || this.makerPaletteOpen) return false;
 
     // Site builder (stall / factory / bay wing)
@@ -1797,6 +1882,10 @@ export class ForgeHeartGame {
    * Copy mode: stamp copy of selection at look point.
    */
   private onMakerClick() {
+    if (this.plotBuild) {
+      this.confirmPlotBuildMode();
+      return;
+    }
     if (this.siteBuilder) {
       this.siteBuilderConfirmAction();
       return;
@@ -2378,6 +2467,12 @@ export class ForgeHeartGame {
     if (fallback.startsWith('Map ·') || fallback.startsWith('Loading')) {
       return fallback;
     }
+    if (this.plotBuild) {
+      return 'Stick fly · look at plot · pick build in panel · Enter confirm · Esc back';
+    }
+    if (this.plotBuild) {
+      return 'Stick fly · look at plot · pick build in panel · Enter confirm · Esc back';
+    }
     if (this.siteBuilder) {
       const s = this.siteBuilder;
       if (s.step === 'site' && !s.sitePlaced) {
@@ -2739,6 +2834,7 @@ export class ForgeHeartGame {
     this.neighborPanelId = null;
     this.neighborView = 'menu';
     this.leaseOfficeOpen = false;
+    if (this.plotBuild) this.clearPlotBuildVisuals();
     this.cityMapSelectedId = null;
     this.cityMapCam = null;
     this.cityMapDrag = null;
@@ -4520,7 +4616,8 @@ export class ForgeHeartGame {
       this.activeVendor ||
       this.romanceNpcId ||
       this.neighborPanelId ||
-      this.leaseOfficeOpen
+      this.leaseOfficeOpen ||
+      this.plotBuild
     ) {
       return true;
     }
@@ -5059,12 +5156,31 @@ export class ForgeHeartGame {
   }
 
   cancelStallWizardPublic() {
+    if (this.plotBuild) {
+      this.cancelPlotBuildMode();
+      return;
+    }
     this.cancelSiteBuilder();
   }
   stallWizardBackPublic() {
+    if (this.plotBuild) {
+      if (this.plotBuild.step === 'choose') this.cancelPlotBuildMode();
+      else {
+        this.plotBuild.step = 'choose';
+        this.plotBuild.buildKind = null;
+        this.plotBuild.transform = null;
+        this.rebuildPlotBuildGhosts();
+        this.refreshPlotBuildUi();
+      }
+      return;
+    }
     this.siteBuilderBack();
   }
   stallWizardNextPublic() {
+    if (this.plotBuild) {
+      this.confirmPlotBuildMode();
+      return;
+    }
     this.siteBuilderNext();
   }
 
@@ -6899,10 +7015,395 @@ export class ForgeHeartGame {
         cellX: p.cellX,
         cellY: p.cellY,
         rotation: p.rotation,
-        buildings: p.buildings.map((b) => ({ kind: b.kind })),
+        buildings: p.buildings.map((b) => ({ kind: b.kind, facing: b.facing })),
         isEdge: p.isEdge,
       })),
     );
+  }
+
+  // ——— Plot build mode (site-builder style) ———
+
+  private beginPlotBuildMode(plotId: string) {
+    ensureInvPlots(this.inv);
+    const plot = this.inv.plazaPlots.plots.find((p) => p.id === plotId);
+    if (!plot || plot.owner !== 'player') {
+      this.toast('Own the plot first.', 3);
+      return;
+    }
+    const d = districtById(plot.districtId);
+    if (!d) {
+      this.toast('Unknown district.', 2);
+      return;
+    }
+    this.closeLeaseOffice();
+    this.closeNeighborPanel();
+    this.plotBuild = makePlotBuildSession(plot, d);
+    this.enterGameMaker();
+    this.makerTool = 'select';
+    this.cityEditor?.updateGhost(null, 0);
+    this.clearCityGhost();
+    // Frame the plot
+    this.camera.position.set(
+      this.plotBuild.centerX,
+      Math.max(14, this.camera.position.y),
+      this.plotBuild.centerZ + this.plotBuild.cellSize * 0.85,
+    );
+    this.camera.lookAt(this.plotBuild.centerX, 1, this.plotBuild.centerZ);
+    this.rebuildPlotBuildGhosts();
+    this.refreshPlotBuildUi();
+    this.toast(
+      'Plot build mode — pick a structure or transform, aim the ghost, Enter confirms · Esc cancels.',
+      5,
+    );
+    this.setHelp(
+      this.mobile.enabled
+        ? 'PLOT · pick build · ⟲⟳ rotate · Enter confirm · Esc back'
+        : 'PLOT · pick build · [/] rotate · arrows face bridge/move · Enter confirm · Esc cancel',
+    );
+    this.syncMobileGameplay();
+  }
+
+  private clearPlotBuildVisuals() {
+    if (this.plotBuildSelect) {
+      this.scene.remove(this.plotBuildSelect);
+      this.plotBuildSelect = null;
+    }
+    if (this.plotBuildGhost) {
+      this.scene.remove(this.plotBuildGhost);
+      this.plotBuildGhost = null;
+    }
+    this.plotBuild = null;
+    const panel = document.getElementById('stall-wizard');
+    panel?.classList.add('hidden');
+    panel?.setAttribute('aria-hidden', 'true');
+    this.syncMobileGameplay();
+  }
+
+  private cancelPlotBuildMode() {
+    if (!this.plotBuild) return;
+    this.clearPlotBuildVisuals();
+    if (this.gameMakerActive) this.exitGameMaker();
+    this.toast('Plot build cancelled.', 2);
+  }
+
+  private nudgePlotBuildYaw(dir: 1 | -1) {
+    const s = this.plotBuild;
+    if (!s) return;
+    if (s.step === 'place' && s.buildKind === 'bridge') {
+      s.bridgeFacing = ((((s.bridgeFacing + dir) % 4) + 4) % 4) as 0 | 1 | 2 | 3;
+    } else if (s.step === 'transform' && s.transform === 'rotate') {
+      s.previewYaw = (s.previewYaw + dir * 90 + 360) % 360;
+    } else if (s.step === 'place' && s.buildKind) {
+      s.previewYaw = (s.previewYaw + dir * 90 + 360) % 360;
+    } else if (s.step === 'transform' && s.transform === 'move') {
+      s.moveDir = ((((s.moveDir + dir) % 4) + 4) % 4) as 0 | 1 | 2 | 3;
+    }
+    this.rebuildPlotBuildGhosts();
+    this.refreshPlotBuildUi();
+  }
+
+  private rebuildPlotBuildGhosts() {
+    const s = this.plotBuild;
+    if (!s) return;
+    if (this.plotBuildSelect) {
+      this.scene.remove(this.plotBuildSelect);
+      this.plotBuildSelect = null;
+    }
+    if (this.plotBuildGhost) {
+      this.scene.remove(this.plotBuildGhost);
+      this.plotBuildGhost = null;
+    }
+    ensureInvPlots(this.inv);
+    const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
+    const validBase = !!plot && plot.owner === 'player';
+
+    // Selection footprint always on the edited cell
+    let selX = s.centerX;
+    let selZ = s.centerZ;
+    if (s.step === 'transform' && s.transform === 'move' && plot) {
+      const d = districtById(s.districtId);
+      if (d) {
+        const deltas: [number, number][] = [
+          [1, 0],
+          [0, 1],
+          [-1, 0],
+          [0, -1],
+        ];
+        const [dx, dy] = deltas[s.moveDir]!;
+        const { x, z } = plotWorldCenter(
+          d,
+          plot.cellX + dx,
+          plot.cellY + dy,
+        );
+        selX = x;
+        selZ = z;
+      }
+    }
+    const box = makePlotSelectionBox(s.cellSize, validBase);
+    box.position.set(selX, 0, selZ);
+    box.rotation.y = (s.previewYaw * Math.PI) / 180;
+    this.scene.add(box);
+    this.plotBuildSelect = box;
+
+    if (s.step === 'place' && s.buildKind) {
+      let placeValid = validBase;
+      if (s.buildKind === 'bridge' && plot) {
+        placeValid = hasAdjacentOwned(this.inv.plazaPlots, plot);
+      }
+      const q = plot ? quotePlotBuild(plot, s.buildKind) : null;
+      if (q && !q.ok) placeValid = false;
+      s.quotedCost = q?.cost ?? 0;
+      s.offZone = q?.offZone ?? false;
+      const ghost = makePlotBuildGhost(s.buildKind, s.cellSize, {
+        bridgeFacing: s.bridgeFacing,
+        valid: placeValid && this.inv.brass >= (q?.cost ?? 0),
+      });
+      ghost.position.set(s.centerX, 0, s.centerZ);
+      if (s.buildKind !== 'bridge') {
+        ghost.rotation.y = (s.previewYaw * Math.PI) / 180;
+      }
+      // Offset bridge toward edge
+      if (s.buildKind === 'bridge') {
+        const off = s.cellSize * 0.35;
+        const f = s.bridgeFacing;
+        if (f === 0) ghost.position.x += off;
+        else if (f === 1) ghost.position.z += off;
+        else if (f === 2) ghost.position.x -= off;
+        else ghost.position.z -= off;
+      }
+      this.scene.add(ghost);
+      this.plotBuildGhost = ghost;
+    }
+  }
+
+  private refreshPlotBuildUi() {
+    const s = this.plotBuild;
+    if (!s) return;
+    const panel = document.getElementById('stall-wizard');
+    const body = document.getElementById('stall-wizard-body');
+    const quoteEl = document.getElementById('stall-wizard-quote');
+    const stepEl = document.getElementById('stall-wizard-step');
+    const title = document.getElementById('stall-wizard-title');
+    const sub = document.getElementById('stall-wizard-sub');
+    const nextBtn = document.getElementById('stall-wizard-next') as HTMLButtonElement | null;
+    const backBtn = document.getElementById('stall-wizard-back') as HTMLButtonElement | null;
+    if (!panel || !body) return;
+    panel.classList.remove('hidden');
+    panel.setAttribute('aria-hidden', 'false');
+    if (title) title.textContent = 'Plot develop';
+    if (sub) {
+      sub.textContent = `District ${s.districtId.replace(/_/g, ' ')} · cell (${s.cellX},${s.cellY}) · fly around to inspect`;
+    }
+    ensureInvPlots(this.inv);
+    const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
+
+    if (s.step === 'choose') {
+      if (stepEl) stepEl.textContent = 'Step 1 · Choose build or transform';
+      if (quoteEl) {
+        quoteEl.textContent = `Brass ${this.inv.brass.toLocaleString()} · pick a structure to preview on the plot`;
+      }
+      if (nextBtn) {
+        nextBtn.textContent = 'Close';
+        nextBtn.disabled = false;
+      }
+      if (backBtn) backBtn.textContent = 'Cancel';
+      body.innerHTML = '';
+      const hint = document.createElement('p');
+      hint.className = 'stall-wizard-hint';
+      hint.textContent =
+        'You are looking at this plot. Choose a build to place a ghost, or rotate/move the platform section.';
+      body.appendChild(hint);
+      for (const def of PLOT_BUILD_CATALOG) {
+        const q = plot ? quotePlotBuild(plot, def.kind) : { ok: false, cost: 0, offZone: false, msg: '' };
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'stall-wizard-btn';
+        btn.style.display = 'block';
+        btn.style.width = '100%';
+        btn.style.marginBottom = '0.35rem';
+        btn.disabled = !q.ok;
+        btn.textContent = q.ok
+          ? `${def.name} · ${q.cost.toLocaleString()}b${q.offZone ? ' (off-zone)' : ''}`
+          : `${def.name} · ${q.msg ?? 'locked'}`;
+        btn.title = def.blurb;
+        btn.addEventListener('click', () => {
+          if (!q.ok) return;
+          s.buildKind = def.kind;
+          s.transform = null;
+          s.step = 'place';
+          s.quotedCost = q.cost;
+          s.offZone = q.offZone;
+          this.rebuildPlotBuildGhosts();
+          this.refreshPlotBuildUi();
+        });
+        body.appendChild(btn);
+      }
+      const tr = document.createElement('p');
+      tr.className = 'stall-wizard-hint';
+      tr.style.marginTop = '0.75rem';
+      tr.textContent = 'Transform';
+      body.appendChild(tr);
+      for (const [tool, label] of [
+        ['rotate', 'Rotate plot 90°'],
+        ['move', 'Move / swap on grid'],
+      ] as const) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'stall-wizard-btn';
+        btn.style.display = 'block';
+        btn.style.width = '100%';
+        btn.style.marginBottom = '0.35rem';
+        btn.textContent = label;
+        btn.addEventListener('click', () => {
+          s.transform = tool;
+          s.buildKind = null;
+          s.step = 'transform';
+          this.rebuildPlotBuildGhosts();
+          this.refreshPlotBuildUi();
+        });
+        body.appendChild(btn);
+      }
+      return;
+    }
+
+    if (s.step === 'place' && s.buildKind) {
+      const name = plotBuildCatalogLabel(s.buildKind);
+      if (stepEl) stepEl.textContent = `Step 2 · Place ${name}`;
+      if (quoteEl) {
+        quoteEl.textContent = `Quote ${s.quotedCost.toLocaleString()}b${s.offZone ? ' · off-zone' : ''} · brass ${this.inv.brass.toLocaleString()}`;
+      }
+      if (nextBtn) {
+        nextBtn.textContent = 'Confirm build';
+        nextBtn.disabled = this.inv.brass < s.quotedCost;
+      }
+      if (backBtn) backBtn.textContent = 'Back';
+      body.innerHTML = '';
+      const p = document.createElement('p');
+      p.className = 'stall-wizard-hint';
+      p.textContent =
+        s.buildKind === 'bridge'
+          ? `Rope bridge · face with arrows/IJKL (now ${['+X', '+Z', '−X', '−Z'][s.bridgeFacing]}) · [/] cycles · needs adjacent owned plot · Enter confirms.`
+          : `Ghost shows ${name} on this plot · [/] rotates · fly to inspect · Enter confirms payment.`;
+      body.appendChild(p);
+      return;
+    }
+
+    if (s.step === 'transform' && s.transform) {
+      if (stepEl) {
+        stepEl.textContent =
+          s.transform === 'rotate' ? 'Transform · Rotate' : 'Transform · Move';
+      }
+      if (quoteEl) quoteEl.textContent = 'Free · preview on selection box';
+      if (nextBtn) {
+        nextBtn.textContent = 'Confirm';
+        nextBtn.disabled = false;
+      }
+      if (backBtn) backBtn.textContent = 'Back';
+      body.innerHTML = '';
+      const p = document.createElement('p');
+      p.className = 'stall-wizard-hint';
+      p.textContent =
+        s.transform === 'rotate'
+          ? `Preview yaw ${s.previewYaw}° · [/] snaps 90° · Enter applies.`
+          : `Move direction ${['+X →', '+Z ↓', '−X ←', '−Z ↑'][s.moveDir]} · arrows set dir · Enter swaps with free/owned neighbor cell.`;
+      body.appendChild(p);
+    }
+  }
+
+  private confirmPlotBuildMode() {
+    const s = this.plotBuild;
+    if (!s) return;
+    // From choose step, next/close exits
+    if (s.step === 'choose') {
+      this.cancelPlotBuildMode();
+      return;
+    }
+    ensureInvPlots(this.inv);
+    if (s.step === 'place' && s.buildKind) {
+      const r = developPlot(this.inv, s.plotId, s.buildKind, {
+        bridgeFacing: s.bridgeFacing,
+      });
+      this.toast(r.msg, 4);
+      if (r.ok) {
+        this.audio.playPickup();
+        this.brass = this.inv.brass;
+        this.syncPlotOwnershipVisuals();
+        this.syncCityStallVisuals();
+        writeSlot(this.activeSlot, this.buildSaveData());
+        this.syncEconomyHud();
+        // Stay in mode to add more, back to choose
+        s.step = 'choose';
+        s.buildKind = null;
+        // Refresh centers if plot still same
+        const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
+        const d = districtById(s.districtId);
+        if (plot && d) {
+          const c = plotWorldCenter(d, plot.cellX, plot.cellY);
+          s.centerX = c.x;
+          s.centerZ = c.z;
+          s.cellX = plot.cellX;
+          s.cellY = plot.cellY;
+          s.previewYaw = plot.rotation;
+        }
+        this.rebuildPlotBuildGhosts();
+        this.refreshPlotBuildUi();
+      }
+      return;
+    }
+    if (s.step === 'transform' && s.transform === 'rotate') {
+      // Apply rotations until match preview (or just set)
+      const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
+      if (plot) {
+        plot.rotation = s.previewYaw % 360;
+        this.toast(`Plot rotated to ${plot.rotation}°.`, 3);
+        this.syncPlotOwnershipVisuals();
+        writeSlot(this.activeSlot, this.buildSaveData());
+      }
+      s.step = 'choose';
+      s.transform = null;
+      this.rebuildPlotBuildGhosts();
+      this.refreshPlotBuildUi();
+      return;
+    }
+    if (s.step === 'transform' && s.transform === 'move') {
+      const r = movePlot(this.inv, s.plotId, s.moveDir);
+      this.toast(r.msg, 3);
+      if (r.ok) {
+        // plot id may have rekeyed — find player plot at new cell
+        const d = districtById(s.districtId);
+        const deltas: [number, number][] = [
+          [1, 0],
+          [0, 1],
+          [-1, 0],
+          [0, -1],
+        ];
+        const [dx, dy] = deltas[s.moveDir]!;
+        const nx = s.cellX + dx;
+        const ny = s.cellY + dy;
+        const moved = this.inv.plazaPlots.plots.find(
+          (p) =>
+            p.owner === 'player' &&
+            p.districtId === s.districtId &&
+            p.cellX === nx &&
+            p.cellY === ny,
+        );
+        if (moved && d) {
+          s.plotId = moved.id;
+          s.cellX = moved.cellX;
+          s.cellY = moved.cellY;
+          const c = plotWorldCenter(d, moved.cellX, moved.cellY);
+          s.centerX = c.x;
+          s.centerZ = c.z;
+          s.previewYaw = moved.rotation;
+        }
+        this.syncPlotOwnershipVisuals();
+        writeSlot(this.activeSlot, this.buildSaveData());
+      }
+      s.step = 'choose';
+      s.transform = null;
+      this.rebuildPlotBuildGhosts();
+      this.refreshPlotBuildUi();
+    }
   }
 
   private ensureLeaseOfficePanel(): HTMLElement {
@@ -7029,70 +7530,16 @@ export class ForgeHeartGame {
           : `Empty lot · rot ${p.rotation}°${p.isEdge ? ' · edge' : ''}`;
         row.appendChild(buildHint);
 
-        // Develop catalog
-        for (const def of PLOT_BUILD_CATALOG) {
-          const q = quotePlotBuild(p, def.kind);
-          if (!q.ok) continue;
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'romance-btn';
-          btn.textContent = `${def.name} ${q.cost.toLocaleString()}b${q.offZone ? ' ★' : ''}`;
-          btn.title = def.blurb + (q.offZone ? ' (off-zone surcharge)' : '');
-          btn.addEventListener('click', () => {
-            const r = developPlot(this.inv, p.id, def.kind);
-            if (log) log.textContent = r.msg;
-            this.toast(r.msg, 4);
-            if (r.ok) {
-              this.audio.playPickup();
-              this.brass = this.inv.brass;
-              this.syncPlotOwnershipVisuals();
-              writeSlot(this.activeSlot, this.buildSaveData());
-              this.syncEconomyHud();
-              this.syncCityStallVisuals();
-            }
-            this.fillLeaseOffice();
-          });
-          row.appendChild(btn);
-        }
-
-        // Rotate / move
-        const rot = document.createElement('button');
-        rot.type = 'button';
-        rot.className = 'romance-btn';
-        rot.textContent = 'Rotate 90°';
-        rot.addEventListener('click', () => {
-          const r = rotatePlot(this.inv, p.id);
-          if (log) log.textContent = r.msg;
-          this.toast(r.msg, 2);
-          if (r.ok) {
-            this.syncPlotOwnershipVisuals();
-            writeSlot(this.activeSlot, this.buildSaveData());
-          }
-          this.fillLeaseOffice();
+        // Open site-builder-style develop mode on this plot
+        const develop = document.createElement('button');
+        develop.type = 'button';
+        develop.className = 'romance-btn';
+        develop.textContent = 'Develop / transform…';
+        develop.title = 'Fly over the plot, place buildings & bridges, rotate or move';
+        develop.addEventListener('click', () => {
+          this.beginPlotBuildMode(p.id);
         });
-        row.appendChild(rot);
-        for (const [dir, label] of [
-          [0, '→'],
-          [1, '↓'],
-          [2, '←'],
-          [3, '↑'],
-        ] as const) {
-          const mv = document.createElement('button');
-          mv.type = 'button';
-          mv.className = 'romance-btn';
-          mv.textContent = `Move ${label}`;
-          mv.addEventListener('click', () => {
-            const r = movePlot(this.inv, p.id, dir);
-            if (log) log.textContent = r.msg;
-            this.toast(r.msg, 3);
-            if (r.ok) {
-              this.syncPlotOwnershipVisuals();
-              writeSlot(this.activeSlot, this.buildSaveData());
-            }
-            this.fillLeaseOffice();
-          });
-          row.appendChild(mv);
-        }
+        row.appendChild(develop);
 
         if (p.tenantNeighborId && !p.vacant) {
           const rentTag = document.createElement('span');

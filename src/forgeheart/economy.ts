@@ -7189,6 +7189,7 @@ export function developPlot(
   inv: InventoryState,
   plotKey: string,
   kind: PlotBuildKind,
+  opts?: { bridgeFacing?: number },
 ): { ok: boolean; msg: string } {
   ensureInvPlots(inv);
   ensureStandingState(inv);
@@ -7203,7 +7204,10 @@ export function developPlot(
       msg: `Need ${q.cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
     };
   }
-  const r = applyPlotBuild(plot, kind, { adjacentOwned: adj });
+  const r = applyPlotBuild(plot, kind, {
+    adjacentOwned: adj,
+    bridgeFacing: opts?.bridgeFacing,
+  });
   if (!r.ok) return { ok: false, msg: r.msg };
   inv.brass -= r.cost;
   if (r.offZone) {

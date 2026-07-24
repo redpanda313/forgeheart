@@ -21,6 +21,7 @@ import {
   type CityDistrictDef,
   type CommodityId,
 } from './economy';
+import { buildRopePlankBridgeMesh } from './plotBuild';
 import { buildPrefab } from './cityEditor';
 import { CATALOG, type CatalogEntry } from './editorCatalog';
 import { buildMapSnapshot, type MapSnapshot } from './cityMap';
@@ -241,7 +242,7 @@ export interface SkyCityBuilt {
       cellX?: number;
       cellY?: number;
       rotation?: number;
-      buildings?: { kind: string }[];
+      buildings?: { kind: string; facing?: number }[];
       isEdge?: boolean;
     }[],
   ) => void;
@@ -2455,7 +2456,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       cellX?: number;
       cellY?: number;
       rotation?: number;
-      buildings?: { kind: string }[];
+      buildings?: { kind: string; facing?: number }[];
       isEdge?: boolean;
     }[],
   ) => {
@@ -2469,7 +2470,9 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     group.traverse((obj) => {
       const pid = (obj as THREE.Object3D).userData?.plotId as string | undefined;
       if (!pid || !(obj instanceof THREE.Mesh)) return;
-      if (obj.parent === plotStructRoot) return;
+      if (obj.parent === plotStructRoot || plotStructRoot.children.includes(obj)) return;
+      // Only pad meshes (name plot_*)
+      if (!pid.startsWith('plot_')) return;
       const p = byId.get(pid);
       if (!p) return;
       const mat = obj.material as THREE.MeshStandardMaterial;
@@ -2490,19 +2493,15 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         mat.emissive?.setHex(0x000000);
         if (mat.emissiveIntensity != null) mat.emissiveIntensity = 0.05;
       }
-      // Rotate square pad visual (Task 8)
       if (typeof p.rotation === 'number') {
         obj.rotation.z = (-p.rotation * Math.PI) / 180;
       }
     });
 
-    // Rebuild simple structure meshes for player plots
+    // Rebuild structure meshes for player plots
     while (plotStructRoot.children.length) {
       const c = plotStructRoot.children[0]!;
       plotStructRoot.remove(c);
-      if (c instanceof THREE.Mesh) {
-        c.geometry?.dispose?.();
-      }
     }
     for (const p of plots) {
       if (p.owner !== 'player' || !p.districtId || p.cellX == null || p.cellY == null) {
@@ -2512,7 +2511,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       if (!d) continue;
       const { x: px, z: pz, cellSize } = plotWorldCenter(d, p.cellX, p.cellY);
       const yaw = ((p.rotation ?? 0) * Math.PI) / 180;
-      const kinds = p.buildings?.map((b) => b.kind) ?? [];
+      const buildings = p.buildings ?? [];
       const g = new THREE.Group();
       g.position.set(px, DECK_Y, pz);
       g.rotation.y = yaw;
@@ -2528,6 +2527,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         m.position.y = y;
         g.add(m);
       };
+      const kinds = buildings.map((b) => b.kind);
       if (kinds.includes('apartment') || kinds.includes('home')) {
         addBox(cellSize * 0.55, 2.4, cellSize * 0.4, 1.2, 0x8a7060);
       }
@@ -2565,8 +2565,17 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       if (kinds.includes('decor')) {
         addBox(0.25, 1.4, 0.25, 0.7, 0xc4a35a);
       }
-      if (kinds.includes('bridge')) {
-        addBox(cellSize * 0.85, 0.18, cellSize * 0.28, 0.25, 0x6a6558);
+      const bridgeB = buildings.find((b) => b.kind === 'bridge');
+      if (bridgeB) {
+        const br = buildRopePlankBridgeMesh(cellSize, bridgeB.facing ?? 0, false);
+        // Offset toward edge so bridge spans toward neighbor
+        const f = bridgeB.facing ?? 0;
+        const off = cellSize * 0.35;
+        if (f === 0) br.position.x += off;
+        else if (f === 1) br.position.z += off;
+        else if (f === 2) br.position.x -= off;
+        else br.position.z -= off;
+        g.add(br);
       }
       if (g.children.length) plotStructRoot.add(g);
     }
