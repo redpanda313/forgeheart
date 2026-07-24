@@ -1,12 +1,14 @@
 /**
- * Plot build mode — site-builder style placement for plaza plots (Tasks 7–8).
- * Ghost meshes + rope-plank bridges.
+ * Plot build mode — site-builder style placement for plaza plots.
+ * Dual ghosts: translucent “current” placement + clearer “preview” placement
+ * (same idea as stall/home selection box + door direction).
  */
 
 import * as THREE from 'three';
-import type { PlotBuildKind, PlotState } from './plazaPlots';
-import { PLOT_BUILD_CATALOG, plotWorldCenter, hasAdjacentOwned } from './plazaPlots';
+import type { PlotBuildKind, PlotBuildingStub, PlotState } from './plazaPlots';
+import { PLOT_BUILD_CATALOG, hasAdjacentOwned } from './plazaPlots';
 import type { CityDistrictDef } from './economy';
+import { makeSignSprite, setSignWorldWidth } from './signLabel';
 
 export type PlotBuildModeStep = 'choose' | 'place' | 'transform';
 
@@ -40,7 +42,11 @@ export function makePlotBuildSession(
   plot: PlotState,
   d: CityDistrictDef,
 ): PlotBuildSession {
-  const { x, z, cellSize } = plotWorldCenter(d, plot.cellX, plot.cellY);
+  const cellSize = d.size * 0.26;
+  const originX = d.x - cellSize;
+  const originZ = d.z - cellSize;
+  const x = originX + plot.cellX * cellSize;
+  const z = originZ + plot.cellY * cellSize;
   return {
     plotId: plot.id,
     districtId: plot.districtId,
@@ -60,63 +66,290 @@ export function makePlotBuildSession(
   };
 }
 
-/** Footprint selection box (like stall site box) */
-export function makePlotSelectionBox(cellSize: number, valid: boolean): THREE.Group {
+export type PlotPreviewRole = 'current' | 'preview';
+
+/**
+ * Footprint box with optional front/entry cue (like stall door notch).
+ * facing: 0=+X 1=+Z 2=-X 3=-Z — front edge of the plot section.
+ */
+export function makePlotSelectionBox(
+  cellSize: number,
+  opts?: {
+    valid?: boolean;
+    role?: PlotPreviewRole;
+    /** Show front/entry apron on +local Z (rotated by facing) */
+    frontCue?: boolean;
+    facing?: 0 | 1 | 2 | 3;
+    label?: string;
+  },
+): THREE.Group {
   const g = new THREE.Group();
   g.name = 'PlotSelectBox';
-  const half = cellSize * 0.46;
-  const color = valid ? 0x44cc88 : 0xcc4444;
-  const edge = new THREE.LineSegments(
-    new THREE.EdgesGeometry(new THREE.BoxGeometry(half * 2, 0.35, half * 2)),
-    new THREE.LineBasicMaterial({ color }),
-  );
-  edge.position.y = 0.2;
-  g.add(edge);
-  const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(half * 2, half * 2),
-    new THREE.MeshStandardMaterial({
-      color,
-      transparent: true,
-      opacity: 0.18,
-      depthWrite: false,
-    }),
-  );
-  floor.rotation.x = -Math.PI / 2;
-  floor.position.y = 0.06;
-  g.add(floor);
-  // Corner posts
-  for (const [sx, sz] of [
-    [-1, -1],
-    [1, -1],
-    [-1, 1],
-    [1, 1],
-  ] as const) {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.14, 0.9, 0.14),
+  const valid = opts?.valid !== false;
+  const role = opts?.role ?? 'preview';
+  const half = cellSize * 0.48;
+  const size = half * 2;
+  const doorW = Math.min(cellSize * 0.38, 4.2);
+
+  // Current = cool/dim; preview = warm/bright green (or red if invalid)
+  const fillColor =
+    role === 'current' ? 0x6a8aaa : valid ? 0x66e0a0 : 0xe07070;
+  const edgeColor =
+    role === 'current' ? 0x88aacc : valid ? 0xa8ffcc : 0xffaaaa;
+  const fillOpacity = role === 'current' ? 0.12 : 0.28;
+  const edgeEmissive = role === 'current' ? 0.15 : 0.4;
+
+  const fillMat = new THREE.MeshStandardMaterial({
+    color: fillColor,
+    transparent: true,
+    opacity: fillOpacity,
+    depthWrite: false,
+    roughness: 0.85,
+  });
+  const edgeMat = new THREE.MeshStandardMaterial({
+    color: edgeColor,
+    emissive: edgeColor,
+    emissiveIntensity: edgeEmissive,
+    transparent: true,
+    opacity: role === 'current' ? 0.55 : 0.95,
+    depthWrite: false,
+  });
+
+  const showFront = !!opts?.frontCue;
+  if (showFront) {
+    const depth = size - 0.85;
+    const main = new THREE.Mesh(new THREE.BoxGeometry(size, 0.07, depth), fillMat);
+    main.position.set(0, 0.05, -0.42);
+    g.add(main);
+    const sideW = (size - doorW) / 2;
+    for (const sx of [-1, 1]) {
+      const wing = new THREE.Mesh(new THREE.BoxGeometry(sideW, 0.07, 0.85), fillMat);
+      wing.position.set(sx * (doorW / 2 + sideW / 2), 0.05, half - 0.42);
+      g.add(wing);
+    }
+    // Entry apron (reads as door / front)
+    const apron = new THREE.Mesh(
+      new THREE.BoxGeometry(doorW * 0.92, 0.1, 1.2),
       new THREE.MeshStandardMaterial({
-        color: 0xc4a35a,
-        emissive: 0x664400,
-        emissiveIntensity: 0.35,
+        color: role === 'current' ? 0x5aa8c8 : 0x4af0ff,
+        emissive: role === 'current' ? 0x226688 : 0x00b8e0,
+        emissiveIntensity: role === 'current' ? 0.55 : 1.2,
+        transparent: true,
+        opacity: role === 'current' ? 0.45 : 0.9,
+        depthWrite: false,
       }),
     );
-    post.position.set(sx * half * 0.95, 0.45, sz * half * 0.95);
-    g.add(post);
+    apron.position.set(0, 0.08, half - 0.5);
+    g.add(apron);
+    // Arrow pointing out the front
+    const arrow = new THREE.Mesh(
+      new THREE.ConeGeometry(0.28, 0.7, 5),
+      new THREE.MeshStandardMaterial({
+        color: role === 'current' ? 0x88cce8 : 0x6afff0,
+        emissive: role === 'current' ? 0x224466 : 0x00aacc,
+        emissiveIntensity: role === 'current' ? 0.4 : 0.85,
+        transparent: true,
+        opacity: role === 'current' ? 0.5 : 0.95,
+        depthWrite: false,
+      }),
+    );
+    arrow.rotation.x = Math.PI / 2;
+    arrow.position.set(0, 0.55, half + 0.15);
+    g.add(arrow);
+  } else {
+    const fill = new THREE.Mesh(new THREE.BoxGeometry(size, 0.07, size), fillMat);
+    fill.position.y = 0.05;
+    g.add(fill);
   }
+
+  // Edge rails
+  const railH = 0.2;
+  const railY = 0.14;
+  const addRail = (w: number, d: number, x: number, z: number) => {
+    const r = new THREE.Mesh(new THREE.BoxGeometry(w, railH, d), edgeMat);
+    r.position.set(x, railY, z);
+    g.add(r);
+  };
+  addRail(size, 0.14, 0, -half);
+  addRail(0.14, size, -half, 0);
+  addRail(0.14, size, half, 0);
+  if (showFront) {
+    const side = (size - doorW) / 2;
+    addRail(side, 0.18, -half + side / 2, half);
+    addRail(side, 0.18, half - side / 2, half);
+  } else {
+    addRail(size, 0.14, 0, half);
+  }
+
+  // Corner posts
+  for (const sx of [-1, 1] as const) {
+    for (const sz of [-1, 1] as const) {
+      if (showFront && sz > 0) continue;
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, role === 'current' ? 0.9 : 1.35, 0.16),
+        new THREE.MeshStandardMaterial({
+          color: role === 'current' ? 0x7a8a9a : 0xc4a35a,
+          emissive: role === 'current' ? 0x223344 : 0x664400,
+          emissiveIntensity: role === 'current' ? 0.2 : 0.4,
+          transparent: true,
+          opacity: role === 'current' ? 0.45 : 0.95,
+          depthWrite: false,
+        }),
+      );
+      post.position.set(sx * half * 0.96, role === 'current' ? 0.45 : 0.7, sz * half * 0.96);
+      g.add(post);
+    }
+  }
+
+  if (showFront) {
+    for (const sx of [-1, 1] as const) {
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, 1.2, 0.16),
+        new THREE.MeshStandardMaterial({
+          color: role === 'current' ? 0x6a9aaa : 0x4ae0ff,
+          emissive: role === 'current' ? 0x224455 : 0x0088aa,
+          emissiveIntensity: role === 'current' ? 0.3 : 0.7,
+          transparent: true,
+          opacity: role === 'current' ? 0.5 : 0.95,
+          depthWrite: false,
+        }),
+      );
+      post.position.set(sx * (doorW * 0.48), 0.6, half);
+      g.add(post);
+    }
+  }
+
+  if (opts?.label) {
+    const tag = makeSignSprite(opts.label, { width: 280, maxWidth: 420 });
+    setSignWorldWidth(tag, Math.min(cellSize * 0.9, 5.5));
+    tag.position.set(0, role === 'current' ? 2.1 : 2.6, 0);
+    g.add(tag);
+  }
+
+  // Footprint always drawn with front on local +Z; caller rotates the group.
+  // opts.facing is kept for API clarity but applied by parent when needed.
+  void opts?.facing;
+
   return g;
 }
 
-/** Building ghost (translucent) — local origin at plot center */
+/** @deprecated use role-aware makePlotSelectionBox */
+export function makePlotSelectionBoxLegacy(cellSize: number, valid: boolean): THREE.Group {
+  return makePlotSelectionBox(cellSize, { valid, role: 'preview', frontCue: true, facing: 1 });
+}
+
+export interface PlotContentOpts {
+  role: PlotPreviewRole;
+  valid?: boolean;
+  /** Override opacity */
+  opacity?: number;
+  yawDeg?: number;
+  bridgeFacing?: number;
+}
+
+/**
+ * Full content preview for a plot: footprint + structures.
+ * Local origin at plot center; apply world position on the group.
+ * Whole group is rotated by yawDeg so footprint front (+Z) and buildings share orientation.
+ */
+export function makePlotContentPreview(
+  buildings: PlotBuildingStub[],
+  cellSize: number,
+  opts: PlotContentOpts,
+): THREE.Group {
+  const g = new THREE.Group();
+  g.name = `PlotContent_${opts.role}`;
+  const role = opts.role;
+  const valid = opts.valid !== false;
+  const opacity =
+    opts.opacity ?? (role === 'current' ? 0.22 : 0.72);
+
+  const hasBridge = buildings.some((b) => b.kind === 'bridge');
+  const bridgeFacing = (opts.bridgeFacing ??
+    buildings.find((b) => b.kind === 'bridge')?.facing ??
+    1) as 0 | 1 | 2 | 3;
+
+  // Local +Z front; rotate group so front matches yaw (or bridge out-direction)
+  const yawDeg = hasBridge
+    ? facingToYaw(bridgeFacing)
+    : opts.yawDeg ?? 0;
+
+  const foot = makePlotSelectionBox(cellSize, {
+    valid,
+    role,
+    frontCue: true,
+    facing: 1,
+    label: role === 'current' ? 'CURRENT' : 'NEW',
+  });
+  g.add(foot);
+
+  for (const b of buildings) {
+    if (b.kind === 'empty') continue;
+    if (b.kind === 'bridge') {
+      // Bridge mesh has its own facing; keep local so rope runs toward front
+      const br = buildRopePlankBridgeMesh(cellSize, 1, true, opacity);
+      br.position.z += cellSize * 0.35;
+      g.add(br);
+      continue;
+    }
+    g.add(makeSolidStructure(b.kind, cellSize, opacity, role));
+  }
+
+  g.rotation.y = (yawDeg * Math.PI) / 180;
+  return g;
+}
+
+function facingToYaw(facing: 0 | 1 | 2 | 3): number {
+  // 0=+X 1=+Z 2=-X 3=-Z → degrees (0 = +Z front)
+  return [90, 0, 270, 180][facing]!;
+}
+
+/** Preview for placing one new build kind onto (possibly empty) plot */
 export function makePlotBuildGhost(
   kind: PlotBuildKind,
   cellSize: number,
-  opts?: { bridgeFacing?: number; valid?: boolean },
+  opts?: {
+    bridgeFacing?: number;
+    valid?: boolean;
+    yawDeg?: number;
+    role?: PlotPreviewRole;
+    opacity?: number;
+  },
+): THREE.Group {
+  const role = opts?.role ?? 'preview';
+  const buildings: PlotBuildingStub[] =
+    kind === 'bridge'
+      ? [{ kind: 'bridge', facing: opts?.bridgeFacing ?? 1 }]
+      : [{ kind }];
+  // For non-bridge, use yawDeg for section orientation; bridge uses bridgeFacing
+  return makePlotContentPreview(buildings, cellSize, {
+    role,
+    valid: opts?.valid,
+    opacity: opts?.opacity ?? (role === 'preview' ? 0.78 : 0.22),
+    yawDeg: kind === 'bridge' ? undefined : opts?.yawDeg ?? 0,
+    bridgeFacing: opts?.bridgeFacing ?? 1,
+  });
+}
+
+/** Snapshot of existing plot for “current” ghost */
+export function makePlotCurrentGhost(
+  plot: PlotState,
+  cellSize: number,
+): THREE.Group {
+  return makePlotContentPreview(plot.buildings ?? [], cellSize, {
+    role: 'current',
+    valid: true,
+    yawDeg: plot.rotation ?? 0,
+  });
+}
+
+function makeSolidStructure(
+  kind: PlotBuildKind,
+  cellSize: number,
+  opacity: number,
+  role: PlotPreviewRole,
 ): THREE.Group {
   const g = new THREE.Group();
-  g.name = `PlotGhost_${kind}`;
-  const valid = opts?.valid !== false;
-  const tint = valid ? 0x66ddaa : 0xdd6666;
-  const opacity = 0.45;
-
   const mat = (color: number, metal = 0.15) =>
     new THREE.MeshStandardMaterial({
       color,
@@ -125,12 +358,9 @@ export function makePlotBuildGhost(
       roughness: 0.7,
       metalness: metal,
       depthWrite: false,
+      emissive: role === 'preview' ? color : 0x000000,
+      emissiveIntensity: role === 'preview' ? 0.08 : 0,
     });
-
-  if (kind === 'bridge') {
-    g.add(buildRopePlankBridgeMesh(cellSize, opts?.bridgeFacing ?? 0, true));
-    return g;
-  }
 
   if (kind === 'apartment' || kind === 'home') {
     const body = new THREE.Mesh(
@@ -139,6 +369,13 @@ export function makePlotBuildGhost(
     );
     body.position.y = 1.2;
     g.add(body);
+    // Door face on +Z
+    const door = new THREE.Mesh(
+      new THREE.BoxGeometry(cellSize * 0.18, 1.1, 0.08),
+      mat(role === 'preview' ? 0x4af0ff : 0x5a7080),
+    );
+    door.position.set(0, 0.7, cellSize * 0.22);
+    g.add(door);
     const roof = new THREE.Mesh(
       new THREE.BoxGeometry(cellSize * 0.6, 0.25, cellSize * 0.45),
       mat(0x5a4030),
@@ -158,6 +395,12 @@ export function makePlotBuildGhost(
     );
     stack.position.set(cellSize * 0.12, 2.2, 0);
     g.add(stack);
+    const bay = new THREE.Mesh(
+      new THREE.BoxGeometry(cellSize * 0.22, 1.0, 0.1),
+      mat(role === 'preview' ? 0x4af0ff : 0x3a4850),
+    );
+    bay.position.set(0, 0.65, cellSize * 0.24);
+    g.add(bay);
   } else if (kind === 'retail') {
     const body = new THREE.Mesh(
       new THREE.BoxGeometry(cellSize * 0.5, 1.6, cellSize * 0.35),
@@ -179,10 +422,7 @@ export function makePlotBuildGhost(
     soil.position.y = 0.15;
     g.add(soil);
     for (let i = 0; i < 5; i++) {
-      const fl = new THREE.Mesh(
-        new THREE.SphereGeometry(0.14, 6, 6),
-        mat(0xd4a84a),
-      );
+      const fl = new THREE.Mesh(new THREE.SphereGeometry(0.14, 6, 6), mat(0xd4a84a));
       fl.position.set(
         Math.cos(i * 1.4) * cellSize * 0.15,
         0.55,
@@ -197,30 +437,10 @@ export function makePlotBuildGhost(
     );
     post.position.y = 0.75;
     g.add(post);
-    const lamp = new THREE.Mesh(
-      new THREE.SphereGeometry(0.22, 8, 8),
-      mat(0xffe8a0),
-    );
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8), mat(0xffe8a0));
     lamp.position.y = 1.65;
     g.add(lamp);
-  } else {
-    // empty / unknown — tinted pad
-    const pad = new THREE.Mesh(
-      new THREE.PlaneGeometry(cellSize * 0.8, cellSize * 0.8),
-      mat(tint),
-    );
-    pad.rotation.x = -Math.PI / 2;
-    pad.position.y = 0.08;
-    g.add(pad);
   }
-
-  // Validity rim
-  const rim = new THREE.LineSegments(
-    new THREE.EdgesGeometry(new THREE.BoxGeometry(cellSize * 0.7, 0.2, cellSize * 0.7)),
-    new THREE.LineBasicMaterial({ color: tint }),
-  );
-  rim.position.y = 0.12;
-  g.add(rim);
   return g;
 }
 
@@ -232,41 +452,40 @@ export function buildRopePlankBridgeMesh(
   cellSize: number,
   facing: number,
   ghost = false,
+  opacityOverride?: number,
 ): THREE.Group {
   const g = new THREE.Group();
   g.name = 'RopePlankBridge';
   const len = cellSize * 0.95;
-  const opacity = ghost ? 0.5 : 1;
+  const opacity = opacityOverride ?? (ghost ? 0.55 : 1);
   const wood = new THREE.MeshStandardMaterial({
     color: 0x8a6a40,
     roughness: 0.9,
     metalness: 0.05,
-    transparent: ghost,
+    transparent: true,
     opacity,
-    depthWrite: !ghost,
+    depthWrite: !ghost && opacity > 0.9,
   });
   const rope = new THREE.MeshStandardMaterial({
     color: 0xc4a878,
     roughness: 0.85,
     metalness: 0.1,
-    transparent: ghost,
+    transparent: true,
     opacity,
-    depthWrite: !ghost,
+    depthWrite: !ghost && opacity > 0.9,
   });
   const postMat = new THREE.MeshStandardMaterial({
     color: 0x5a4030,
     roughness: 0.8,
     metalness: 0.1,
-    transparent: ghost,
+    transparent: true,
     opacity,
-    depthWrite: !ghost,
+    depthWrite: !ghost && opacity > 0.9,
   });
 
-  // Orient: default bridge extends along +Z from near edge toward far
   const yaw = (facing % 4) * (Math.PI / 2);
   g.rotation.y = yaw;
 
-  // End posts (near and far)
   for (const z of [-len * 0.42, len * 0.42]) {
     for (const x of [-0.55, 0.55]) {
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.15, 0.12), postMat);
@@ -275,24 +494,17 @@ export function buildRopePlankBridgeMesh(
     }
   }
 
-  // Planks across the span
   const plankCount = Math.max(6, Math.round(len / 0.55));
   for (let i = 0; i < plankCount; i++) {
     const t = plankCount <= 1 ? 0.5 : i / (plankCount - 1);
     const z = -len * 0.4 + t * len * 0.8;
-    // Slight sway sag
     const sag = Math.sin(t * Math.PI) * 0.12;
-    const plank = new THREE.Mesh(
-      new THREE.BoxGeometry(1.15, 0.07, 0.38),
-      wood,
-    );
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.07, 0.38), wood);
     plank.position.set(0, 0.28 - sag, z);
-    // Tiny random twist for handmade feel (deterministic by index)
     plank.rotation.y = ((i % 3) - 1) * 0.04;
     g.add(plank);
   }
 
-  // Side ropes (top hand lines + bottom under-lines)
   const ropeSegs = 12;
   for (const x of [-0.52, 0.52]) {
     for (const yBase of [0.95, 0.32]) {
@@ -305,26 +517,19 @@ export function buildRopePlankBridgeMesh(
         const sag1 = Math.sin(t1 * Math.PI) * (yBase > 0.5 ? 0.18 : 0.1);
         const y0 = yBase - sag0;
         const y1 = yBase - sag1;
-        const dx = 0;
         const dy = y1 - y0;
         const dz = z1 - z0;
-        const segLen = Math.hypot(dx, dy, dz);
+        const segLen = Math.hypot(dy, dz);
         const seg = new THREE.Mesh(
           new THREE.CylinderGeometry(0.025, 0.025, segLen, 5),
           rope,
         );
         seg.position.set(x, (y0 + y1) / 2, (z0 + z1) / 2);
-        // Align cylinder (default Y-up) to segment direction
-        const dir = new THREE.Vector3(dx, dy, dz).normalize();
-        const quat = new THREE.Quaternion().setFromUnitVectors(
-          new THREE.Vector3(0, 1, 0),
-          dir,
-        );
-        seg.quaternion.copy(quat);
+        const dir = new THREE.Vector3(0, dy, dz).normalize();
+        seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
         g.add(seg);
       }
     }
-    // Vertical hangers from top rope to plank line
     for (let i = 1; i < plankCount; i += 2) {
       const t = i / (plankCount - 1);
       const z = -len * 0.4 + t * len * 0.8;
@@ -354,4 +559,9 @@ export function canPlaceBridgeOnPlot(
   plot: PlotState,
 ): boolean {
   return hasAdjacentOwned(state, plot);
+}
+
+/** Move dir 0=+X 1=+Z 2=-X 3=-Z → facing for bridge/front */
+export function moveDirToFacing(dir: 0 | 1 | 2 | 3): 0 | 1 | 2 | 3 {
+  return dir;
 }

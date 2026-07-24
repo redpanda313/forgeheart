@@ -347,8 +347,9 @@ import {
 import {
   type PlotBuildSession,
   makePlotBuildSession,
-  makePlotSelectionBox,
   makePlotBuildGhost,
+  makePlotCurrentGhost,
+  makePlotContentPreview,
   plotBuildCatalogLabel,
 } from './plotBuild';
 
@@ -411,7 +412,9 @@ export class ForgeHeartGame {
   private sitePropGhost: THREE.Group | null = null;
   /** Plaza plot develop / transform mode (lease-office builds) */
   private plotBuild: PlotBuildSession | null = null;
-  private plotBuildSelect: THREE.Group | null = null;
+  /** Dim ghost of current plot pose/content */
+  private plotBuildCurrent: THREE.Group | null = null;
+  /** Brighter ghost of proposed placement / rotation / move */
   private plotBuildGhost: THREE.Group | null = null;
   /**
    * Build wizard dock: expanded = pick from menu (pointer free);
@@ -7218,9 +7221,9 @@ export class ForgeHeartGame {
   }
 
   private clearPlotBuildVisuals() {
-    if (this.plotBuildSelect) {
-      this.scene.remove(this.plotBuildSelect);
-      this.plotBuildSelect = null;
+    if (this.plotBuildCurrent) {
+      this.scene.remove(this.plotBuildCurrent);
+      this.plotBuildCurrent = null;
     }
     if (this.plotBuildGhost) {
       this.scene.remove(this.plotBuildGhost);
@@ -7263,9 +7266,9 @@ export class ForgeHeartGame {
   private rebuildPlotBuildGhosts() {
     const s = this.plotBuild;
     if (!s) return;
-    if (this.plotBuildSelect) {
-      this.scene.remove(this.plotBuildSelect);
-      this.plotBuildSelect = null;
+    if (this.plotBuildCurrent) {
+      this.scene.remove(this.plotBuildCurrent);
+      this.plotBuildCurrent = null;
     }
     if (this.plotBuildGhost) {
       this.scene.remove(this.plotBuildGhost);
@@ -7274,35 +7277,17 @@ export class ForgeHeartGame {
     ensureInvPlots(this.inv);
     const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
     const validBase = !!plot && plot.owner === 'player';
+    const deckY = 0.05;
 
-    // Selection footprint always on the edited cell
-    let selX = s.centerX;
-    let selZ = s.centerZ;
-    if (s.step === 'transform' && s.transform === 'move' && plot) {
-      const d = districtById(s.districtId);
-      if (d) {
-        const deltas: [number, number][] = [
-          [1, 0],
-          [0, 1],
-          [-1, 0],
-          [0, -1],
-        ];
-        const [dx, dy] = deltas[s.moveDir]!;
-        const { x, z } = plotWorldCenter(
-          d,
-          plot.cellX + dx,
-          plot.cellY + dy,
-        );
-        selX = x;
-        selZ = z;
-      }
+    // ——— CURRENT (very translucent): where the section is now ———
+    if (plot) {
+      const cur = makePlotCurrentGhost(plot, s.cellSize);
+      cur.position.set(s.centerX, deckY, s.centerZ);
+      this.scene.add(cur);
+      this.plotBuildCurrent = cur;
     }
-    const box = makePlotSelectionBox(s.cellSize, validBase);
-    box.position.set(selX, 0, selZ);
-    box.rotation.y = (s.previewYaw * Math.PI) / 180;
-    this.scene.add(box);
-    this.plotBuildSelect = box;
 
+    // ——— PREVIEW (clearer): proposed placement / rotation / move ———
     if (s.step === 'place' && s.buildKind) {
       let placeValid = validBase;
       if (s.buildKind === 'bridge' && plot) {
@@ -7312,23 +7297,72 @@ export class ForgeHeartGame {
       if (q && !q.ok) placeValid = false;
       s.quotedCost = q?.cost ?? 0;
       s.offZone = q?.offZone ?? false;
+      const afford = placeValid && this.inv.brass >= (q?.cost ?? 0);
+      // Merge existing non-replaced content with new primary for preview?
+      // Show NEW build as the solid ghost on this plot
       const ghost = makePlotBuildGhost(s.buildKind, s.cellSize, {
         bridgeFacing: s.bridgeFacing,
-        valid: placeValid && this.inv.brass >= (q?.cost ?? 0),
+        valid: afford,
+        yawDeg: s.previewYaw,
+        role: 'preview',
+        opacity: 0.78,
       });
-      ghost.position.set(s.centerX, 0, s.centerZ);
-      if (s.buildKind !== 'bridge') {
-        ghost.rotation.y = (s.previewYaw * Math.PI) / 180;
+      ghost.position.set(s.centerX, deckY, s.centerZ);
+      this.scene.add(ghost);
+      this.plotBuildGhost = ghost;
+      return;
+    }
+
+    if (s.step === 'transform' && s.transform === 'rotate' && plot) {
+      // NEW orientation at same cell — clearer content preview
+      const ghost = makePlotContentPreview(plot.buildings ?? [], s.cellSize, {
+        role: 'preview',
+        valid: true,
+        yawDeg: s.previewYaw,
+        opacity: 0.75,
+      });
+      ghost.position.set(s.centerX, deckY, s.centerZ);
+      this.scene.add(ghost);
+      this.plotBuildGhost = ghost;
+      return;
+    }
+
+    if (s.step === 'transform' && s.transform === 'move' && plot) {
+      const d = districtById(s.districtId);
+      let nx = plot.cellX;
+      let nz = plot.cellY;
+      let selX = s.centerX;
+      let selZ = s.centerZ;
+      let moveValid = false;
+      if (d) {
+        const deltas: [number, number][] = [
+          [1, 0],
+          [0, 1],
+          [-1, 0],
+          [0, -1],
+        ];
+        const [dx, dy] = deltas[s.moveDir]!;
+        nx = plot.cellX + dx;
+        nz = plot.cellY + dy;
+        const { x, z } = plotWorldCenter(d, nx, nz);
+        selX = x;
+        selZ = z;
+        const target = this.inv.plazaPlots.plots.find(
+          (p) =>
+            p.districtId === s.districtId && p.cellX === nx && p.cellY === nz,
+        );
+        moveValid =
+          !!target &&
+          (target.owner === 'player' ||
+            (target.owner === 'city' && target.forSale && !target.tenantNeighborId));
       }
-      // Offset bridge toward edge
-      if (s.buildKind === 'bridge') {
-        const off = s.cellSize * 0.35;
-        const f = s.bridgeFacing;
-        if (f === 0) ghost.position.x += off;
-        else if (f === 1) ghost.position.z += off;
-        else if (f === 2) ghost.position.x -= off;
-        else ghost.position.z -= off;
-      }
+      const ghost = makePlotContentPreview(plot.buildings ?? [], s.cellSize, {
+        role: 'preview',
+        valid: moveValid,
+        yawDeg: plot.rotation ?? 0,
+        opacity: 0.78,
+      });
+      ghost.position.set(selX, deckY, selZ);
       this.scene.add(ghost);
       this.plotBuildGhost = ghost;
     }
@@ -7369,7 +7403,7 @@ export class ForgeHeartGame {
       const hint = document.createElement('p');
       hint.className = 'stall-wizard-hint';
       hint.textContent =
-        'You are looking at this plot. Choose a build to place a ghost, or rotate/move the platform section.';
+        'CURRENT pad is shown dim with front arrow. Pick a build or transform — bright NEW preview appears for placement.';
       body.appendChild(hint);
       for (const def of PLOT_BUILD_CATALOG) {
         const q = plot ? quotePlotBuild(plot, def.kind) : { ok: false, cost: 0, offZone: false, msg: '' };
@@ -7444,8 +7478,8 @@ export class ForgeHeartGame {
       p.className = 'stall-wizard-hint';
       p.textContent =
         s.buildKind === 'bridge'
-          ? `Rope bridge · face ${['+X', '+Z', '−X', '−Z'][s.bridgeFacing]} · arrows / ⟲⟳ · needs adjacent owned plot.`
-          : `Ghost on plot · [/] or ⟲⟳ rotates · fly to inspect · Confirm pays.`;
+          ? `Dim CURRENT pad · bright NEW rope bridge (front = direction). Arrows face · Confirm pays.`
+          : `Dim CURRENT · bright NEW build (cyan = front/door). [/] rotates NEW · Confirm pays.`;
       body.appendChild(p);
       this.syncBuildDockToStep();
       return;
@@ -7462,8 +7496,8 @@ export class ForgeHeartGame {
       if (quoteEl) {
         quoteEl.textContent =
           s.transform === 'rotate'
-            ? `Preview ${s.previewYaw}°`
-            : `Dir ${['→ +X', '↓ +Z', '← −X', '↑ −Z'][s.moveDir]}`;
+            ? `NEW ${s.previewYaw}° · CURRENT dimmed`
+            : `NEW ${['→ +X', '↓ +Z', '← −X', '↑ −Z'][s.moveDir]} · CURRENT stays`;
       }
       if (nextBtn) {
         nextBtn.textContent = 'Confirm';
@@ -7475,8 +7509,8 @@ export class ForgeHeartGame {
       p.className = 'stall-wizard-hint';
       p.textContent =
         s.transform === 'rotate'
-          ? `Preview yaw ${s.previewYaw}° · [/] snaps 90° · Confirm applies.`
-          : `Move ${['→', '↓', '←', '↑'][s.moveDir]} · arrows set dir · Confirm swaps with free/owned cell.`;
+          ? `Dim CURRENT pose · bright NEW rotation (front arrow). [/] snaps 90° · Confirm.`
+          : `Dim CURRENT cell · bright NEW cell. Arrows set direction · red = blocked · Confirm.`;
       body.appendChild(p);
       this.syncBuildDockToStep();
     }
