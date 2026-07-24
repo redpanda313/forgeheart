@@ -5,12 +5,13 @@
  * Local-only; server later.
  */
 
-import type { AssembledFrame } from './frameAssembly';
+import type { AssembledFrame, FlowerId } from './frameAssembly';
 import {
   tryAutoAssembleFrame,
   convertLegacyFrames,
   makeLegacyAssembledFrame,
   inventionFrameSlots,
+  FLOWER_IDS,
 } from './frameAssembly';
 
 export type CurrencyId = 'brass' | 'aether';
@@ -223,6 +224,7 @@ export const COMMODITY_LIST = Object.values(COMMODITIES);
 export type JobId =
   | 'idle'
   | 'harvest'
+  | 'pick_flowers'
   | 'craft_wire'
   | 'craft_frame'
   | 'sell_frame'
@@ -235,6 +237,7 @@ export type JobId =
  */
 export type ProgramNodeKind =
   | 'harvest'
+  | 'pick_flowers'
   | 'return_bay'
   | 'repair'
   | 'sell_frame'
@@ -305,6 +308,12 @@ export const PROGRAM_NODE_DEFS: {
 }[] = [
   // Haul / bay
   { id: 'harvest', name: 'Harvest Reef', blurb: 'Reef · extract mats', category: 'haul' },
+  {
+    id: 'pick_flowers',
+    name: 'Pick Flowers',
+    blurb: 'Plaza blooms · personality mats',
+    category: 'haul',
+  },
   { id: 'return_bay', name: 'Return Bay', blurb: 'Walk home', category: 'haul' },
   // Craft — all workbench recipes (no unlock; needs leased bay)
   { id: 'craft_wire', name: 'Craft Wire', blurb: '2 scrap → wire', category: 'craft' },
@@ -528,7 +537,12 @@ export interface WorkerProgram {
 }
 
 /** One-click program starters — balanced length, clear purpose. */
-export type ProgramTemplateId = 'frame_line' | 'frame_broker' | 'frame_stall' | 'harvest_loop';
+export type ProgramTemplateId =
+  | 'frame_line'
+  | 'frame_broker'
+  | 'frame_stall'
+  | 'harvest_loop'
+  | 'flower_loop';
 
 export interface ProgramTemplate {
   id: ProgramTemplateId;
@@ -566,6 +580,12 @@ export const PROGRAM_TEMPLATES: ProgramTemplate[] = [
     blurb: 'Reef haul home · 2 steps',
     nodes: ['harvest', 'return_bay'],
   },
+  {
+    id: 'flower_loop',
+    name: 'Flower Loop',
+    blurb: 'Pick plaza blooms · return · 2 steps',
+    nodes: ['pick_flowers', 'return_bay'],
+  },
 ];
 
 export const JOB_DEFS: {
@@ -581,6 +601,12 @@ export const JOB_DEFS: {
     name: 'Reef Haul',
     blurb: 'Walk to the reef, extract scrap, return to bay.',
     route: ['bay', 'reef', 'bay'],
+  },
+  {
+    id: 'pick_flowers',
+    name: 'Pick Flowers',
+    blurb: 'Walk to plaza blooms, pick personality mats, return.',
+    route: ['bay', 'flowers', 'bay'],
   },
   {
     id: 'craft_wire',
@@ -649,6 +675,11 @@ export interface WorkerState {
    * null = all materials available at that site.
    */
   harvestMatId?: CommodityId | null;
+  /**
+   * When set, only pick this bloom type at the plaza (pick_flowers job/node).
+   * null = all blooms available at the plaza.
+   */
+  flowerMatId?: CommodityId | null;
   /** Human laborer vs owned robot chassis */
   kind?: 'human' | 'robot';
   /** Elias spirit host — human-parity stats + map marker */
@@ -1236,6 +1267,124 @@ export function harvestPoolForWorker(w: WorkerState): CommodityId[] {
   return siteMats;
 }
 
+/** Training plaza blooms (matches market hub flower patches). */
+export const TRAINING_FLOWER_IDS: readonly FlowerId[] = [
+  'bloom_sky',
+  'bloom_brass',
+  'flower_gift',
+];
+
+/**
+ * Blooms by district / training — single source for worker programming & world patches.
+ * Keep in sync with visual patches in flowers.ts / marketHub / skyCity.
+ */
+export const PLAZA_FLOWER_POOLS: Record<string, readonly FlowerId[]> = {
+  training: TRAINING_FLOWER_IDS,
+  residential: ['bloom_sky'],
+  grand_market: ['flower_gift', 'bloom_brass'],
+  industrial: ['bloom_brass'],
+  harbor: ['bloom_harbor'],
+  clocktower: ['bloom_aether', 'bloom_sky'],
+  gearworks: ['bloom_brass', 'bloom_spore'],
+  spore_gardens: ['bloom_spore', 'bloom_aether'],
+  brass_arcade: ['bloom_brass', 'flower_gift'],
+  sky_foundry: ['bloom_brass'],
+  aether_spire: ['bloom_aether'],
+  mid_ring_east: ['bloom_sky'],
+  mid_ring_west: ['bloom_spore'],
+  south_docks: ['bloom_harbor', 'bloom_sky'],
+  north_observatory: ['bloom_aether'],
+};
+
+/** Blooms available at a plaza (training reef site shares training blooms). */
+export function flowersAtSite(siteId: string | null | undefined): CommodityId[] {
+  if (!siteId) {
+    // Mixed / any — all flower types
+    return [...FLOWER_IDS];
+  }
+  const listed = PLAZA_FLOWER_POOLS[siteId];
+  if (listed?.length) return [...listed];
+  // Unknown plaza: soft default
+  return ['bloom_sky'];
+}
+
+export function listFlowerSites(opts?: {
+  trainingOnly?: boolean;
+}): { id: string | null; name: string; flowers: CommodityId[] }[] {
+  if (opts?.trainingOnly) {
+    return [
+      {
+        id: 'training',
+        name: 'Training Plaza Blooms',
+        flowers: [...TRAINING_FLOWER_IDS],
+      },
+    ];
+  }
+  const sites: { id: string | null; name: string; flowers: CommodityId[] }[] = [
+    { id: null, name: 'Any / all blooms', flowers: [...FLOWER_IDS] },
+    {
+      id: 'training',
+      name: 'Training Plaza Blooms',
+      flowers: [...TRAINING_FLOWER_IDS],
+    },
+  ];
+  for (const d of CITY_DISTRICTS) {
+    const flowers = flowersAtSite(d.id);
+    sites.push({ id: d.id, name: `${d.name} blooms`, flowers });
+  }
+  return sites;
+}
+
+export function flowerPoolForWorker(w: WorkerState): CommodityId[] {
+  // Prefer harvestSiteId as plaza; fall back to mixed blooms
+  const siteFlowers = flowersAtSite(w.harvestSiteId);
+  if (w.flowerMatId && siteFlowers.includes(w.flowerMatId)) {
+    return [w.flowerMatId];
+  }
+  if (w.flowerMatId && FLOWER_IDS.includes(w.flowerMatId as FlowerId)) {
+    // Stale plaza filter — still allow chosen bloom if it's a real flower
+    return [w.flowerMatId];
+  }
+  return siteFlowers;
+}
+
+export function flowerMatLabel(matId: CommodityId | null | undefined): string {
+  if (!matId) return 'All blooms';
+  return COMMODITIES[matId]?.name ?? matId;
+}
+
+export function setWorkerFlowerMat(
+  inv: InventoryState,
+  workerId: string,
+  matId: CommodityId | null,
+): { ok: boolean; msg: string } {
+  const w = inv.workers.find((x) => x.id === workerId);
+  if (!w) return { ok: false, msg: 'Worker not found.' };
+  if (matId) {
+    if (!FLOWER_IDS.includes(matId as FlowerId)) {
+      return { ok: false, msg: 'That is not a flower / bloom commodity.' };
+    }
+    const pool = flowersAtSite(w.harvestSiteId);
+    // Allow if at plaza or mixed (null site)
+    if (w.harvestSiteId && !pool.includes(matId) && w.harvestSiteId !== null) {
+      // still set — player may change plaza later; warn softly
+    }
+  }
+  w.flowerMatId = matId;
+  return {
+    ok: true,
+    msg: `${w.name} flower target: ${flowerMatLabel(matId)} @ ${harvestSiteLabel(w.harvestSiteId)}`,
+  };
+}
+
+export function workerFlowerQty(w: WorkerState): number {
+  const tier = workerHaulToolTier(w);
+  // Flowers are lighter hauls than ore
+  if (tier >= 2) return 2 + Math.floor(Math.random() * 2); // 2–3
+  if (tier >= 1) return 1 + Math.floor(Math.random() * 2); // 1–2
+  return 1;
+}
+
 export function harvestSiteLabel(siteId: string | null | undefined): string {
   if (!siteId) return 'Any / mixed reefs';
   return harvestBiomeForDistrict(siteId).name;
@@ -1296,16 +1445,24 @@ export function setWorkerHarvestMat(
 export function describeWorkerAssignment(inv: InventoryState, w: WorkerState): string {
   if (w.unpaid) return 'UNPAID — idle until brass covers upkeep (or fire in Bay)';
   const matBit = w.harvestMatId ? ` · ${harvestMatLabel(w.harvestMatId)}` : ' · all mats';
+  const flowerBit = w.flowerMatId ? ` · ${flowerMatLabel(w.flowerMatId)}` : ' · all blooms';
   if (w.job === 'program' && w.programId) {
     const p = inv.programs.find((x) => x.id === w.programId);
-    const site =
-      p && p.nodes.includes('harvest')
-        ? ` · reef: ${harvestSiteLabel(w.harvestSiteId)}${matBit}`
-        : '';
+    const bits: string[] = [];
+    if (p?.nodes.includes('harvest')) {
+      bits.push(`reef: ${harvestSiteLabel(w.harvestSiteId)}${matBit}`);
+    }
+    if (p?.nodes.includes('pick_flowers')) {
+      bits.push(`flowers: ${harvestSiteLabel(w.harvestSiteId)}${flowerBit}`);
+    }
+    const site = bits.length ? ` · ${bits.join(' · ')}` : '';
     return `Program “${p?.name ?? '?'}”${site}`;
   }
   if (w.job === 'harvest') {
     return `Harvest · ${harvestSiteLabel(w.harvestSiteId)}${matBit}`;
+  }
+  if (w.job === 'pick_flowers') {
+    return `Flowers · ${harvestSiteLabel(w.harvestSiteId)}${flowerBit}`;
   }
   const def = JOB_DEFS.find((j) => j.id === w.job);
   return def?.name ?? w.job;
@@ -1667,6 +1824,7 @@ export function makeRobotWorker(name: string, id?: string): WorkerState {
     payGrade: 0,
     harvestSiteId: null,
     harvestMatId: null,
+    flowerMatId: null,
     kind: 'robot',
     hasMedallion: false,
     frameId: null,
@@ -2756,6 +2914,7 @@ export function hireLaborer(inv: InventoryState): { ok: boolean; msg: string; wo
     payGrade: 0,
     harvestSiteId: null,
     harvestMatId: null,
+    flowerMatId: null,
   };
   inv.workers.push(w);
   inv.laborerHired = true;
@@ -3149,9 +3308,14 @@ export function applyProgramNodeResult(
     });
   }
 
-  // ——— Harvest ———
+  // ——— Harvest reef ———
   if (node === 'harvest') {
     return finish(applyWorkerJobResult(inv, workerId, 'harvest'));
+  }
+
+  // ——— Pick plaza flowers ———
+  if (node === 'pick_flowers') {
+    return finish(applyWorkerJobResult(inv, workerId, 'pick_flowers'));
   }
 
   // ——— Sell invention ———
@@ -4257,6 +4421,25 @@ export function applyWorkerJobResult(
     };
   }
 
+  if (job === 'pick_flowers') {
+    const pool = flowerPoolForWorker(w);
+    if (!pool.length) {
+      return { ok: false, msg: `${w.name}: no blooms at that plaza` };
+    }
+    const id = pool[Math.floor(Math.random() * pool.length)]!;
+    const n = workerFlowerQty(w);
+    if (!addItem(inv, id, n)) {
+      return { ok: false, msg: `${w.name}: pack full for ${COMMODITIES[id].name}` };
+    }
+    inv.harvestRuns += 1;
+    noteMarketSupply(inv, id, n);
+    const site = harvestSiteLabel(w.harvestSiteId);
+    return {
+      ok: true,
+      msg: `${w.name} picked ${n}× ${COMMODITIES[id].name} (${site})`,
+    };
+  }
+
   if (job === 'craft_wire' || job === 'craft_frame') {
     // Built-in job shortcuts still use program craft path
     return applyProgramNodeResult(inv, workerId, job);
@@ -5230,6 +5413,10 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
           typeof raw.harvestMatId === 'string' && raw.harvestMatId in COMMODITIES
             ? (raw.harvestMatId as CommodityId)
             : null,
+        flowerMatId:
+          typeof raw.flowerMatId === 'string' && raw.flowerMatId in COMMODITIES
+            ? (raw.flowerMatId as CommodityId)
+            : null,
         kind: raw.kind === 'robot' ? 'robot' : 'human',
         hasMedallion: !!raw.hasMedallion,
         frameId: raw.frameId ? String(raw.frameId) : null,
@@ -5272,6 +5459,7 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
       payGrade: w.payGrade ?? 0,
       harvestSiteId: w.harvestSiteId ?? null,
       harvestMatId: w.harvestMatId ?? null,
+      flowerMatId: w.flowerMatId ?? null,
       speedToolTier: w.speedToolTier ?? (w.hasSpeedTool ? 1 : 0),
       haulToolTier: w.haulToolTier ?? (w.hasHaulPack ? 1 : 0),
     }));

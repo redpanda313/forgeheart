@@ -4,7 +4,7 @@
  */
 
 import * as THREE from 'three';
-import { COMMODITIES } from './economy';
+import { COMMODITIES, PLAZA_FLOWER_POOLS, flowersAtSite } from './economy';
 import { FLOWER_IDS, type FlowerId } from './frameAssembly';
 
 export type { FlowerId };
@@ -22,39 +22,25 @@ export const FLOWER_COLORS: Record<
   flower_gift: { petal: 0xe8a0c8, emissive: 0x884466, stem: 0x3d5a42, soil: 0x4a3a30 },
 };
 
-/**
- * Per-plaza bloom layout: each entry is one patch (one flower type).
- * Most plazas get a single patch; garden / market / harbor hubs get two.
- */
-export const PLAZA_FLOWER_PATCHES: Record<string, FlowerId[]> = {
-  residential: ['bloom_sky'],
-  grand_market: ['flower_gift', 'bloom_brass'],
-  industrial: ['bloom_brass'],
-  harbor: ['bloom_harbor'],
-  clocktower: ['bloom_aether', 'bloom_sky'],
-  gearworks: ['bloom_brass', 'bloom_spore'],
-  spore_gardens: ['bloom_spore', 'bloom_aether'],
-  brass_arcade: ['bloom_brass', 'flower_gift'],
-  sky_foundry: ['bloom_brass'],
-  aether_spire: ['bloom_aether'],
-  mid_ring_east: ['bloom_sky'],
-  mid_ring_west: ['bloom_spore'],
-  south_docks: ['bloom_harbor', 'bloom_sky'],
-  north_observatory: ['bloom_aether'],
-};
+/** @deprecated Prefer PLAZA_FLOWER_POOLS from economy — kept for call-site compatibility. */
+export const PLAZA_FLOWER_PATCHES: Record<string, FlowerId[]> = Object.fromEntries(
+  Object.entries(PLAZA_FLOWER_POOLS).map(([k, v]) => [k, [...v]]),
+) as Record<string, FlowerId[]>;
 
 /** Fallback when a district id is missing from the table. */
 export function flowerPatchesForDistrict(
   districtId: string,
   role?: string,
 ): FlowerId[] {
-  const listed = PLAZA_FLOWER_PATCHES[districtId];
-  if (listed?.length) return listed;
+  const listed = PLAZA_FLOWER_POOLS[districtId];
+  if (listed?.length) return [...listed];
   if (role === 'harbor') return ['bloom_harbor'];
   if (role === 'premium') return ['bloom_aether'];
   if (role === 'industrial') return ['bloom_brass'];
   if (role === 'market') return ['flower_gift'];
-  return ['bloom_sky'];
+  return flowersAtSite(districtId).filter((id): id is FlowerId =>
+    (FLOWER_IDS as readonly string[]).includes(id),
+  ) as FlowerId[];
 }
 
 export function flowerDisplayName(id: FlowerId): string {

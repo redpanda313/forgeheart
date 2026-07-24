@@ -1036,6 +1036,8 @@ export function buildMarketHub(): MarketHubBuilt {
   const waypoints: HubWaypoints = {
     bay: new THREE.Vector3(0, 0, -36),
     reef: harvestSpot.clone(),
+    // Training flower patches (SW plaza)
+    flowers: new THREE.Vector3(-12, 0, 8),
     broker: new THREE.Vector3(18, 0, -7),
     repair: new THREE.Vector3(-18, 0, 13),
     craft: new THREE.Vector3(-3, 0, -34),

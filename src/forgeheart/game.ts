@@ -125,8 +125,10 @@ import {
   assignWorkerProgram,
   setWorkerHarvestSite,
   setWorkerHarvestMat,
+  setWorkerFlowerMat,
   listHarvestSites,
   matsAtHarvestSite,
+  flowersAtSite,
   describeWorkerAssignment,
   createProgram,
   createProgramFromTemplate,
@@ -8697,8 +8699,9 @@ export class ForgeHeartGame {
       card.innerHTML = `<strong>${w.name}</strong><div class="pa-status">${status}</div>
         <div class="pa-meta">Pay G${grade} · up to ${maxN} steps</div>`;
 
-      // Harvest plaza + material (applies to harvest job + harvest program nodes)
+      // Plaza + ore mat + flower bloom (harvest + pick_flowers program nodes)
       if (w.harvestMatId === undefined) w.harvestMatId = null;
+      if (w.flowerMatId === undefined) w.flowerMatId = null;
       const reefRow = document.createElement('div');
       reefRow.className = 'pa-row';
       const reefLab = document.createElement('label');
@@ -8719,8 +8722,9 @@ export class ForgeHeartGame {
         const id = reefSel.value === '' ? null : reefSel.value;
         const r = setWorkerHarvestSite(this.inv, w.id, id);
         this.programLog(r.msg);
-        if (w.job === 'idle' || w.job === 'harvest') {
-          setWorkerJob(this.inv, w.id, 'harvest');
+        if (w.job === 'idle' || w.job === 'harvest' || w.job === 'pick_flowers') {
+          // keep current job type if already hauling; default harvest
+          if (w.job === 'idle') setWorkerJob(this.inv, w.id, 'harvest');
         }
         writeSlot(this.activeSlot, this.buildSaveData());
         this.fillProgramPanel();
@@ -8734,13 +8738,13 @@ export class ForgeHeartGame {
       matRow.className = 'pa-row';
       const matLab = document.createElement('label');
       matLab.className = 'pa-lab';
-      matLab.textContent = 'MAT';
+      matLab.textContent = 'ORE';
       const matSel = document.createElement('select');
       const siteMats = matsAtHarvestSite(w.harvestSiteId);
       {
         const oAll = document.createElement('option');
         oAll.value = '';
-        oAll.textContent = `All at plaza (${siteMats.map((m) => COMMODITIES[m].name.split(' ')[0]).join('/')})`;
+        oAll.textContent = `All ore (${siteMats.map((m) => COMMODITIES[m].name.split(' ')[0]).join('/')})`;
         if (!w.harvestMatId) oAll.selected = true;
         matSel.appendChild(oAll);
       }
@@ -8765,6 +8769,45 @@ export class ForgeHeartGame {
       matRow.appendChild(matLab);
       matRow.appendChild(matSel);
       card.appendChild(matRow);
+
+      // Flower bloom target for pick_flowers job / program nodes
+      const bloomRow = document.createElement('div');
+      bloomRow.className = 'pa-row';
+      const bloomLab = document.createElement('label');
+      bloomLab.className = 'pa-lab';
+      bloomLab.textContent = 'BLOOM';
+      const bloomSel = document.createElement('select');
+      // Training uses training blooms; empire uses plaza flowers (site id)
+      const bloomSite = trainingOnly ? 'training' : w.harvestSiteId;
+      const siteBlooms = flowersAtSite(bloomSite);
+      {
+        const oAll = document.createElement('option');
+        oAll.value = '';
+        oAll.textContent = `All blooms (${siteBlooms.map((m) => COMMODITIES[m].name.split(' ')[0]).join('/')})`;
+        if (!w.flowerMatId) oAll.selected = true;
+        bloomSel.appendChild(oAll);
+      }
+      for (const m of siteBlooms) {
+        const o = document.createElement('option');
+        o.value = m;
+        o.textContent = COMMODITIES[m].name;
+        if (w.flowerMatId === m) o.selected = true;
+        bloomSel.appendChild(o);
+      }
+      bloomSel.addEventListener('change', () => {
+        const id = bloomSel.value === '' ? null : (bloomSel.value as CommodityId);
+        const r = setWorkerFlowerMat(this.inv, w.id, id);
+        this.programLog(r.msg);
+        if (w.job === 'idle' || w.job === 'pick_flowers') {
+          setWorkerJob(this.inv, w.id, 'pick_flowers');
+        }
+        writeSlot(this.activeSlot, this.buildSaveData());
+        this.fillProgramPanel();
+        this.syncEconomyHud();
+      });
+      bloomRow.appendChild(bloomLab);
+      bloomRow.appendChild(bloomSel);
+      card.appendChild(bloomRow);
 
       // Compact quick-job select (programs are the main path)
       const jobRow = document.createElement('div');

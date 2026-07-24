@@ -33,6 +33,7 @@ export type HubWaypoints = Record<string, THREE.Vector3>;
 /** Destination key for a program / job step */
 export function waypointForProgramNode(node: ProgramNodeKind): string {
   if (node === 'harvest') return 'reef';
+  if (node === 'pick_flowers') return 'flowers';
   if (node === 'return_bay') return 'bay';
   if (node === 'repair') return 'repair';
   if (node === 'sell_frame') return 'broker';
@@ -375,7 +376,9 @@ export class WorkerAgent {
       if (this.pendingWork) {
         this.phase = 'work';
         this.workTimer =
-          (this.pendingWork === 'harvest' ? 2.2 : 1.5) * workerWorkMul(w);
+          (this.pendingWork === 'harvest' || this.pendingWork === 'pick_flowers'
+            ? 2.2
+            : 1.5) * workerWorkMul(w);
       } else if (w.job === 'program') {
         // return_bay etc. with no economic effect
         this.progStep++;
