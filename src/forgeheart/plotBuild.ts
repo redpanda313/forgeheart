@@ -93,11 +93,12 @@ export function makePlotSelectionBox(
 
   // Current = cool/dim; preview = warm/bright green (or red if invalid)
   const fillColor =
-    role === 'current' ? 0x6a8aaa : valid ? 0x66e0a0 : 0xe07070;
+    role === 'current' ? 0x7aa8c8 : valid ? 0x66e0a0 : 0xe07070;
   const edgeColor =
-    role === 'current' ? 0x88aacc : valid ? 0xa8ffcc : 0xffaaaa;
-  const fillOpacity = role === 'current' ? 0.12 : 0.28;
-  const edgeEmissive = role === 'current' ? 0.15 : 0.4;
+    role === 'current' ? 0xa0d0f0 : valid ? 0xa8ffcc : 0xffaaaa;
+  // Must read clearly over the plaza deck (was nearly invisible at ~0.12)
+  const fillOpacity = role === 'current' ? 0.32 : 0.42;
+  const edgeEmissive = role === 'current' ? 0.45 : 0.65;
 
   const fillMat = new THREE.MeshStandardMaterial({
     color: fillColor,
@@ -262,7 +263,7 @@ export function makePlotContentPreview(
   const role = opts.role;
   const valid = opts.valid !== false;
   const opacity =
-    opts.opacity ?? (role === 'current' ? 0.22 : 0.72);
+    opts.opacity ?? (role === 'current' ? 0.38 : 0.88);
 
   const hasBridge = buildings.some((b) => b.kind === 'bridge');
   const bridgeFacing = (opts.bridgeFacing ??
@@ -350,16 +351,19 @@ function makeSolidStructure(
   role: PlotPreviewRole,
 ): THREE.Group {
   const g = new THREE.Group();
+  // Floor clamp — never nearly invisible
+  const op = Math.max(role === 'current' ? 0.35 : 0.75, Math.min(0.95, opacity));
   const mat = (color: number, metal = 0.15) =>
     new THREE.MeshStandardMaterial({
       color,
       transparent: true,
-      opacity,
-      roughness: 0.7,
+      opacity: op,
+      roughness: 0.65,
       metalness: metal,
       depthWrite: false,
-      emissive: role === 'preview' ? color : 0x000000,
-      emissiveIntensity: role === 'preview' ? 0.08 : 0,
+      depthTest: true,
+      emissive: color,
+      emissiveIntensity: role === 'preview' ? 0.22 : 0.1,
     });
 
   if (kind === 'apartment' || kind === 'home') {
@@ -369,10 +373,9 @@ function makeSolidStructure(
     );
     body.position.y = 1.2;
     g.add(body);
-    // Door face on +Z
     const door = new THREE.Mesh(
-      new THREE.BoxGeometry(cellSize * 0.18, 1.1, 0.08),
-      mat(role === 'preview' ? 0x4af0ff : 0x5a7080),
+      new THREE.BoxGeometry(cellSize * 0.18, 1.1, 0.1),
+      mat(role === 'preview' ? 0x4af0ff : 0x6a90a8),
     );
     door.position.set(0, 0.7, cellSize * 0.22);
     g.add(door);
@@ -396,8 +399,8 @@ function makeSolidStructure(
     stack.position.set(cellSize * 0.12, 2.2, 0);
     g.add(stack);
     const bay = new THREE.Mesh(
-      new THREE.BoxGeometry(cellSize * 0.22, 1.0, 0.1),
-      mat(role === 'preview' ? 0x4af0ff : 0x3a4850),
+      new THREE.BoxGeometry(cellSize * 0.22, 1.0, 0.12),
+      mat(role === 'preview' ? 0x4af0ff : 0x4a6070),
     );
     bay.position.set(0, 0.65, cellSize * 0.24);
     g.add(bay);
@@ -422,7 +425,7 @@ function makeSolidStructure(
     soil.position.y = 0.15;
     g.add(soil);
     for (let i = 0; i < 5; i++) {
-      const fl = new THREE.Mesh(new THREE.SphereGeometry(0.14, 6, 6), mat(0xd4a84a));
+      const fl = new THREE.Mesh(new THREE.SphereGeometry(0.16, 6, 6), mat(0xd4a84a));
       fl.position.set(
         Math.cos(i * 1.4) * cellSize * 0.15,
         0.55,
@@ -440,6 +443,14 @@ function makeSolidStructure(
     const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8), mat(0xffe8a0));
     lamp.position.y = 1.65;
     g.add(lamp);
+  } else {
+    // Fallback cube so unknown kinds still read in preview
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(cellSize * 0.4, 1.2, cellSize * 0.4),
+      mat(0x88aacc),
+    );
+    box.position.y = 0.6;
+    g.add(box);
   }
   return g;
 }
@@ -457,14 +468,17 @@ export function buildRopePlankBridgeMesh(
   const g = new THREE.Group();
   g.name = 'RopePlankBridge';
   const len = cellSize * 0.95;
-  const opacity = opacityOverride ?? (ghost ? 0.55 : 1);
+  const opacity = Math.max(0.4, opacityOverride ?? (ghost ? 0.75 : 1));
   const wood = new THREE.MeshStandardMaterial({
     color: 0x8a6a40,
     roughness: 0.9,
     metalness: 0.05,
     transparent: true,
     opacity,
-    depthWrite: !ghost && opacity > 0.9,
+    depthWrite: false,
+    depthTest: true,
+    emissive: 0x4a3010,
+    emissiveIntensity: ghost ? 0.15 : 0,
   });
   const rope = new THREE.MeshStandardMaterial({
     color: 0xc4a878,
@@ -472,7 +486,10 @@ export function buildRopePlankBridgeMesh(
     metalness: 0.1,
     transparent: true,
     opacity,
-    depthWrite: !ghost && opacity > 0.9,
+    depthWrite: false,
+    depthTest: true,
+    emissive: 0x665522,
+    emissiveIntensity: ghost ? 0.12 : 0,
   });
   const postMat = new THREE.MeshStandardMaterial({
     color: 0x5a4030,
@@ -480,7 +497,10 @@ export function buildRopePlankBridgeMesh(
     metalness: 0.1,
     transparent: true,
     opacity,
-    depthWrite: !ghost && opacity > 0.9,
+    depthWrite: false,
+    depthTest: true,
+    emissive: 0x2a1810,
+    emissiveIntensity: ghost ? 0.1 : 0,
   });
 
   const yaw = (facing % 4) * (Math.PI / 2);

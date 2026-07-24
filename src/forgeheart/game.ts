@@ -7277,17 +7277,43 @@ export class ForgeHeartGame {
     ensureInvPlots(this.inv);
     const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
     const validBase = !!plot && plot.owner === 'player';
-    const deckY = 0.05;
+    // Plaza decks sit at ~0.2 — ghosts must sit ON TOP of the deck (0.05 was under the floor)
+    const deckY = 0.28;
 
-    // ——— CURRENT (very translucent): where the section is now ———
+    const liftGhost = (g: THREE.Group) => {
+      g.position.y = deckY;
+      g.traverse((o) => {
+        if (o instanceof THREE.Mesh) {
+          o.renderOrder = 20;
+          o.frustumCulled = false;
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of mats) {
+            if (m && 'depthTest' in m) {
+              // Keep depth test so they sit on deck; draw after opaque pads
+              m.depthTest = true;
+              m.depthWrite = false;
+              m.transparent = true;
+              m.needsUpdate = true;
+            }
+          }
+        }
+        if (o instanceof THREE.Sprite) {
+          o.renderOrder = 25;
+          o.frustumCulled = false;
+        }
+      });
+    };
+
+    // ——— CURRENT (dim): existing pose / content on this cell ———
     if (plot) {
       const cur = makePlotCurrentGhost(plot, s.cellSize);
-      cur.position.set(s.centerX, deckY, s.centerZ);
+      cur.position.set(s.centerX, 0, s.centerZ);
+      liftGhost(cur);
       this.scene.add(cur);
       this.plotBuildCurrent = cur;
     }
 
-    // ——— PREVIEW (clearer): proposed placement / rotation / move ———
+    // ——— PREVIEW (brighter): proposed build / rotation / move ———
     if (s.step === 'place' && s.buildKind) {
       let placeValid = validBase;
       if (s.buildKind === 'bridge' && plot) {
@@ -7298,30 +7324,29 @@ export class ForgeHeartGame {
       s.quotedCost = q?.cost ?? 0;
       s.offZone = q?.offZone ?? false;
       const afford = placeValid && this.inv.brass >= (q?.cost ?? 0);
-      // Merge existing non-replaced content with new primary for preview?
-      // Show NEW build as the solid ghost on this plot
       const ghost = makePlotBuildGhost(s.buildKind, s.cellSize, {
         bridgeFacing: s.bridgeFacing,
         valid: afford,
         yawDeg: s.previewYaw,
         role: 'preview',
-        opacity: 0.78,
+        opacity: 0.88,
       });
-      ghost.position.set(s.centerX, deckY, s.centerZ);
+      ghost.position.set(s.centerX, 0, s.centerZ);
+      liftGhost(ghost);
       this.scene.add(ghost);
       this.plotBuildGhost = ghost;
       return;
     }
 
     if (s.step === 'transform' && s.transform === 'rotate' && plot) {
-      // NEW orientation at same cell — clearer content preview
       const ghost = makePlotContentPreview(plot.buildings ?? [], s.cellSize, {
         role: 'preview',
         valid: true,
         yawDeg: s.previewYaw,
-        opacity: 0.75,
+        opacity: 0.85,
       });
-      ghost.position.set(s.centerX, deckY, s.centerZ);
+      ghost.position.set(s.centerX, 0, s.centerZ);
+      liftGhost(ghost);
       this.scene.add(ghost);
       this.plotBuildGhost = ghost;
       return;
@@ -7329,8 +7354,6 @@ export class ForgeHeartGame {
 
     if (s.step === 'transform' && s.transform === 'move' && plot) {
       const d = districtById(s.districtId);
-      let nx = plot.cellX;
-      let nz = plot.cellY;
       let selX = s.centerX;
       let selZ = s.centerZ;
       let moveValid = false;
@@ -7342,14 +7365,14 @@ export class ForgeHeartGame {
           [0, -1],
         ];
         const [dx, dy] = deltas[s.moveDir]!;
-        nx = plot.cellX + dx;
-        nz = plot.cellY + dy;
-        const { x, z } = plotWorldCenter(d, nx, nz);
+        const nx = plot.cellX + dx;
+        const ny = plot.cellY + dy;
+        const { x, z } = plotWorldCenter(d, nx, ny);
         selX = x;
         selZ = z;
         const target = this.inv.plazaPlots.plots.find(
           (p) =>
-            p.districtId === s.districtId && p.cellX === nx && p.cellY === nz,
+            p.districtId === s.districtId && p.cellX === nx && p.cellY === ny,
         );
         moveValid =
           !!target &&
@@ -7360,9 +7383,10 @@ export class ForgeHeartGame {
         role: 'preview',
         valid: moveValid,
         yawDeg: plot.rotation ?? 0,
-        opacity: 0.78,
+        opacity: 0.88,
       });
-      ghost.position.set(selX, deckY, selZ);
+      ghost.position.set(selX, 0, selZ);
+      liftGhost(ghost);
       this.scene.add(ghost);
       this.plotBuildGhost = ghost;
     }
