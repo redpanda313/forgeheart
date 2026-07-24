@@ -723,6 +723,192 @@ export interface RomanceState {
   stage: RelationshipStage;
   affinity: number;
   giftsGiven: number;
+  /** Player asked what she likes */
+  knownLikes?: boolean;
+  /** Story beat ids already shared with her */
+  storiesShared?: string[];
+}
+
+/** Items that can be offered as romance gifts (must be obtainable in-game). */
+export const ROMANCE_GIFT_IDS = [
+  'flower_gift',
+  'brass_charm',
+  'silk_scarf',
+  'bloom_sky',
+  'bloom_brass',
+  'bloom_spore',
+  'bloom_harbor',
+  'bloom_aether',
+  'polished_wire',
+] as const satisfies readonly CommodityId[];
+
+export type RomanceGiftId = (typeof ROMANCE_GIFT_IDS)[number];
+
+export interface RomanceNpcDef {
+  id: string;
+  name: string;
+  /** Strong positive gifts */
+  loves: readonly CommodityId[];
+  /** Lowers affinity */
+  dislikes: readonly CommodityId[];
+  /** Idle chat by relationship stage (0–4) */
+  chatByStage: readonly [string, string, string, string, string];
+  /** Lines when player chooses "Learn about her" */
+  aboutLines: readonly string[];
+  likesHint: string;
+  dislikesHint: string;
+  /** Short reply when player shares a personal story */
+  storyReactions: readonly string[];
+}
+
+export const ROMANCE_NPCS: Record<string, RomanceNpcDef> = {
+  girl_lira: {
+    id: 'girl_lira',
+    name: 'Lira Voss',
+    loves: [
+      'flower_gift',
+      'bloom_sky',
+      'bloom_brass',
+      'bloom_spore',
+      'bloom_harbor',
+      'bloom_aether',
+    ],
+    dislikes: ['brass_charm', 'polished_wire'],
+    chatByStage: [
+      'Oh— a maker? Careful, I might steal your afternoon.',
+      'You again. The gardens are nicer when you’re not rushing past them.',
+      'Tell me you noticed the new blooms on the ring path.',
+      'I save a bench for people who bring color into my day.',
+      'Stay. The city can wait one more hour.',
+    ],
+    aboutLines: [
+      'I grew up between hanging gardens. Anything with petals still feels like home.',
+      'Cold metal gifts feel like work. Soft blooms feel like you saw me.',
+    ],
+    likesHint: 'She loves flowers and bouquets — any plaza bloom or Cloud Blooms.',
+    dislikesHint: 'Brass charms and polished wire feel cold to her.',
+    storyReactions: [
+      'That… actually explains the way you look at machines.',
+      'You’re building a life, not just a ledger. I like that.',
+      'Keep talking. I want the honest version.',
+    ],
+  },
+  girl_mira: {
+    id: 'girl_mira',
+    name: 'Mira Quinn',
+    loves: ['silk_scarf', 'bloom_spore'],
+    dislikes: ['flower_gift', 'bloom_sky', 'bloom_brass'],
+    chatByStage: [
+      'Your board looks fast. Are you?',
+      'Silk and secrets — those are the only currencies I respect.',
+      'Don’t waste pretty words if your hands are empty.',
+      'You’re learning. Scarves look better on people who listen.',
+      'Come closer. I don’t share this smile with every hauler.',
+    ],
+    aboutLines: [
+      'I trade soft goods because hard goods are boring.',
+      'A Spore-Silk Scarf means you understand quality. Common blooms? That’s tourist trash.',
+    ],
+    likesHint: 'She wants a Spore-Silk Scarf (or rare Spore blooms).',
+    dislikesHint: 'She scoffs at common Cloud Blooms and basic bouquets.',
+    storyReactions: [
+      'Hmm. Ambition looks good on you.',
+      'So the empire isn’t just noise — you have a spine under it.',
+      'Tell me more when you’ve earned the next chapter.',
+    ],
+  },
+  girl_nova: {
+    id: 'girl_nova',
+    name: 'Nova Hale',
+    loves: ['brass_charm', 'polished_wire'],
+    dislikes: ['silk_scarf', 'bloom_harbor', 'flower_gift'],
+    chatByStage: [
+      'Don’t just harvest the reefs… notice me.',
+      'A brass charm would suit my wrist. Something that catches lamp-light.',
+      'You work hard. I respect that more than poetry.',
+      'Walk the foundry paths with me sometime.',
+      'I could get used to you showing up with something gleaming.',
+    ],
+    aboutLines: [
+      'I’m from the industrial ring. Soft scarves snag on gears.',
+      'Give me brass work — charms, polished wire — things that hold an edge.',
+    ],
+    likesHint: 'She loves Brass Charms and Polished Wire.',
+    dislikesHint: 'Silk scarves and soft flower gifts feel frivolous to her.',
+    storyReactions: [
+      'That’s a builder’s story. I can work with that.',
+      'Your crew, your inventing — it suits the way you stand.',
+      'Don’t hide the hard parts. I already guessed some of them.',
+    ],
+  },
+  girl_sage: {
+    id: 'girl_sage',
+    name: 'Sage Wren',
+    loves: ['silk_scarf', 'bloom_aether', 'bloom_spore'],
+    dislikes: ['brass_charm', 'polished_wire'],
+    chatByStage: [
+      'Empire boys always rush. Slow down.',
+      'Spore-silk scarf? Now you’re talking.',
+      'The aether gardens open at dusk. Worth a walk.',
+      'You don’t have to perform for me. Just be present.',
+      'I’ve decided you’re not a rush after all.',
+    ],
+    aboutLines: [
+      'I study slow things — silk, spore light, aether petals.',
+      'A scarf that took patience means more than stamped brass.',
+    ],
+    likesHint: 'She likes Spore-Silk Scarves, Aether blooms, and Spore blooms.',
+    dislikesHint: 'Brass charms and polished wire feel impatient to her.',
+    storyReactions: [
+      'Thank you for not rushing the truth.',
+      'Your lost one… I won’t make you say more than you want.',
+      'That invention of yours — I can hear how proud you are.',
+    ],
+  },
+};
+
+export const RELATIONSHIP_STAGE_NAMES = [
+  'stranger',
+  'acquaintance',
+  'friendly',
+  'close',
+  'sweetheart',
+] as const;
+
+export function getRomanceDef(npcId: string): RomanceNpcDef | null {
+  return ROMANCE_NPCS[npcId] ?? null;
+}
+
+export function ensureRomanceState(inv: InventoryState, npcId: string): RomanceState {
+  let rel = inv.relationships.find((r) => r.npcId === npcId);
+  if (!rel) {
+    rel = {
+      npcId,
+      stage: 0,
+      affinity: 0,
+      giftsGiven: 0,
+      knownLikes: false,
+      storiesShared: [],
+    };
+    inv.relationships.push(rel);
+  }
+  if (!rel.storiesShared) rel.storiesShared = [];
+  if (rel.knownLikes === undefined) rel.knownLikes = false;
+  return rel;
+}
+
+function recomputeRomanceStage(rel: RomanceState): void {
+  const a = rel.affinity;
+  if (a >= 100) rel.stage = 4;
+  else if (a >= 70) rel.stage = 3;
+  else if (a >= 40) rel.stage = 2;
+  else if (a >= 15) rel.stage = 1;
+  else rel.stage = 0;
+}
+
+/** Giftable items currently in the player's pack. */
+export function listHeldRomanceGifts(inv: InventoryState): CommodityId[] {
+  return ROMANCE_GIFT_IDS.filter((id) => getQty(inv, id) > 0);
 }
 
 export interface PlayerBoardState {
@@ -2517,6 +2703,8 @@ export const STORAGE_CRAFTED_IDS: readonly CommodityId[] = [
   'haul_pack',
   'haul_pack_fine',
   'polished_wire',
+  'brass_charm',
+  'silk_scarf',
   'bloom_brass',
   'bloom_sky',
   'bloom_spore',
@@ -2680,37 +2868,263 @@ export function stallPlacementMul(inv: InventoryState, districtId: string): numb
   return Math.max(0.8, Math.min(2.2, m));
 }
 
-export function giftRomanceNpc(
+export function chatRomanceNpc(
   inv: InventoryState,
   npcId: string,
-  gift: 'flower_gift' | 'brass_charm' | 'silk_scarf',
 ): { ok: boolean; msg: string; stage: RelationshipStage } {
-  if (getQty(inv, gift) < 1) {
-    return { ok: false, msg: `No ${COMMODITIES[gift].name} in pack.`, stage: 0 };
-  }
-  removeItem(inv, gift, 1);
-  let rel = inv.relationships.find((r) => r.npcId === npcId);
-  if (!rel) {
-    rel = { npcId, stage: 0, affinity: 0, giftsGiven: 0 };
-    inv.relationships.push(rel);
-  }
-  const boost = gift === 'silk_scarf' ? 28 : gift === 'brass_charm' ? 18 : 12;
-  rel.affinity += boost;
-  rel.giftsGiven += 1;
+  const def = getRomanceDef(npcId);
+  if (!def) return { ok: false, msg: 'She has already moved on.', stage: 0 };
+  const rel = ensureRomanceState(inv, npcId);
   const prev = rel.stage;
-  if (rel.affinity >= 100) rel.stage = 4;
-  else if (rel.affinity >= 70) rel.stage = 3;
-  else if (rel.affinity >= 40) rel.stage = 2;
-  else if (rel.affinity >= 15) rel.stage = 1;
-  else rel.stage = 0;
-  const stageNames = ['stranger', 'acquaintance', 'friendly', 'close', 'sweetheart'];
+  // Small warm-up from conversation
+  rel.affinity = Math.min(120, rel.affinity + 3 + (rel.stage >= 2 ? 2 : 0));
+  recomputeRomanceStage(rel);
+  const line = def.chatByStage[rel.stage] ?? def.chatByStage[0]!;
+  const stageNote =
+    rel.stage > prev
+      ? ` · Now ${RELATIONSHIP_STAGE_NAMES[rel.stage]}.`
+      : ` · ${RELATIONSHIP_STAGE_NAMES[rel.stage]} (${rel.affinity}).`;
   return {
     ok: true,
     stage: rel.stage,
-    msg:
-      rel.stage > prev
-        ? `She smiles brighter — now ${stageNames[rel.stage]}.`
-        : `Gift accepted (+${boost} affinity). ${stageNames[rel.stage]}.`,
+    msg: `${def.name}: “${line}”${stageNote}`,
+  };
+}
+
+export function learnRomanceLikes(
+  inv: InventoryState,
+  npcId: string,
+): { ok: boolean; msg: string; stage: RelationshipStage } {
+  const def = getRomanceDef(npcId);
+  if (!def) return { ok: false, msg: 'She has already moved on.', stage: 0 };
+  const rel = ensureRomanceState(inv, npcId);
+  const first = !rel.knownLikes;
+  rel.knownLikes = true;
+  if (first) {
+    rel.affinity = Math.min(120, rel.affinity + 6);
+    recomputeRomanceStage(rel);
+  }
+  const about = def.aboutLines[Math.floor(Math.random() * def.aboutLines.length)]!;
+  return {
+    ok: true,
+    stage: rel.stage,
+    msg: `${def.name}: “${about}” · Likes: ${def.likesHint} · Avoid: ${def.dislikesHint}`,
+  };
+}
+
+export function giftRomanceNpc(
+  inv: InventoryState,
+  npcId: string,
+  gift: CommodityId,
+): { ok: boolean; msg: string; stage: RelationshipStage; delta: number } {
+  const def = getRomanceDef(npcId);
+  if (!def) {
+    return { ok: false, msg: 'She has already moved on.', stage: 0, delta: 0 };
+  }
+  if (!(ROMANCE_GIFT_IDS as readonly string[]).includes(gift)) {
+    return {
+      ok: false,
+      msg: `${COMMODITIES[gift]?.name ?? gift} isn’t something you’d offer as a gift.`,
+      stage: 0,
+      delta: 0,
+    };
+  }
+  if (getQty(inv, gift) < 1) {
+    return {
+      ok: false,
+      msg: `No ${COMMODITIES[gift].name} in pack.`,
+      stage: 0,
+      delta: 0,
+    };
+  }
+  removeItem(inv, gift, 1);
+  const rel = ensureRomanceState(inv, npcId);
+  const prev = rel.stage;
+  const name = COMMODITIES[gift].name;
+  let delta = 8;
+  let reaction: string;
+  if (def.loves.includes(gift)) {
+    delta =
+      gift === 'silk_scarf' || gift === 'brass_charm'
+        ? 26
+        : gift === 'flower_gift'
+          ? 18
+          : 16;
+    reaction = `Her eyes light up at the ${name}.`;
+  } else if (def.dislikes.includes(gift)) {
+    delta = gift === 'silk_scarf' || gift === 'brass_charm' ? -18 : -12;
+    reaction = `She stiffens. The ${name} was a misread.`;
+  } else {
+    delta = 5;
+    reaction = `She accepts the ${name} politely.`;
+  }
+  rel.affinity = Math.max(0, Math.min(120, rel.affinity + delta));
+  if (delta > 0) rel.giftsGiven += 1;
+  recomputeRomanceStage(rel);
+  const stageBit =
+    rel.stage > prev
+      ? ` Now ${RELATIONSHIP_STAGE_NAMES[rel.stage]}.`
+      : rel.stage < prev
+        ? ` Now only ${RELATIONSHIP_STAGE_NAMES[rel.stage]}.`
+        : ` (${RELATIONSHIP_STAGE_NAMES[rel.stage]}, ${rel.affinity})`;
+  const sign = delta > 0 ? `+${delta}` : `${delta}`;
+  return {
+    ok: true,
+    stage: rel.stage,
+    delta,
+    msg: `${def.name}: ${reaction} ${sign} affinity.${stageBit}`,
+  };
+}
+
+export type RomanceStoryId =
+  | 'origin'
+  | 'companion'
+  | 'crew'
+  | 'invention'
+  | 'resources'
+  | 'workshop';
+
+export interface StoryShareContext {
+  companionName: string;
+  whoOf: string;
+  how: string;
+  why: string;
+  remains: string;
+  moral: string;
+}
+
+export function listRomanceStories(
+  inv: InventoryState,
+  npcId: string,
+  ctx: StoryShareContext,
+): {
+  id: RomanceStoryId;
+  title: string;
+  locked: boolean;
+  reason?: string;
+  preview: string;
+}[] {
+  const rel = ensureRomanceState(inv, npcId);
+  const shared = new Set(rel.storiesShared ?? []);
+  const workers = inv.workers.filter((w) => !w.unpaid);
+  const invent = [...inv.customRecipes].sort(
+    (a, b) => (b.quality ?? 1) * b.sellValue - (a.quality ?? 1) * a.sellValue,
+  )[0];
+  const matTotal = (['cloud_iron', 'scrap_brass', 'spore_silk', 'sky_salt'] as CommodityId[]).reduce(
+    (s, id) => s + getQty(inv, id),
+    0,
+  );
+  const blooms = (FLOWER_IDS as readonly CommodityId[]).reduce((s, id) => s + getQty(inv, id), 0);
+
+  const beats: {
+    id: RomanceStoryId;
+    title: string;
+    minStage: number;
+    preview: string;
+    require?: () => string | null;
+  }[] = [
+    {
+      id: 'origin',
+      title: 'Your origin',
+      minStage: 2,
+      preview: `You lost ${ctx.whoOf} to ${ctx.how}. You still carry ${ctx.remains}.`,
+    },
+    {
+      id: 'companion',
+      title: `${ctx.companionName} — the soul you woke`,
+      minStage: 2,
+      preview: `${ctx.companionName} walks with you in brass. You build ${ctx.why}.`,
+    },
+    {
+      id: 'crew',
+      title: 'Your crew',
+      minStage: 2,
+      preview:
+        workers.length === 0
+          ? 'You work alone for now.'
+          : `You employ ${workers.length}: ${workers
+              .slice(0, 3)
+              .map((w) => w.name)
+              .join(', ')}${workers.length > 3 ? '…' : ''}.`,
+      require: () => null,
+    },
+    {
+      id: 'invention',
+      title: 'Proudest invention',
+      minStage: 3,
+      preview: invent
+        ? `${invent.name} (Q${invent.quality ?? 1}) — worth ~${invent.sellValue}b a piece.`
+        : 'You have not invented anything yet.',
+      require: () => (invent ? null : 'Invent something first (bay L3 / workshop lab).'),
+    },
+    {
+      id: 'resources',
+      title: 'What you hold',
+      minStage: 2,
+      preview: `${inv.brass} brass · ${matTotal} raw mats · ${blooms} blooms · ${inv.harvestRuns} hauls logged.`,
+    },
+    {
+      id: 'workshop',
+      title: 'Your workshop path',
+      minStage: 3,
+      preview: `Bay L${inv.bayLevel}${inv.cityWorkshopLeased ? ' · city workshop' : ''}${
+        inv.apartmentOwned ? ' · sky apartment' : ''
+      } · ${ownedCityStallCount(inv)} city stall(s) · ${inv.inventionsMade ?? 0} inventions made.`,
+    },
+  ];
+
+  return beats.map((b) => {
+    const need = b.require?.() ?? null;
+    const locked = rel.stage < b.minStage || !!need || shared.has(b.id);
+    let reason: string | undefined;
+    if (shared.has(b.id)) reason = 'Already shared';
+    else if (rel.stage < b.minStage) {
+      reason = `Need ${RELATIONSHIP_STAGE_NAMES[b.minStage as RelationshipStage]}+ (now ${RELATIONSHIP_STAGE_NAMES[rel.stage]})`;
+    } else if (need) reason = need;
+    return {
+      id: b.id,
+      title: b.title,
+      locked,
+      reason,
+      preview: b.preview,
+    };
+  });
+}
+
+export function shareRomanceStory(
+  inv: InventoryState,
+  npcId: string,
+  storyId: RomanceStoryId,
+  ctx: StoryShareContext,
+): { ok: boolean; msg: string; stage: RelationshipStage } {
+  const def = getRomanceDef(npcId);
+  if (!def) return { ok: false, msg: 'She has already moved on.', stage: 0 };
+  const rel = ensureRomanceState(inv, npcId);
+  const options = listRomanceStories(inv, npcId, ctx);
+  const beat = options.find((o) => o.id === storyId);
+  if (!beat) return { ok: false, msg: 'Nothing to share.', stage: rel.stage };
+  if (beat.locked) {
+    return {
+      ok: false,
+      msg: beat.reason ?? 'Not ready to share that yet.',
+      stage: rel.stage,
+    };
+  }
+  rel.storiesShared = [...(rel.storiesShared ?? []), storyId];
+  const gain = storyId === 'origin' || storyId === 'companion' ? 14 : storyId === 'invention' ? 12 : 10;
+  rel.affinity = Math.min(120, rel.affinity + gain);
+  const prev = rel.stage;
+  recomputeRomanceStage(rel);
+  const reaction =
+    def.storyReactions[Math.floor(Math.random() * def.storyReactions.length)]!;
+  const stageBit =
+    rel.stage > prev
+      ? ` Now ${RELATIONSHIP_STAGE_NAMES[rel.stage]}.`
+      : ` (+${gain} affinity · ${RELATIONSHIP_STAGE_NAMES[rel.stage]})`;
+  return {
+    ok: true,
+    stage: rel.stage,
+    msg: `You share: ${beat.preview} ${def.name}: “${reaction}”${stageBit}`,
   };
 }
 
@@ -2799,6 +3213,37 @@ export const RECIPES: Recipe[] = [
       { id: 'sky_salt', n: 1 },
     ],
     output: { id: 'polished_wire', n: 1 },
+    needsBay: true,
+  },
+  // ——— Romance gifts (also buyable at market) ———
+  {
+    id: 'brass_charm',
+    name: 'Stamp Brass Charm',
+    inputs: [
+      { id: 'scrap_brass', n: 2 },
+      { id: 'wire', n: 1 },
+    ],
+    output: { id: 'brass_charm', n: 1 },
+    needsBay: true,
+  },
+  {
+    id: 'silk_scarf',
+    name: 'Weave Spore-Silk Scarf',
+    inputs: [
+      { id: 'spore_silk', n: 3 },
+      { id: 'wire', n: 1 },
+    ],
+    output: { id: 'silk_scarf', n: 1 },
+    needsBay: true,
+  },
+  {
+    id: 'flower_gift',
+    name: 'Bind Cloud Blooms Bouquet',
+    inputs: [
+      { id: 'bloom_sky', n: 1 },
+      { id: 'bloom_brass', n: 1 },
+    ],
+    output: { id: 'flower_gift', n: 1 },
     needsBay: true,
   },
 ];
@@ -5544,6 +5989,10 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
         stage: (Math.max(0, Math.min(4, Number(r.stage) || 0)) as RelationshipStage),
         affinity: Number(r.affinity) || 0,
         giftsGiven: Number(r.giftsGiven) || 0,
+        knownLikes: !!r.knownLikes,
+        storiesShared: Array.isArray(r.storiesShared)
+          ? r.storiesShared.map(String)
+          : [],
       }))
     : [];
   inv.storageLayouts = {};

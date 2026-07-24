@@ -209,6 +209,15 @@ import {
   homeHasRoom,
   canCraftAtHomeOrBay,
   giftRomanceNpc,
+  chatRomanceNpc,
+  learnRomanceLikes,
+  shareRomanceStory,
+  listRomanceStories,
+  listHeldRomanceGifts,
+  getRomanceDef,
+  ensureRomanceState,
+  RELATIONSHIP_STAGE_NAMES,
+  type RomanceStoryId,
   onMedallionHostLost,
   districtById,
   CITY_DISTRICTS,
@@ -839,6 +848,10 @@ export class ForgeHeartGame {
       }
       if (this.bayOpen && e.code === 'Escape') {
         this.closeBay();
+        return;
+      }
+      if (this.romanceNpcId && e.code === 'Escape') {
+        this.closeRomancePanel();
         return;
       }
       if (this.boardShopOpen && e.code === 'Escape') {
@@ -2674,6 +2687,8 @@ export class ForgeHeartGame {
     this.stallOpen = false;
     this.harvestOpen = false;
     this.cityMapOpen = false;
+    this.romanceNpcId = null;
+    this.romanceView = 'menu';
     this.cityMapSelectedId = null;
     this.cityMapCam = null;
     this.cityMapDrag = null;
@@ -2694,6 +2709,7 @@ export class ForgeHeartGame {
       'maker-hud',
       'nav-compass',
       'city-map-panel',
+      'romance-panel',
       'pause-menu',
     ];
     for (const id of ids) {
@@ -4434,7 +4450,8 @@ export class ForgeHeartGame {
       this.programOpen ||
       this.stallOpen ||
       this.cityMapOpen ||
-      this.activeVendor
+      this.activeVendor ||
+      this.romanceNpcId
     ) {
       return true;
     }
@@ -6197,32 +6214,234 @@ export class ForgeHeartGame {
     return true;
   }
 
+  private romanceNpcId: string | null = null;
+  private romanceView: 'menu' | 'gift' | 'story' = 'menu';
+
+  private romanceStoryContext() {
+    const bs = this.backstory ?? generateBackstory(1);
+    return {
+      companionName: bs.companionName,
+      whoOf: bs.whoOf,
+      how: bs.how,
+      why: bs.why,
+      remains: bs.remains,
+      moral: bs.moral,
+    };
+  }
+
   private handleRomanceInteract(it: CityInteract) {
-    const lines = it.lines ?? ['She watches you with a knowing smile.'];
-    const rel = this.inv.relationships.find((r) => r.npcId === it.id);
-    const stage = rel?.stage ?? 0;
-    // Gift if carrying romance gifts
-    const gifts = ['silk_scarf', 'brass_charm', 'flower_gift'] as const;
-    const held = gifts.find((g) => (this.inv.items[g] ?? 0) > 0);
-    if (held && it.id) {
-      const r = giftRomanceNpc(this.inv, it.id, held);
-      this.toast(r.msg, 4);
-      this.brass = this.inv.brass;
-      this.audio.playPickup();
-      writeSlot(this.activeSlot, this.buildSaveData());
+    if (!it.id) return;
+    this.openRomancePanel(it.id);
+  }
+
+  private ensureRomancePanel(): HTMLElement {
+    let el = document.getElementById('romance-panel');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'romance-panel';
+    el.className = 'market-panel romance-panel hidden';
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = `
+      <div class="market-card romance-card">
+        <header class="market-head">
+          <div>
+            <h3 id="romance-title">Talk</h3>
+            <p class="market-sub" id="romance-sub">…</p>
+          </div>
+          <button type="button" id="romance-close" class="maker-close" title="Close">×</button>
+        </header>
+        <p class="romance-status" id="romance-status"></p>
+        <p class="romance-log" id="romance-log"></p>
+        <div id="romance-actions" class="romance-actions"></div>
+      </div>`;
+    document.getElementById('app')?.appendChild(el);
+    el.querySelector('#romance-close')?.addEventListener('click', () => this.closeRomancePanel());
+    return el;
+  }
+
+  private openRomancePanel(npcId: string) {
+    this.romanceNpcId = npcId;
+    this.romanceView = 'menu';
+    const el = this.ensureRomancePanel();
+    el.classList.remove('hidden');
+    el.setAttribute('aria-hidden', 'false');
+    this.fillRomancePanel();
+    this.syncMobileGameplay();
+    try {
+      this.controls.unlock();
+    } catch {
+      /* ignore */
+    }
+    this.audio.playPickup();
+  }
+
+  private closeRomancePanel() {
+    this.romanceNpcId = null;
+    this.romanceView = 'menu';
+    const el = document.getElementById('romance-panel');
+    el?.classList.add('hidden');
+    el?.setAttribute('aria-hidden', 'true');
+    this.syncMobileGameplay();
+    if (!this.paused && !this.disposed) this.controls.lock();
+  }
+
+  private romanceLog(msg: string) {
+    const log = document.getElementById('romance-log');
+    if (log) log.textContent = msg;
+    this.toast(msg, Math.min(8, 4 + msg.length / 80));
+  }
+
+  private fillRomancePanel() {
+    const npcId = this.romanceNpcId;
+    if (!npcId) return;
+    const def = getRomanceDef(npcId);
+    const rel = ensureRomanceState(this.inv, npcId);
+    const title = document.getElementById('romance-title');
+    const sub = document.getElementById('romance-sub');
+    const status = document.getElementById('romance-status');
+    const actions = document.getElementById('romance-actions');
+    if (!actions) return;
+    const name = def?.name ?? npcId;
+    if (title) title.textContent = name;
+    if (sub) {
+      sub.textContent =
+        this.romanceView === 'gift'
+          ? 'Choose a gift from your pack'
+          : this.romanceView === 'story'
+            ? 'Share something true about your empire'
+            : 'Chat · gift · learn · share your story';
+    }
+    if (status) {
+      const likes = rel.knownLikes && def
+        ? ` · Knows: ${def.likesHint}`
+        : ' · Ask what she likes';
+      status.textContent = `${RELATIONSHIP_STAGE_NAMES[rel.stage]} · affinity ${rel.affinity}${likes}`;
+    }
+    actions.innerHTML = '';
+
+    const addBtn = (label: string, onClick: () => void, opts?: { disabled?: boolean; danger?: boolean }) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'romance-btn' + (opts?.danger ? ' danger' : '');
+      b.textContent = label;
+      b.disabled = !!opts?.disabled;
+      b.addEventListener('click', onClick);
+      actions.appendChild(b);
+    };
+
+    if (this.romanceView === 'menu') {
+      addBtn('Just chat', () => {
+        const r = chatRomanceNpc(this.inv, npcId);
+        this.romanceLog(r.msg);
+        writeSlot(this.activeSlot, this.buildSaveData());
+        this.fillRomancePanel();
+      });
+      addBtn('Learn about her', () => {
+        const r = learnRomanceLikes(this.inv, npcId);
+        this.romanceLog(r.msg);
+        writeSlot(this.activeSlot, this.buildSaveData());
+        this.fillRomancePanel();
+      });
+      const gifts = listHeldRomanceGifts(this.inv);
+      addBtn(
+        gifts.length ? `Give a gift (${gifts.length})` : 'Give a gift (none in pack)',
+        () => {
+          this.romanceView = 'gift';
+          this.fillRomancePanel();
+        },
+        { disabled: gifts.length === 0 },
+      );
+      const ctx = this.romanceStoryContext();
+      const stories = listRomanceStories(this.inv, npcId, ctx);
+      const openStories = stories.filter((s) => !s.locked);
+      addBtn(
+        rel.stage >= 2
+          ? `Share your story (${openStories.length} ready)`
+          : 'Share your story (need friendly+)',
+        () => {
+          this.romanceView = 'story';
+          this.fillRomancePanel();
+        },
+        { disabled: rel.stage < 2 },
+      );
+      addBtn('Leave', () => this.closeRomancePanel());
       return;
     }
-    const flirt =
-      stage >= 3
-        ? lines[1] ?? lines[0]!
-        : stage >= 1
-          ? lines[0]!
-          : `${it.label?.replace('Talk · ', '') ?? 'She'}: ${lines[0]}`;
-    this.toast(
-      `${flirt} (Bring Cloud Blooms / Brass Charm / Spore-Silk Scarf to gift.)`,
-      this.mobile.enabled ? 9 : 5.5,
-    );
-    this.audio.playPickup();
+
+    if (this.romanceView === 'gift') {
+      const held = listHeldRomanceGifts(this.inv);
+      if (!held.length) {
+        const p = document.createElement('p');
+        p.className = 'craft-hint';
+        p.textContent =
+          'No gifts in pack. Craft Brass Charm / Silk Scarf / Cloud Blooms bouquet at the workbench (Tools), pick plaza flowers, or buy gifts from market vendors.';
+        actions.appendChild(p);
+      }
+      for (const g of held) {
+        const loved = def?.loves.includes(g);
+        const hated = def?.dislikes.includes(g);
+        const hint = rel.knownLikes
+          ? loved
+            ? ' · she loves this'
+            : hated
+              ? ' · she dislikes this'
+              : ' · polite at best'
+          : '';
+        addBtn(
+          `${COMMODITIES[g].name} ×${this.inv.items[g] ?? 0}${hint}`,
+          () => {
+            const r = giftRomanceNpc(this.inv, npcId, g);
+            this.romanceLog(r.msg);
+            this.audio.playPickup();
+            writeSlot(this.activeSlot, this.buildSaveData());
+            this.romanceView = 'menu';
+            this.fillRomancePanel();
+          },
+          { danger: !!(rel.knownLikes && hated) },
+        );
+      }
+      addBtn('Back', () => {
+        this.romanceView = 'menu';
+        this.fillRomancePanel();
+      });
+      return;
+    }
+
+    if (this.romanceView === 'story') {
+      const ctx = this.romanceStoryContext();
+      const stories = listRomanceStories(this.inv, npcId, ctx);
+      for (const s of stories) {
+        const label = s.locked
+          ? `${s.title} — ${s.reason ?? 'locked'}`
+          : `${s.title}`;
+        addBtn(
+          label,
+          () => {
+            if (s.locked) {
+              this.romanceLog(s.reason ?? 'Not yet.');
+              return;
+            }
+            const r = shareRomanceStory(this.inv, npcId, s.id as RomanceStoryId, ctx);
+            this.romanceLog(r.msg);
+            this.audio.playPickup();
+            writeSlot(this.activeSlot, this.buildSaveData());
+            this.romanceView = 'menu';
+            this.fillRomancePanel();
+          },
+          { disabled: s.locked },
+        );
+        if (!s.locked) {
+          const prev = document.createElement('p');
+          prev.className = 'romance-preview';
+          prev.textContent = s.preview;
+          actions.appendChild(prev);
+        }
+      }
+      addBtn('Back', () => {
+        this.romanceView = 'menu';
+        this.fillRomancePanel();
+      });
+    }
   }
 
   private openMedallionAssign() {
@@ -7316,7 +7535,10 @@ export class ForgeHeartGame {
     if (
       recipe.id === 'speed_tool' ||
       recipe.id === 'haul_pack' ||
-      recipe.id === 'polished_wire'
+      recipe.id === 'polished_wire' ||
+      recipe.id === 'brass_charm' ||
+      recipe.id === 'silk_scarf' ||
+      recipe.id === 'flower_gift'
     ) {
       return 'tools';
     }

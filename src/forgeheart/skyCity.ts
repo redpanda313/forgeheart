@@ -12,6 +12,7 @@ import {
   CITY_DISTRICTS,
   harvestBiomeForDistrict,
   COMMODITIES,
+  ROMANCE_NPCS,
   type VendorDef,
   type CityDistrictDef,
   type CommodityId,
@@ -2029,14 +2030,15 @@ export function buildSkyCity(): SkyCityBuilt {
   }
 
   // Romance-eligible girl NPCs (named) — stay on their plaza
-  const girlNames = [
-    { id: 'girl_lira', name: 'Lira Voss', lines: ['Oh— a maker? Careful, I might steal your afternoon.', 'Bring me blooms from the gardens… or charm me better.'] },
-    { id: 'girl_mira', name: 'Mira Quinn', lines: ['Your board looks fast. Are you?', 'Silk and secrets — gift me either.'] },
-    { id: 'girl_nova', name: 'Nova Hale', lines: ['Don’t just harvest the reefs… notice me.', 'A brass charm would suit my wrist.'] },
-    { id: 'girl_sage', name: 'Sage Wren', lines: ['Empire boys always rush. Slow down.', 'Spore-silk scarf? Now you’re talking.'] },
-  ];
-  for (let i = 0; i < girlNames.length; i++) {
-    const gdef = girlNames[i]!;
+  // Prefs/dialogue live in economy.ROMANCE_NPCS (gifts must be craftable/buyable/pickable)
+  const girlIds = ['girl_lira', 'girl_mira', 'girl_nova', 'girl_sage'] as const;
+  for (let i = 0; i < girlIds.length; i++) {
+    const gid = girlIds[i]!;
+    const rdef = ROMANCE_NPCS[gid];
+    const name = rdef?.name ?? gid;
+    const lines = rdef
+      ? [rdef.chatByStage[0], rdef.chatByStage[1]]
+      : ['…'];
     const d = CITY_DISTRICTS[(i * 3 + 1) % CITY_DISTRICTS.length]!;
     const home = plazaPoint(d, 0.32);
     const parts = makeNpcMesh('girl', mats, false, i + 3);
@@ -2053,18 +2055,18 @@ export function buildSkyCity(): SkyCityBuilt {
     mark.position.set(home.x + 1.2, 1.2, home.z);
     addMesh(mark);
     interactables.push({
-      id: gdef.id,
+      id: gid,
       kind: 'romance_npc',
       position: mark.position.clone(),
-      radius: 2.5,
+      radius: 2.8,
       mesh: mark,
-      label: `Talk · ${gdef.name}`,
-      lines: gdef.lines,
+      label: `Talk · ${name}`,
+      lines: [...lines],
       districtId: d.id,
     });
     npcs.push({
-      id: gdef.id,
-      displayName: gdef.name,
+      id: gid,
+      displayName: name,
       mesh: parts.root,
       parts,
       home,
@@ -2075,7 +2077,7 @@ export function buildSkyCity(): SkyCityBuilt {
       phase: Math.random(),
       speed: 2.6,
       romance: true,
-      giftLines: gdef.lines,
+      giftLines: [...lines],
       homeInterior: new THREE.Vector3(home.x, 1.6, home.z - 1),
       plazaCx: d.x,
       plazaCz: d.z,
