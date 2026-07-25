@@ -21,7 +21,11 @@ import {
   type CityDistrictDef,
   type CommodityId,
 } from './economy';
-import { plotLivePos, plotPlatformHalf } from './plazaPlots';
+import {
+  plotLivePos,
+  plotPlatformHalf,
+  type PlotShape,
+} from './plazaPlots';
 import { buildPrefab } from './cityEditor';
 import { CATALOG, type CatalogEntry } from './editorCatalog';
 import { buildMapSnapshot, type MapSnapshot } from './cityMap';
@@ -249,16 +253,20 @@ export interface SkyCityBuilt {
       worldX?: number;
       worldZ?: number;
       rotation?: number;
+      shape?: string;
+      layer?: number;
       buildings?: {
         kind: string;
         facing?: number;
         lx?: number;
         lz?: number;
         yaw?: number;
+        layer?: number;
         bridgeToPlotId?: string | null;
       }[];
       isEdge?: boolean;
     }[],
+    airways?: { fromId: string; toId: string }[],
   ) => void;
   /** Live colliders for platforms + plot buildings (spatial grid chunk) */
   getPlotDynamicsColliders: () => Collider[];
@@ -2392,16 +2400,90 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
   plotBuildRoot.name = 'PlotStructures';
   group.add(plotBuildRoot);
 
+  /** Upper deck height above world 0 (Task 11). */
+  const LAYER1_DECK_Y = DECK_Y + 4.15;
+
   type PlotPlatformHandle = {
     root: THREE.Group;
     floorMesh: THREE.Mesh;
     rimMesh: THREE.Mesh;
     half: number;
     col: Collider;
+    shape: PlotShape;
+    upperRoot: THREE.Group | null;
+    upperCol: Collider | null;
+    railCols: Collider[];
   };
   const plotPlatforms = new Map<string, PlotPlatformHandle>();
   /** Dynamic building colliders (platforms keep stable collider objects) */
   let plotBuildingCols: Collider[] = [];
+  /** Transient airway colliders (player plot skyways) */
+  let plotAirwayCols: Collider[] = [];
+  const plotAirwayRoot = new THREE.Group();
+  plotAirwayRoot.name = 'PlotAirways';
+  group.add(plotAirwayRoot);
+
+  const floorMatFor = (color: number) =>
+    new THREE.MeshStandardMaterial({
+      color,
+      metalness: 0.22,
+      roughness: 0.68,
+    });
+  const rimMat = () =>
+    new THREE.MeshStandardMaterial({
+      color: 0x667788,
+      transparent: true,
+      opacity: 0.45,
+      metalness: 0.3,
+      roughness: 0.5,
+      emissive: 0x000000,
+      emissiveIntensity: 0.05,
+    });
+
+  /** Task 10 — pad floor geometry by shape. */
+  const makeShapeFloorGeo = (shape: PlotShape, half: number): THREE.BufferGeometry => {
+    const s = half * 2;
+    if (shape === 'circle') {
+      return new THREE.CylinderGeometry(half, half, FLOOR_THICK, 24);
+    }
+    if (shape === 'octagon') {
+      return new THREE.CylinderGeometry(half, half, FLOOR_THICK, 8);
+    }
+    if (shape === 'triangle') {
+      const shape2 = new THREE.Shape();
+      const r = half * 1.05;
+      for (let i = 0; i < 3; i++) {
+        const a = -Math.PI / 2 + (i * 2 * Math.PI) / 3;
+        const x = Math.cos(a) * r;
+        const y = Math.sin(a) * r;
+        if (i === 0) shape2.moveTo(x, y);
+        else shape2.lineTo(x, y);
+      }
+      shape2.closePath();
+      const geo = new THREE.ExtrudeGeometry(shape2, {
+        depth: FLOOR_THICK,
+        bevelEnabled: false,
+      });
+      geo.rotateX(-Math.PI / 2);
+      geo.translate(0, FLOOR_THICK / 2, 0);
+      return geo;
+    }
+    return new THREE.BoxGeometry(s, FLOOR_THICK, s);
+  };
+
+  const makeShapeRimGeo = (shape: PlotShape, half: number): THREE.BufferGeometry => {
+    const s = half * 2 + 0.15;
+    if (shape === 'circle') {
+      return new THREE.CylinderGeometry(half + 0.08, half + 0.08, 0.12, 24);
+    }
+    if (shape === 'octagon') {
+      return new THREE.CylinderGeometry(half + 0.08, half + 0.08, 0.12, 8);
+    }
+    if (shape === 'triangle') {
+      return makeShapeFloorGeo('triangle', half + 0.08);
+    }
+    return new THREE.BoxGeometry(s, 0.12, s);
+  };
 
   const makePlotPlatform = (
     plotKey: string,
@@ -2409,38 +2491,20 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     px: number,
     pz: number,
     cellSize: number,
+    shape: PlotShape = 'square',
   ): PlotPlatformHandle => {
-    // Abut at default grid; moving a pad opens air that needs rope bridges
     const half = plotPlatformHalf(cellSize);
     const root = new THREE.Group();
     root.name = plotKey;
     root.position.set(px, 0, pz);
     root.userData.plotId = plotKey;
-    const floor = new THREE.Mesh(
-      new THREE.BoxGeometry(half * 2, FLOOR_THICK, half * 2),
-      new THREE.MeshStandardMaterial({
-        color: d.color,
-        metalness: 0.22,
-        roughness: 0.68,
-      }),
-    );
+    const floor = new THREE.Mesh(makeShapeFloorGeo(shape, half), floorMatFor(d.color));
     floor.position.set(0, DECK_Y, 0);
     floor.receiveShadow = true;
     floor.castShadow = true;
     floor.userData.plotId = plotKey;
     root.add(floor);
-    const rim = new THREE.Mesh(
-      new THREE.BoxGeometry(half * 2 + 0.15, 0.12, half * 2 + 0.15),
-      new THREE.MeshStandardMaterial({
-        color: 0x667788,
-        transparent: true,
-        opacity: 0.45,
-        metalness: 0.3,
-        roughness: 0.5,
-        emissive: 0x000000,
-        emissiveIntensity: 0.05,
-      }),
-    );
+    const rim = new THREE.Mesh(makeShapeRimGeo(shape, half), rimMat());
     rim.position.set(0, DECK_Y + FLOOR_THICK * 0.45, 0);
     rim.userData.plotRim = true;
     root.add(rim);
@@ -2452,9 +2516,113 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       max: new THREE.Vector3(px + half + 0.1, top, pz + half + 0.1),
       kind: 'floor',
     };
-    const h: PlotPlatformHandle = { root, floorMesh: floor, rimMesh: rim, half, col };
+    const h: PlotPlatformHandle = {
+      root,
+      floorMesh: floor,
+      rimMesh: rim,
+      half,
+      col,
+      shape,
+      upperRoot: null,
+      upperCol: null,
+      railCols: [],
+    };
     plotPlatforms.set(plotKey, h);
     return h;
+  };
+
+  const applyPlotShape = (h: PlotPlatformHandle, shape: PlotShape, color: number) => {
+    if (h.shape === shape) {
+      (h.floorMesh.material as THREE.MeshStandardMaterial).color.setHex(color);
+      return;
+    }
+    h.shape = shape;
+    h.floorMesh.geometry.dispose();
+    h.floorMesh.geometry = makeShapeFloorGeo(shape, h.half);
+    h.rimMesh.geometry.dispose();
+    h.rimMesh.geometry = makeShapeRimGeo(shape, h.half);
+    (h.floorMesh.material as THREE.MeshStandardMaterial).color.setHex(color);
+  };
+
+  const ensureUpperDeck = (
+    h: PlotPlatformHandle,
+    px: number,
+    pz: number,
+    shape: PlotShape,
+    color: number,
+  ) => {
+    if (h.upperRoot) {
+      while (h.upperRoot.children.length) {
+        const c = h.upperRoot.children[0]!;
+        h.upperRoot.remove(c);
+        if (c instanceof THREE.Mesh) c.geometry?.dispose?.();
+      }
+    } else {
+      h.upperRoot = new THREE.Group();
+      h.upperRoot.name = `${h.root.name}_upper`;
+      h.root.add(h.upperRoot);
+    }
+    const floor = new THREE.Mesh(makeShapeFloorGeo(shape, h.half * 0.92), floorMatFor(color));
+    floor.position.set(0, LAYER1_DECK_Y, 0);
+    floor.userData.plotUpper = true;
+    floor.receiveShadow = true;
+    floor.castShadow = true;
+    h.upperRoot.add(floor);
+    const rim = new THREE.Mesh(makeShapeRimGeo(shape, h.half * 0.92), rimMat());
+    rim.position.set(0, LAYER1_DECK_Y + FLOOR_THICK * 0.45, 0);
+    rim.userData.plotRim = true;
+    h.upperRoot.add(rim);
+
+    // Climb rails (ladder on +Z edge)
+    const railMat = new THREE.MeshStandardMaterial({
+      color: 0xb0a090,
+      metalness: 0.45,
+      roughness: 0.4,
+    });
+    for (const sx of [-0.35, 0.35]) {
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, LAYER1_DECK_Y - DECK_Y, 0.12),
+        railMat,
+      );
+      post.position.set(sx * h.half, (LAYER1_DECK_Y + DECK_Y) / 2, h.half * 0.88);
+      h.upperRoot.add(post);
+    }
+    const rungs = 6;
+    for (let i = 0; i < rungs; i++) {
+      const t = (i + 1) / (rungs + 1);
+      const y = DECK_Y + t * (LAYER1_DECK_Y - DECK_Y);
+      const rung = new THREE.Mesh(new THREE.BoxGeometry(h.half * 0.75, 0.08, 0.1), railMat);
+      rung.position.set(0, y, h.half * 0.88);
+      h.upperRoot.add(rung);
+    }
+
+    const top = LAYER1_DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+    const bot = LAYER1_DECK_Y - FLOOR_THICK / 2 - 0.08;
+    const uh = h.half * 0.92;
+    h.upperCol = {
+      min: new THREE.Vector3(px - uh - 0.1, bot, pz - uh - 0.1),
+      max: new THREE.Vector3(px + uh + 0.1, top, pz + uh + 0.1),
+      kind: 'floor',
+    };
+    h.railCols = [];
+    for (let i = 0; i < rungs; i++) {
+      const t = (i + 1) / (rungs + 1);
+      const y = DECK_Y + t * (LAYER1_DECK_Y - DECK_Y);
+      h.railCols.push({
+        min: new THREE.Vector3(px - h.half * 0.4, y - 0.08, pz + h.half * 0.7),
+        max: new THREE.Vector3(px + h.half * 0.4, y + 0.12, pz + h.half * 0.98),
+        kind: 'floor',
+      });
+    }
+  };
+
+  const clearUpperDeck = (h: PlotPlatformHandle) => {
+    if (h.upperRoot) {
+      h.root.remove(h.upperRoot);
+      h.upperRoot = null;
+    }
+    h.upperCol = null;
+    h.railCols = [];
   };
 
   // Spawn solid platforms for every core 3×3 plot (edge plots via ensure later)
@@ -2528,12 +2696,15 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     worldX?: number;
     worldZ?: number;
     rotation?: number;
+    shape?: string;
+    layer?: number;
     buildings?: {
       kind: string;
       facing?: number;
       lx?: number;
       lz?: number;
       yaw?: number;
+      layer?: number;
       bridgeToPlotId?: string | null;
     }[];
     isEdge?: boolean;
@@ -2551,23 +2722,30 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       buildings: (p.buildings ?? []).map((b) => ({
         kind: b.kind as import('./plazaPlots').PlotBuildKind,
         bridgeToPlotId: b.bridgeToPlotId,
+        layer: b.layer,
       })),
       npcOwnerId: null,
       zoningHint: 'mixed' as const,
       rentPolicy: null,
       tenantNeighborId: null,
-      shape: 'square' as const,
+      shape: (['square', 'octagon', 'circle', 'triangle'].includes(p.shape ?? '')
+        ? p.shape
+        : 'square') as PlotShape,
       rotation: p.rotation ?? 0,
-      layer: 0,
+      layer: p.layer ?? 0,
       listPrice: 0,
       forSale: p.forSale,
       vacant: false,
     }) as import('./plazaPlots').PlotState;
 
-  const syncPlotOwnership = (plots: PlotSyncInput[]) => {
+  const syncPlotOwnership = (
+    plots: PlotSyncInput[],
+    airways?: { fromId: string; toId: string }[],
+  ) => {
     plotBuildingCols = [];
+    plotAirwayCols = [];
 
-    // Tint / keep platforms at grid/live positions (pads are not player-movable)
+    // Platforms: shape + layer (upper deck)
     for (const p of plots) {
       if (p.districtId == null || p.cellX == null || p.cellY == null) continue;
       const d = CITY_DISTRICTS.find((x) => x.id === p.districtId);
@@ -2578,7 +2756,16 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       h.root.position.set(live.x, 0, live.z);
       h.root.rotation.y = 0;
       setPlatformCol(h, live.x, live.z);
+      const shape = (['square', 'octagon', 'circle', 'triangle'].includes(p.shape ?? '')
+        ? p.shape
+        : 'square') as PlotShape;
+      applyPlotShape(h, shape, p.owner === 'player' ? 0xc9a227 : d.color);
       tintPlatform(h, p.owner, p.forSale, d.color);
+      if ((p.layer ?? 0) >= 1) {
+        ensureUpperDeck(h, live.x, live.z, shape, p.owner === 'player' ? 0xc9a227 : d.color);
+      } else {
+        clearUpperDeck(h);
+      }
     }
 
     // Rebuild buildings only
@@ -2595,7 +2782,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       });
     }
 
-    const walkY = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+    const walkY0 = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+    const walkY1 = LAYER1_DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
 
     const shellKind = (kind: string): EnterableKind | null => {
       if (kind === 'home') return 'home';
@@ -2605,7 +2793,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       return null;
     };
 
-    // Player-owned buildings — enterable shells + colliders
+    // Player-owned buildings — enterable shells + colliders (per deck layer)
     for (const p of plots) {
       if (p.owner !== 'player' || !p.districtId || p.cellX == null || p.cellY == null) {
         continue;
@@ -2622,7 +2810,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         const lx = b.lx ?? 0;
         const lz = b.lz ?? 0;
         const lyaw = ((b.yaw ?? 0) * Math.PI) / 180;
-        // World position of building origin on pad
+        const bLayer = Math.min(p.layer ?? 0, b.layer ?? 0);
+        const walkY = bLayer >= 1 ? walkY1 : walkY0;
         const wx = px + lx;
         const wz = pz + lz;
         const sk = shellKind(b.kind);
@@ -2672,12 +2861,83 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         }
       }
     }
+
+    // Task 12 — player airways between owned plots (board skyway colliders)
+    while (plotAirwayRoot.children.length) {
+      const c = plotAirwayRoot.children[0]!;
+      plotAirwayRoot.remove(c);
+      c.traverse((o) => {
+        if (o instanceof THREE.Mesh) o.geometry?.dispose?.();
+      });
+    }
+    const byId = new Map(plots.map((p) => [p.id, p]));
+    const links = airways ?? [];
+    const airMat = new THREE.MeshStandardMaterial({
+      color: 0x88ddff,
+      emissive: 0x2288cc,
+      emissiveIntensity: 0.55,
+      transparent: true,
+      opacity: 0.72,
+      metalness: 0.35,
+      roughness: 0.35,
+      depthWrite: false,
+    });
+    for (const link of links) {
+      const a = byId.get(link.fromId);
+      const b = byId.get(link.toId);
+      if (!a || !b || a.districtId == null || b.districtId == null) continue;
+      const da = CITY_DISTRICTS.find((x) => x.id === a.districtId);
+      const db = CITY_DISTRICTS.find((x) => x.id === b.districtId);
+      if (!da || !db) continue;
+      const pa = plotLivePos(toPlotLite(a), da);
+      const pb = plotLivePos(toPlotLite(b), db);
+      const dx = pb.x - pa.x;
+      const dz = pb.z - pa.z;
+      const len = Math.hypot(dx, dz);
+      if (len < 2) continue;
+      const segs = Math.max(6, Math.ceil(len / 6));
+      for (let i = 0; i < segs; i++) {
+        const t0 = i / segs;
+        const t1 = (i + 1) / segs;
+        const tm = (t0 + t1) / 2;
+        const arch = Math.sin(tm * Math.PI) * 8;
+        const y = DECK_Y + 2.2 + arch;
+        const mx = pa.x + dx * tm;
+        const mz = pa.z + dz * tm;
+        const segLen = len / segs;
+        const plank = new THREE.Mesh(
+          new THREE.BoxGeometry(5.2, 0.18, segLen * 0.95),
+          airMat,
+        );
+        plank.position.set(mx, y, mz);
+        plank.rotation.y = Math.atan2(dx, dz);
+        plotAirwayRoot.add(plank);
+        // Board-only skyway colliders
+        const halfW = 2.8;
+        const ux = dx / len;
+        const uz = dz / len;
+        const pxn = -uz;
+        const pzn = ux;
+        const extX = Math.abs(ux) * (segLen * 0.5) + Math.abs(pxn) * halfW;
+        const extZ = Math.abs(uz) * (segLen * 0.5) + Math.abs(pzn) * halfW;
+        plotAirwayCols.push({
+          min: new THREE.Vector3(mx - extX, y - 0.35, mz - extZ),
+          max: new THREE.Vector3(mx + extX, y + 0.25, mz + extZ),
+          kind: 'skyway',
+        });
+      }
+    }
   };
 
   const getPlotDynamicsColliders = (): Collider[] => {
     const out: Collider[] = [];
-    for (const h of plotPlatforms.values()) out.push(h.col);
+    for (const h of plotPlatforms.values()) {
+      out.push(h.col);
+      if (h.upperCol) out.push(h.upperCol);
+      out.push(...h.railCols);
+    }
     out.push(...plotBuildingCols);
+    out.push(...plotAirwayCols);
     return out;
   };
 

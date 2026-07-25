@@ -35,12 +35,19 @@ export interface PlotBuildingStub {
   lz?: number;
   /** Local yaw degrees — door/entry faces local +Z after this yaw */
   yaw?: number;
+  /** Deck layer (0 = ground pad, 1 = upper deck) */
+  layer?: number;
   /** @deprecated */
   facing?: number;
   /** @deprecated */
   bridgeToPlotId?: string | null;
   paid?: number;
 }
+
+/** Task 10 — pad floor plan (default square). */
+export type PlotShape = 'square' | 'octagon' | 'circle' | 'triangle';
+
+export const PLOT_SHAPES: PlotShape[] = ['square', 'octagon', 'circle', 'triangle'];
 
 export interface PlotState {
   id: string;
@@ -61,9 +68,14 @@ export interface PlotState {
   rentPolicy: RentPolicy | null;
   /** Neighbor id paying rent on this plot (if any) */
   tenantNeighborId: string | null;
-  shape: 'square';
+  /** Task 10 pad plan */
+  shape: PlotShape;
   /** Degrees — free rotation, UI snaps 90° for now */
   rotation: number;
+  /**
+   * Highest unlocked deck index (0 = ground only, 1 = upper deck unlocked).
+   * Task 11 layered plots.
+   */
   layer: number;
   listPrice: number;
   forSale: boolean;
@@ -73,6 +85,12 @@ export interface PlotState {
   isEdge?: boolean;
   /** Retail bound to district stall */
   retailBound?: boolean;
+}
+
+/** Task 12 — player airway between two plots (same district). */
+export interface PlotAirwayLink {
+  fromId: string;
+  toId: string;
 }
 
 export interface PlotBuildDef {
@@ -243,6 +261,8 @@ export interface PlazaPlotsState {
    * (clears free-move legacy saves after pad transform removal).
    */
   padsResetV1?: boolean;
+  /** Task 12 player skyway links between owned pads */
+  airways?: PlotAirwayLink[];
 }
 
 export interface DistrictLite {
@@ -535,6 +555,163 @@ export function plotBuildPlaceRadius(cellSize: number): number {
   return cellSize * 0.52;
 }
 
+/** Build-bounds radius by shape (inset from visual pad edge). */
+export function plotShapePlaceHalf(cellSize: number, shape: PlotShape): number {
+  const h = plotPlatformHalf(cellSize);
+  switch (shape) {
+    case 'octagon':
+      return h * 0.92;
+    case 'circle':
+      return h * 0.9;
+    case 'triangle':
+      return h * 0.78;
+    default:
+      return h;
+  }
+}
+
+export function plotShapeLabel(shape: PlotShape): string {
+  switch (shape) {
+    case 'octagon':
+      return 'Octagon';
+    case 'circle':
+      return 'Circle';
+    case 'triangle':
+      return 'Triangle';
+    default:
+      return 'Square';
+  }
+}
+
+/** Brass cost to remodel pad plan (Task 10). */
+export function quotePlotShapeChange(plot: PlotState, shape: PlotShape): number {
+  if (plot.shape === shape) return 0;
+  const base: Record<PlotShape, number> = {
+    square: 0,
+    octagon: 4_500,
+    circle: 7_500,
+    triangle: 6_000,
+  };
+  return Math.max(2_500, base[shape] ?? 5_000);
+}
+
+/** Cost to unlock upper deck (Task 11). */
+export function quotePlotLayerUpgrade(plot: PlotState): number {
+  if ((plot.layer ?? 0) >= 1) return 0;
+  return Math.max(18_000, Math.round(plot.listPrice * 0.22));
+}
+
+/** Cost to open a player airway between two owned plots (Task 12). */
+export function quotePlotAirwayLink(_a: PlotState, _b: PlotState): number {
+  return 9_500;
+}
+
+export function setPlotShape(
+  state: PlazaPlotsState,
+  plotKey: string,
+  shape: PlotShape,
+): { ok: boolean; msg: string; cost: number } {
+  const plot = getPlot(state, plotKey);
+  if (!plot || plot.owner !== 'player') {
+    return { ok: false, msg: 'Own the plot to change its shape.', cost: 0 };
+  }
+  if (!PLOT_SHAPES.includes(shape)) {
+    return { ok: false, msg: 'Unknown pad shape.', cost: 0 };
+  }
+  if (plot.shape === shape) {
+    return { ok: false, msg: `Already ${plotShapeLabel(shape)}.`, cost: 0 };
+  }
+  const cost = quotePlotShapeChange(plot, shape);
+  plot.shape = shape;
+  return {
+    ok: true,
+    cost,
+    msg: `Pad remodelled to ${plotShapeLabel(shape)} (−${cost.toLocaleString()}b).`,
+  };
+}
+
+export function unlockPlotUpperDeck(
+  state: PlazaPlotsState,
+  plotKey: string,
+): { ok: boolean; msg: string; cost: number } {
+  const plot = getPlot(state, plotKey);
+  if (!plot || plot.owner !== 'player') {
+    return { ok: false, msg: 'Own the plot to add a deck.', cost: 0 };
+  }
+  if ((plot.layer ?? 0) >= 1) {
+    return { ok: false, msg: 'Upper deck already unlocked.', cost: 0 };
+  }
+  const cost = quotePlotLayerUpgrade(plot);
+  plot.layer = 1;
+  return {
+    ok: true,
+    cost,
+    msg: `Upper deck + climb rails unlocked (−${cost.toLocaleString()}b).`,
+  };
+}
+
+export function listPlotAirways(state: PlazaPlotsState): PlotAirwayLink[] {
+  return state.airways ?? [];
+}
+
+export function hasPlotAirway(
+  state: PlazaPlotsState,
+  aId: string,
+  bId: string,
+): boolean {
+  const links = listPlotAirways(state);
+  return links.some(
+    (l) =>
+      (l.fromId === aId && l.toId === bId) || (l.fromId === bId && l.toId === aId),
+  );
+}
+
+/**
+ * Link two player-owned plots with a skyway (same district preferred).
+ */
+export function linkPlotAirway(
+  state: PlazaPlotsState,
+  fromId: string,
+  toId: string,
+): { ok: boolean; msg: string; cost: number } {
+  if (fromId === toId) return { ok: false, msg: 'Pick two different plots.', cost: 0 };
+  const a = getPlot(state, fromId);
+  const b = getPlot(state, toId);
+  if (!a || !b || a.owner !== 'player' || b.owner !== 'player') {
+    return { ok: false, msg: 'Both plots must be yours.', cost: 0 };
+  }
+  if (a.districtId !== b.districtId) {
+    return { ok: false, msg: 'Airways link plots in the same district only (v1).', cost: 0 };
+  }
+  if (hasPlotAirway(state, fromId, toId)) {
+    return { ok: false, msg: 'Airway already links these pads.', cost: 0 };
+  }
+  const cost = quotePlotAirwayLink(a, b);
+  if (!state.airways) state.airways = [];
+  state.airways.push({ fromId, toId });
+  return {
+    ok: true,
+    cost,
+    msg: `Skyway linked (−${cost.toLocaleString()}b). Board can ride it.`,
+  };
+}
+
+/** Other owned plots in the same district that can receive an airway. */
+export function listAirwayTargets(
+  state: PlazaPlotsState,
+  fromId: string,
+): PlotState[] {
+  const from = getPlot(state, fromId);
+  if (!from || from.owner !== 'player') return [];
+  return state.plots.filter(
+    (p) =>
+      p.owner === 'player' &&
+      p.id !== fromId &&
+      p.districtId === from.districtId &&
+      !hasPlotAirway(state, fromId, p.id),
+  );
+}
+
 export function clampLocalOnPlot(
   cellSize: number,
   lx: number,
@@ -749,6 +926,7 @@ export function plazaPlotsToSave(state: PlazaPlotsState) {
   return {
     bridgesClearedV1: !!state.bridgesClearedV1,
     padsResetV1: !!state.padsResetV1,
+    airways: listPlotAirways(state).map((a) => ({ ...a })),
     plots: state.plots.map((p) => ({
       id: p.id,
       districtId: p.districtId,
@@ -760,9 +938,9 @@ export function plazaPlotsToSave(state: PlazaPlotsState) {
       buildings: p.buildings.map((b) => ({ ...b })),
       rentPolicy: p.rentPolicy,
       tenantNeighborId: p.tenantNeighborId,
-      shape: p.shape,
+      shape: p.shape ?? 'square',
       rotation: p.rotation,
-      layer: p.layer,
+      layer: p.layer ?? 0,
       listPrice: p.listPrice,
       forSale: p.forSale,
       vacant: p.vacant,
@@ -783,6 +961,7 @@ export function plazaPlotsFromSave(
     plots?: unknown[];
     bridgesClearedV1?: boolean;
     padsResetV1?: boolean;
+    airways?: unknown[];
   };
   if (!Array.isArray(o.plots) || !o.plots.length) return emptyPlazaPlots(districts);
   // One-time: legacy saves without this flag still hold bad bridge placements
@@ -800,6 +979,10 @@ export function plazaPlotsFromSave(
       buildings = buildings.filter((b) => b.kind !== 'bridge');
       if (!buildings.length) buildings = [{ kind: 'empty' }];
     }
+    const shapeRaw = String(r.shape ?? 'square');
+    const shape: PlotShape = PLOT_SHAPES.includes(shapeRaw as PlotShape)
+      ? (shapeRaw as PlotShape)
+      : 'square';
     plots.push({
       id: r.id,
       districtId: String(r.districtId ?? ''),
@@ -820,9 +1003,9 @@ export function plazaPlotsFromSave(
           : null,
       tenantNeighborId:
         typeof r.tenantNeighborId === 'string' ? r.tenantNeighborId : null,
-      shape: 'square',
+      shape,
       rotation: Number(r.rotation) || 0,
-      layer: Number(r.layer) || 0,
+      layer: Math.max(0, Math.min(1, Number(r.layer) || 0)),
       listPrice: typeof r.listPrice === 'number' ? r.listPrice : 10_000,
       forSale: r.forSale !== false,
       vacant: !!r.vacant,
@@ -831,6 +1014,16 @@ export function plazaPlotsFromSave(
       worldX: typeof r.worldX === 'number' ? r.worldX : undefined,
       worldZ: typeof r.worldZ === 'number' ? r.worldZ : undefined,
     });
+  }
+  const airways: PlotAirwayLink[] = [];
+  if (Array.isArray(o.airways)) {
+    for (const row of o.airways) {
+      if (!row || typeof row !== 'object') continue;
+      const a = row as Record<string, unknown>;
+      if (typeof a.fromId === 'string' && typeof a.toId === 'string') {
+        airways.push({ fromId: a.fromId, toId: a.toId });
+      }
+    }
   }
   // Migrate missing world positions from grid
   for (const p of plots) {
@@ -846,6 +1039,7 @@ export function plazaPlotsFromSave(
   return ensurePlazaPlots(
     {
       plots,
+      airways,
       bridgesClearedV1: true,
       // Unset → ensurePlazaPlots runs pad snap once for legacy free-move saves
       padsResetV1: padsAlreadyReset ? true : undefined,
@@ -974,11 +1168,15 @@ export function validatePlotBuildingPlace(
   lx: number,
   lz: number,
   yaw: number,
+  placeLayer = 0,
 ): { ok: boolean; msg?: string } {
   if (kind === 'bridge' || kind === 'empty') {
     return { ok: false, msg: 'Cannot place that here.' };
   }
-  const padH = plotPlatformHalf(cellSize);
+  if (placeLayer > (plot.layer ?? 0)) {
+    return { ok: false, msg: 'Unlock the upper deck first.' };
+  }
+  const padH = plotShapePlaceHalf(cellSize, plot.shape ?? 'square');
   const fp = buildingFootprintHalf(kind, cellSize);
   if (!footprintIntersectsPad(lx, lz, yaw, fp.hw, fp.hd, padH)) {
     return {
@@ -988,6 +1186,8 @@ export function validatePlotBuildingPlace(
   }
   for (const other of plot.buildings) {
     if (other.kind === 'empty' || other.kind === 'bridge') continue;
+    // Only collide with buildings on the same deck
+    if ((other.layer ?? 0) !== placeLayer) continue;
     const ofp = buildingFootprintHalf(other.kind, cellSize);
     if (
       footprintsOverlap(
@@ -1017,6 +1217,7 @@ export function applyPlotBuild(
     lz?: number;
     yaw?: number;
     cellSize?: number;
+    layer?: number;
   },
 ): { ok: boolean; msg: string; cost: number; offZone: boolean } {
   const q = quotePlotBuild(plot, kind);
@@ -1026,7 +1227,8 @@ export function applyPlotBuild(
   const lz = opts?.lz ?? 0;
   const yaw = opts?.yaw ?? 0;
   const cellSize = opts?.cellSize ?? 20;
-  const place = validatePlotBuildingPlace(plot, kind, cellSize, lx, lz, yaw);
+  const layer = Math.max(0, Math.min(plot.layer ?? 0, opts?.layer ?? 0));
+  const place = validatePlotBuildingPlace(plot, kind, cellSize, lx, lz, yaw, layer);
   if (!place.ok) {
     return { ok: false, msg: place.msg ?? 'Invalid placement.', cost: 0, offZone: false };
   }
@@ -1039,6 +1241,7 @@ export function applyPlotBuild(
     lx,
     lz,
     yaw,
+    layer,
     paid: q.cost,
   };
   plot.buildings.push(b);

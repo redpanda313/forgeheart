@@ -229,9 +229,18 @@ import {
   playerOwnedPlotCount,
   developPlot,
   buyEdgePlot,
+  changePlotShape,
+  upgradePlotLayer,
+  createPlotAirway,
   PLOT_BUILD_CATALOG,
+  PLOT_SHAPES,
   quotePlotBuild,
+  quotePlotShapeChange,
+  quotePlotLayerUpgrade,
+  quotePlotAirwayLink,
+  plotShapeLabel,
   listEdgeCandidates,
+  listAirwayTargets,
   plotPrimaryBuilding,
   plotRentIncome,
   plotLivePos,
@@ -7066,16 +7075,20 @@ export class ForgeHeartGame {
         worldX: p.worldX,
         worldZ: p.worldZ,
         rotation: p.rotation,
+        shape: p.shape,
+        layer: p.layer,
         buildings: p.buildings.map((b) => ({
           kind: b.kind,
           facing: b.facing,
           lx: b.lx,
           lz: b.lz,
           yaw: b.yaw,
+          layer: b.layer,
           bridgeToPlotId: b.bridgeToPlotId,
         })),
         isEdge: p.isEdge,
       })),
+      this.inv.plazaPlots.airways ?? [],
     );
     // Platforms + rope bridges are walkable / solid — refresh spatial chunk
     const dyn = this.skyCity.getPlotDynamicsColliders();
@@ -7399,6 +7412,7 @@ export class ForgeHeartGame {
         s.placeLx,
         s.placeLz,
         s.previewYaw,
+        s.placeLayer ?? 0,
       );
       s.placeValid = placeOk.ok;
       const afford = q.ok && this.inv.brass >= q.cost && placeOk.ok;
@@ -7412,6 +7426,8 @@ export class ForgeHeartGame {
       });
       ghost.position.set(curX, 0, curZ);
       liftGhost(ghost);
+      // Raise ghost for upper deck placement (after deck lift)
+      if ((s.placeLayer ?? 0) >= 1) ghost.position.y += 4.15;
       this.scene.add(ghost);
       this.plotBuildGhost = ghost;
     }
@@ -7504,8 +7520,20 @@ export class ForgeHeartGame {
       const p = document.createElement('p');
       p.className = 'stall-wizard-hint';
       p.textContent =
-        'Aim on pad (look/arrows) · [/] rotate entry face · cannot overlap · must touch pad · Confirm.';
+        'Aim on pad (look/arrows) · [/] rotate entry · L toggles deck layer (if unlocked) · Confirm.';
       body.appendChild(p);
+      if ((plot?.layer ?? 0) >= 1) {
+        const lb = document.createElement('button');
+        lb.type = 'button';
+        lb.className = 'stall-wizard-btn';
+        lb.textContent = `Deck layer: L${s.placeLayer ?? 0} (click to toggle)`;
+        lb.addEventListener('click', () => {
+          s.placeLayer = (s.placeLayer ?? 0) >= 1 ? 0 : 1;
+          this.rebuildPlotBuildGhosts();
+          this.refreshPlotBuildUi();
+        });
+        body.appendChild(lb);
+      }
       this.syncBuildDockToStep();
     }
   }
@@ -7530,6 +7558,7 @@ export class ForgeHeartGame {
           s.placeLx,
           s.placeLz,
           s.previewYaw,
+          s.placeLayer ?? 0,
         );
         if (!place.ok) {
           this.toast(place.msg ?? 'Invalid placement.', 3);
@@ -7540,6 +7569,7 @@ export class ForgeHeartGame {
         lx: s.placeLx,
         lz: s.placeLz,
         yaw: s.previewYaw,
+        layer: s.placeLayer ?? 0,
       });
       this.toast(r.msg, 4);
       if (r.ok) {
@@ -7686,20 +7716,91 @@ export class ForgeHeartGame {
         buildHint.className = 'craft-hint';
         buildHint.style.flexBasis = '100%';
         buildHint.textContent = prim
-          ? `Built: ${prim.kind} · rot ${p.rotation}°${p.isEdge ? ' · edge' : ''}`
-          : `Empty lot · rot ${p.rotation}°${p.isEdge ? ' · edge' : ''}`;
+          ? `Built: ${prim.kind} · ${plotShapeLabel(p.shape ?? 'square')} · deck L${p.layer ?? 0}${p.isEdge ? ' · edge' : ''}`
+          : `Empty · ${plotShapeLabel(p.shape ?? 'square')} · deck L${p.layer ?? 0}${p.isEdge ? ' · edge' : ''}`;
         row.appendChild(buildHint);
 
         // Open site-builder-style develop mode on this plot
         const develop = document.createElement('button');
         develop.type = 'button';
         develop.className = 'romance-btn';
-        develop.textContent = 'Develop / transform…';
-        develop.title = 'Fly over the plot, place buildings & bridges, rotate or move';
+        develop.textContent = 'Develop buildings…';
+        develop.title = 'Place buildings on this pad (free place + rotate entry)';
         develop.addEventListener('click', () => {
           this.beginPlotBuildMode(p.id);
         });
         row.appendChild(develop);
+
+        // Task 10 — pad shapes
+        for (const sh of PLOT_SHAPES) {
+          if (sh === (p.shape ?? 'square')) continue;
+          const cost = quotePlotShapeChange(p, sh);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'romance-btn';
+          btn.textContent = `${plotShapeLabel(sh)} ${cost.toLocaleString()}b`;
+          btn.title = `Remodel pad to ${plotShapeLabel(sh)}`;
+          btn.addEventListener('click', () => {
+            const r = changePlotShape(this.inv, p.id, sh);
+            if (log) log.textContent = r.msg;
+            this.toast(r.msg, 4);
+            if (r.ok) {
+              this.brass = this.inv.brass;
+              this.syncPlotOwnershipVisuals();
+              writeSlot(this.activeSlot, this.buildSaveData());
+              this.syncEconomyHud();
+            }
+            this.fillLeaseOffice();
+          });
+          row.appendChild(btn);
+        }
+
+        // Task 11 — upper deck
+        if ((p.layer ?? 0) < 1) {
+          const cost = quotePlotLayerUpgrade(p);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'romance-btn';
+          btn.textContent = `Upper deck ${cost.toLocaleString()}b`;
+          btn.title = 'Second deck + climb rails';
+          btn.addEventListener('click', () => {
+            const r = upgradePlotLayer(this.inv, p.id);
+            if (log) log.textContent = r.msg;
+            this.toast(r.msg, 4);
+            if (r.ok) {
+              this.brass = this.inv.brass;
+              this.syncPlotOwnershipVisuals();
+              writeSlot(this.activeSlot, this.buildSaveData());
+              this.syncEconomyHud();
+            }
+            this.fillLeaseOffice();
+          });
+          row.appendChild(btn);
+        }
+
+        // Task 12 — airways to other owned plots in district
+        const targets = listAirwayTargets(this.inv.plazaPlots, p.id).slice(0, 4);
+        for (const t of targets) {
+          const cost = quotePlotAirwayLink(p, t);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'romance-btn';
+          btn.textContent = `Airway → (${t.cellX},${t.cellY}) ${cost.toLocaleString()}b`;
+          btn.title = 'Boardable skyway between your pads';
+          btn.addEventListener('click', () => {
+            const r = createPlotAirway(this.inv, p.id, t.id);
+            if (log) log.textContent = r.msg;
+            this.toast(r.msg, 4);
+            if (r.ok) {
+              this.brass = this.inv.brass;
+              this.syncPlotOwnershipVisuals();
+              writeSlot(this.activeSlot, this.buildSaveData());
+              this.syncEconomyHud();
+            }
+            this.fillLeaseOffice();
+          });
+          row.appendChild(btn);
+        }
 
         if (p.tenantNeighborId && !p.vacant) {
           const rentTag = document.createElement('span');

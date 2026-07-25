@@ -35,6 +35,8 @@ export interface PlotBuildSession {
   offZone: boolean;
   /** Last placement validity (overlap / on-pad) */
   placeValid: boolean;
+  /** Deck layer for placement (0 ground, 1 upper) */
+  placeLayer: number;
 }
 
 export function makePlotBuildSession(
@@ -64,6 +66,7 @@ export function makePlotBuildSession(
     quotedCost: 0,
     offZone: false,
     placeValid: true,
+    placeLayer: 0,
   };
 }
 
@@ -352,6 +355,7 @@ export function validateBuildingPlacement(
   lx: number,
   lz: number,
   yaw: number,
+  placeLayer = 0,
 ): { ok: boolean; msg?: string } {
-  return validatePlotBuildingPlace(plot, kind, cellSize, lx, lz, yaw);
+  return validatePlotBuildingPlace(plot, kind, cellSize, lx, lz, yaw, placeLayer);
 }

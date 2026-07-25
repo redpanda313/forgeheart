@@ -77,11 +77,23 @@ import {
   platformFacingEdgeMid,
   bestCardinalSidePair,
   BRIDGE_WIDTH_MUL,
+  setPlotShape,
+  unlockPlotUpperDeck,
+  linkPlotAirway,
+  listAirwayTargets,
+  listPlotAirways,
+  quotePlotShapeChange,
+  quotePlotLayerUpgrade,
+  quotePlotAirwayLink,
+  plotShapeLabel,
+  PLOT_SHAPES,
   type PlazaPlotsState,
   type PlotState,
   type DistrictLite,
   type ZoningHint,
   type PlotBuildKind,
+  type PlotShape,
+  type PlotAirwayLink,
 } from './plazaPlots';
 
 export type {
@@ -2365,6 +2377,29 @@ export const SOFT_GOALS: SoftGoalDef[] = [
     hint: 'Offer hire on neighbor panel · needs free bay slot',
     empireOnly: true,
     isDone: (inv) => !!inv.softGoalFlags?.hiredNeighbor,
+  },
+  {
+    id: 'plot_shape',
+    title: 'Remodel a pad shape',
+    hint: 'Lease office · own a plot · octagon / circle / triangle',
+    empireOnly: true,
+    isDone: (inv) =>
+      !!inv.plazaPlots?.plots?.some((p) => p.owner === 'player' && p.shape && p.shape !== 'square'),
+  },
+  {
+    id: 'plot_layer',
+    title: 'Build an upper deck',
+    hint: 'Lease office · Upper deck upgrade on an owned plot',
+    empireOnly: true,
+    isDone: (inv) =>
+      !!inv.plazaPlots?.plots?.some((p) => p.owner === 'player' && (p.layer ?? 0) >= 1),
+  },
+  {
+    id: 'plot_airway',
+    title: 'Link a private skyway',
+    hint: 'Own 2 plots in one district · lease office · Airway button',
+    empireOnly: true,
+    isDone: (inv) => (inv.plazaPlots?.airways?.length ?? 0) >= 1,
   },
 ];
 
@@ -7054,7 +7089,7 @@ export function playerOwnedPlotCount(inv: InventoryState): number {
   return inv.plazaPlots.plots.filter((p) => p.owner === 'player').length;
 }
 
-export type { PlotState, PlazaPlotsState, ZoningHint, PlotBuildKind };
+export type { PlotState, PlazaPlotsState, ZoningHint, PlotBuildKind, PlotShape, PlotAirwayLink };
 export {
   quotePlotBuyPrice,
   getPlot,
@@ -7084,6 +7119,13 @@ export {
   platformFacingEdgeMid,
   bestCardinalSidePair,
   BRIDGE_WIDTH_MUL,
+  PLOT_SHAPES,
+  plotShapeLabel,
+  quotePlotShapeChange,
+  quotePlotLayerUpgrade,
+  quotePlotAirwayLink,
+  listAirwayTargets,
+  listPlotAirways,
   movePlotFree,
 };
 
@@ -7220,6 +7262,7 @@ export function developPlot(
     lx?: number;
     lz?: number;
     yaw?: number;
+    layer?: number;
   },
 ): { ok: boolean; msg: string } {
   ensureInvPlots(inv);
@@ -7243,6 +7286,7 @@ export function developPlot(
     lz: clamped.lz,
     yaw: opts?.yaw ?? 0,
     cellSize: live.cellSize,
+    layer: opts?.layer ?? 0,
   });
   if (!r.ok) return { ok: false, msg: r.msg };
   inv.brass -= r.cost;
@@ -7287,6 +7331,75 @@ export function movePlot(
   const d = districtById(plot.districtId);
   if (!d) return { ok: false, msg: 'Unknown district.' };
   return movePlotFree(inv.plazaPlots, plotKey, worldX, worldZ, d);
+}
+
+/** Task 10: remodel pad shape (square → octagon / circle / triangle). */
+export function changePlotShape(
+  inv: InventoryState,
+  plotKey: string,
+  shape: PlotShape,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  ensureStandingState(inv);
+  const r = setPlotShape(inv.plazaPlots, plotKey, shape);
+  if (!r.ok) return { ok: false, msg: r.msg };
+  if (inv.brass < r.cost) {
+    return {
+      ok: false,
+      msg: `Need ${r.cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
+    };
+  }
+  inv.brass -= r.cost;
+  applyStanding(inv, 1, {
+    districtId: getPlot(inv.plazaPlots, plotKey)?.districtId,
+    districtDelta: 1,
+  });
+  return { ok: true, msg: r.msg };
+}
+
+/** Task 11: unlock upper deck + climb rails on an owned plot. */
+export function upgradePlotLayer(
+  inv: InventoryState,
+  plotKey: string,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  ensureStandingState(inv);
+  const r = unlockPlotUpperDeck(inv.plazaPlots, plotKey);
+  if (!r.ok) return { ok: false, msg: r.msg };
+  if (inv.brass < r.cost) {
+    return {
+      ok: false,
+      msg: `Need ${r.cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
+    };
+  }
+  inv.brass -= r.cost;
+  applyStanding(inv, 2, {
+    districtId: getPlot(inv.plazaPlots, plotKey)?.districtId,
+    districtDelta: 2,
+  });
+  return { ok: true, msg: r.msg };
+}
+
+/** Task 12: link two owned plots with a boardable skyway. */
+export function createPlotAirway(
+  inv: InventoryState,
+  fromId: string,
+  toId: string,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  ensureStandingState(inv);
+  const r = linkPlotAirway(inv.plazaPlots, fromId, toId);
+  if (!r.ok) return { ok: false, msg: r.msg };
+  if (inv.brass < r.cost) {
+    return {
+      ok: false,
+      msg: `Need ${r.cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
+    };
+  }
+  inv.brass -= r.cost;
+  const a = getPlot(inv.plazaPlots, fromId);
+  applyStanding(inv, 1, { districtId: a?.districtId, districtDelta: 2 });
+  return { ok: true, msg: r.msg };
 }
 
 /** Task 9: buy edge attachment cell then optionally take ownership immediately */
