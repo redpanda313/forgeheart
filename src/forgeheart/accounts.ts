@@ -241,3 +241,54 @@ export async function writeCloudSlot(
   });
   return { ok: !!r.ok, msg: r.msg || (r.ok ? 'Saved.' : 'Save failed.') };
 }
+
+/**
+ * First-time / empty-slot migrate: push this device’s local saves into
+ * cloud slots that are empty. Never overwrites an occupied cloud slot.
+ *
+ * Call BEFORE applying cloud → local, so local progress isn’t wiped first.
+ */
+export async function migrateLocalSlotsToEmptyCloud(
+  cloudSlots: AccountSlotInfo[],
+  localSlots: { index: number; empty: boolean; data: ForgeSaveData | null }[],
+): Promise<{ migrated: number; failed: number; slots: AccountSlotInfo[] }> {
+  const out = cloudSlots.map((s) => ({ ...s }));
+  let migrated = 0;
+  let failed = 0;
+
+  for (let i = 0; i < SLOT_COUNT; i++) {
+    const cloud = out.find((s) => s.index === i) ?? out[i];
+    const local = localSlots.find((s) => s.index === i) ?? localSlots[i];
+    const cloudEmpty = !cloud || cloud.empty || !cloud.data;
+    const localData = local && !local.empty ? local.data : null;
+    if (!cloudEmpty || !localData) continue;
+
+    const r = await writeCloudSlot(i, localData);
+    if (!r.ok) {
+      failed += 1;
+      continue;
+    }
+    migrated += 1;
+    const when = localData.savedAt ? new Date(localData.savedAt) : new Date();
+    const time = when.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const next: AccountSlotInfo = {
+      index: i,
+      empty: false,
+      label: localData.levelName || localData.levelId || 'Save',
+      sublabel: `Slot ${i + 1} · ${time}`,
+      savedAt: localData.savedAt ?? Date.now(),
+      levelId: localData.levelId ?? null,
+      data: localData,
+    };
+    const idx = out.findIndex((s) => s.index === i);
+    if (idx >= 0) out[idx] = next;
+    else out[i] = next;
+  }
+
+  return { migrated, failed, slots: out };
+}

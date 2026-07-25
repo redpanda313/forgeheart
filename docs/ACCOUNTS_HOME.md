@@ -35,9 +35,10 @@ Copy the printed `https://….trycloudflare.com` URL.
 ### Title screen (any browser)
 
 1. Paste that URL into **Server URL**  
-2. **Create account** (any username · any password, including empty)  
-3. Pick **Slot 1–3** · New Game / Continue  
-4. Saves while logged in write **local + cloud**
+2. **Create account** or **Log in** (any username · any password, including empty)  
+3. **First login on this device:** local guest saves are uploaded into **empty** account slots (cloud slots that already have a save are never overwritten)  
+4. Pick **Slot 1–3** · New Game / Continue  
+5. Saves while logged in write **local + cloud**
 
 `Test server` pings `/health`.
 

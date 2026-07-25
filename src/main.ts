@@ -23,6 +23,7 @@ import {
   logoutAccount,
   fetchCloudSlots,
   pingAccountServer,
+  migrateLocalSlotsToEmptyCloud,
 } from './forgeheart/accounts';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -189,9 +190,19 @@ async function startGame(opts: { slot: number; save: ForgeSaveData | null }) {
   requestAnimationFrame(loop);
 }
 
-async function afterAuthSuccess(msg: string) {
-  setAccountMsg(msg, 'ok');
-  syncAccountChrome();
+/**
+ * Fetch cloud slots, migrate any local device saves into empty account slots,
+ * then mirror the result into localStorage for play.
+ */
+async function syncCloudAfterAuth(baseMsg: string) {
+  // Snapshot local BEFORE cloud apply (empty cloud used to wipe device saves)
+  const localSnapshot = listSlots().map((s) => ({
+    index: s.index,
+    empty: s.empty,
+    data: s.data,
+  }));
+  const localCount = localSnapshot.filter((s) => !s.empty && s.data).length;
+
   const cloud = await fetchCloudSlots();
   if (!cloud.ok) {
     setAccountMsg(cloud.msg, 'error');
@@ -199,12 +210,35 @@ async function afterAuthSuccess(msg: string) {
     refreshSlots();
     return;
   }
-  applyCloudSlotsToLocal(cloud.slots);
+
+  let slots = cloud.slots;
+  let migrateNote = '';
+  const cloudEmptyCount = slots.filter((s) => s.empty || !s.data).length;
+  if (localCount > 0 && cloudEmptyCount > 0) {
+    setAccountMsg('Migrating local saves to your account…');
+    const mig = await migrateLocalSlotsToEmptyCloud(slots, localSnapshot);
+    slots = mig.slots;
+    if (mig.migrated > 0) {
+      migrateNote = ` · migrated ${mig.migrated} local slot${mig.migrated === 1 ? '' : 's'} to account`;
+    }
+    if (mig.failed > 0) {
+      migrateNote += ` · ${mig.failed} migrate failed`;
+    }
+  }
+
+  // Cloud is source of truth for occupied slots; empty cloud keeps empty local
+  applyCloudSlotsToLocal(slots);
   cloudMode = true;
   selectedSlot = getLastSlotIndex() ?? 0;
-  // Prefer first empty or last used
   refreshSlots();
-  setAccountMsg(`${msg} · ${cloud.slots.filter((s) => !s.empty).length}/3 slots used`, 'ok');
+  const used = slots.filter((s) => !s.empty && s.data).length;
+  setAccountMsg(`${baseMsg}${migrateNote} · ${used}/3 slots used`, 'ok');
+}
+
+async function afterAuthSuccess(msg: string) {
+  setAccountMsg(msg, 'ok');
+  syncAccountChrome();
+  await syncCloudAfterAuth(msg);
 }
 
 function readAuthForm(): { username: string; password: string; apiUrl: string } | null {
@@ -428,16 +462,10 @@ async function bootstrapTitle() {
   syncAccountChrome();
   if (isLoggedIn() && getAccountApiUrl()) {
     setAccountMsg('Restoring cloud slots…');
-    const cloud = await fetchCloudSlots();
-    if (cloud.ok) {
-      applyCloudSlotsToLocal(cloud.slots);
-      cloudMode = true;
-      setAccountMsg(`Cloud ready · ${getSession()?.username}`, 'ok');
-    } else {
-      cloudMode = false;
-      setAccountMsg(cloud.msg || 'Cloud offline — showing local slots.', 'error');
-      // stale token?
-      if (/Not logged in|Wrong|401/i.test(cloud.msg || '')) {
+    await syncCloudAfterAuth(`Cloud ready · ${getSession()?.username ?? 'player'}`);
+    if (!cloudMode) {
+      // syncCloudAfterAuth left guest mode on failure
+      if (/Not logged in|Wrong|401/i.test(accountMsg?.textContent || '')) {
         await logoutAccount();
         syncAccountChrome();
       }
