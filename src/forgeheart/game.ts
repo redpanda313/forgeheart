@@ -7398,7 +7398,7 @@ export class ForgeHeartGame {
 
     // ——— PREVIEW: free place + rotate building (door faces entry cue) ———
     if (s.step === 'place' && s.buildKind && plot) {
-      const q = quotePlotBuild(plot, s.buildKind);
+      const q = quotePlotBuild(plot, s.buildKind, { layer: s.placeLayer ?? 0 });
       if (!q.ok) {
         s.quotedCost = 0;
       } else {
@@ -7468,10 +7468,25 @@ export class ForgeHeartGame {
       const hint = document.createElement('p');
       hint.className = 'stall-wizard-hint';
       hint.textContent =
-        'Place buildings on this pad. ENTRY arrow shows the door. Buildings need colliders, cannot overlap, and must touch the pad (can hang off edges).';
+        'Place buildings per deck. Each unlocked layer can hold its own apartment/factory/etc. at full cost. ENTRY arrow shows the door.';
       body.appendChild(hint);
+      if ((plot?.layer ?? 0) >= 1) {
+        const maxL = plot?.layer ?? 0;
+        const lb = document.createElement('button');
+        lb.type = 'button';
+        lb.className = 'stall-wizard-btn';
+        lb.style.marginBottom = '0.5rem';
+        lb.textContent = `Catalog for deck L${s.placeLayer ?? 0} / L${maxL} (click to cycle)`;
+        lb.addEventListener('click', () => {
+          s.placeLayer = ((s.placeLayer ?? 0) + 1) % (maxL + 1);
+          this.refreshPlotBuildUi();
+        });
+        body.appendChild(lb);
+      }
       for (const def of PLOT_BUILD_CATALOG) {
-        const q = plot ? quotePlotBuild(plot, def.kind) : { ok: false, cost: 0, offZone: false, msg: '' };
+        const q = plot
+          ? quotePlotBuild(plot, def.kind, { layer: s.placeLayer ?? 0 })
+          : { ok: false, cost: 0, offZone: false, msg: '' };
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'stall-wizard-btn';

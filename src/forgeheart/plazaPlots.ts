@@ -1123,6 +1123,26 @@ export function plotHasBuild(plot: PlotState, kind: PlotBuildKind): boolean {
   return plot.buildings.some((b) => b.kind === kind);
 }
 
+/** One of each primary (or décor) per deck layer is allowed. */
+export function plotHasBuildOnLayer(
+  plot: PlotState,
+  kind: PlotBuildKind,
+  layer: number,
+): boolean {
+  const L = Math.max(0, layer);
+  return plot.buildings.some((b) => b.kind === kind && (b.layer ?? 0) === L);
+}
+
+export function plotPrimaryOnLayer(
+  plot: PlotState,
+  layer: number,
+): PlotBuildingStub | undefined {
+  const L = Math.max(0, layer);
+  return plot.buildings.find(
+    (b) => PRIMARY_KINDS.has(b.kind) && b.kind !== 'empty' && (b.layer ?? 0) === L,
+  );
+}
+
 export function plotTenantSlots(plot: PlotState): number {
   let slots = 0;
   for (const b of plot.buildings) {
@@ -1147,6 +1167,7 @@ export function zoningMultiplier(
 export function quotePlotBuild(
   plot: PlotState,
   kind: PlotBuildKind,
+  opts?: { layer?: number },
 ): { ok: boolean; cost: number; offZone: boolean; msg?: string; def?: PlotBuildDef } {
   if (kind === 'bridge') {
     return { ok: false, cost: 0, offZone: false, msg: 'Bridges are no longer available.' };
@@ -1156,11 +1177,26 @@ export function quotePlotBuild(
   if (plot.owner !== 'player') {
     return { ok: false, cost: 0, offZone: false, msg: 'Own the plot first.' };
   }
-  if (kind === 'decor' && plotHasBuild(plot, 'decor')) {
-    return { ok: false, cost: 0, offZone: false, msg: 'Décor already placed.' };
+  const layer = Math.max(0, Math.min(plot.layer ?? 0, opts?.layer ?? 0));
+  if (layer > (plot.layer ?? 0)) {
+    return { ok: false, cost: 0, offZone: false, msg: 'Unlock that deck first.' };
   }
-  if (def.primary && plotPrimaryBuilding(plot)?.kind === kind) {
-    return { ok: false, cost: 0, offZone: false, msg: `${def.name} already on this plot.` };
+  // Per-deck limits: each layer is a fresh round of buildings (full cost)
+  if (kind === 'decor' && plotHasBuildOnLayer(plot, 'decor', layer)) {
+    return {
+      ok: false,
+      cost: 0,
+      offZone: false,
+      msg: `Décor already on deck L${layer}.`,
+    };
+  }
+  if (def.primary && plotHasBuildOnLayer(plot, kind, layer)) {
+    return {
+      ok: false,
+      cost: 0,
+      offZone: false,
+      msg: `${def.name} already on deck L${layer}.`,
+    };
   }
   const { mul, offZone } = zoningMultiplier(plot, def);
   const cost = Math.round(def.cost * mul);
@@ -1227,14 +1263,14 @@ export function applyPlotBuild(
     layer?: number;
   },
 ): { ok: boolean; msg: string; cost: number; offZone: boolean } {
-  const q = quotePlotBuild(plot, kind);
+  const layer = Math.max(0, Math.min(plot.layer ?? 0, opts?.layer ?? 0));
+  const q = quotePlotBuild(plot, kind, { layer });
   if (!q.ok || !q.def) return { ok: false, msg: q.msg ?? 'Cannot build.', cost: 0, offZone: false };
 
   const lx = opts?.lx ?? 0;
   const lz = opts?.lz ?? 0;
   const yaw = opts?.yaw ?? 0;
   const cellSize = opts?.cellSize ?? 20;
-  const layer = Math.max(0, Math.min(plot.layer ?? 0, opts?.layer ?? 0));
   const place = validatePlotBuildingPlace(plot, kind, cellSize, lx, lz, yaw, layer);
   if (!place.ok) {
     return { ok: false, msg: place.msg ?? 'Invalid placement.', cost: 0, offZone: false };

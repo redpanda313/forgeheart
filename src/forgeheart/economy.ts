@@ -7271,7 +7271,8 @@ export function developPlot(
   if (!plot) return { ok: false, msg: 'Unknown plot.' };
   if (kind === 'bridge') return { ok: false, msg: 'Bridges are no longer available.' };
   const dist = districtById(plot.districtId);
-  const q = quotePlotBuild(plot, kind);
+  const layer = opts?.layer ?? 0;
+  const q = quotePlotBuild(plot, kind, { layer });
   if (!q.ok) return { ok: false, msg: q.msg ?? 'Cannot build.' };
   if (inv.brass < q.cost) {
     return {
@@ -7286,7 +7287,7 @@ export function developPlot(
     lz: clamped.lz,
     yaw: opts?.yaw ?? 0,
     cellSize: live.cellSize,
-    layer: opts?.layer ?? 0,
+    layer,
   });
   if (!r.ok) return { ok: false, msg: r.msg };
   inv.brass -= r.cost;
