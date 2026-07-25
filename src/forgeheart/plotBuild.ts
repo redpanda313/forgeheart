@@ -9,6 +9,7 @@ import type { PlotBuildKind, PlotBuildingStub, PlotState } from './plazaPlots';
 import { PLOT_BUILD_CATALOG, hasAdjacentOwned } from './plazaPlots';
 import type { CityDistrictDef } from './economy';
 import { makeSignSprite, setSignWorldWidth } from './signLabel';
+import type { Collider } from './level';
 
 export type PlotBuildModeStep = 'choose' | 'place' | 'transform';
 
@@ -590,7 +591,7 @@ export function buildRopePlankBridgeMesh(
   return g;
 }
 
-/** Span a rope bridge in world space from A→B (auto connectors / linked plots) */
+/** Span a rope bridge in world space from A→B (edge points) + walk/side colliders */
 export function buildWorldSpanRopeBridge(
   ax: number,
   az: number,
@@ -599,14 +600,13 @@ export function buildWorldSpanRopeBridge(
   widthMul: number,
   deckY: number,
   ghost = false,
-): THREE.Group {
+): { group: THREE.Group; colliders: Collider[] } {
   const dx = bx - ax;
   const dz = bz - az;
-  const len = Math.hypot(dx, dz);
+  const len = Math.max(0.5, Math.hypot(dx, dz));
   const g = new THREE.Group();
   g.position.set((ax + bx) / 2, deckY, (az + bz) / 2);
   g.rotation.y = Math.atan2(dx, dz);
-  // Mesh is built along local +Z; un-rotate facing so local Z is length
   const br = buildRopePlankBridgeMesh(
     Math.max(len / 0.95, 4),
     1,
@@ -615,9 +615,51 @@ export function buildWorldSpanRopeBridge(
     widthMul,
     len,
   );
-  // buildRopePlankBridgeMesh with facing 1 already along +Z
   g.add(br);
-  return g;
+
+  const colliders: Collider[] = [];
+  if (!ghost) {
+    const halfW = (1.15 * widthMul) / 2;
+    const ux = dx / len;
+    const uz = dz / len;
+    // Perpendicular for sides
+    const px = -uz;
+    const pz = ux;
+    // Walk deck — thin floor along span
+    const top = deckY + 0.45;
+    const bot = deckY - 0.05;
+    // Sample several boxes along the length for reliable landing
+    const segs = Math.max(2, Math.ceil(len / 4));
+    for (let i = 0; i < segs; i++) {
+      const t0 = i / segs;
+      const t1 = (i + 1) / segs;
+      const mx = ax + dx * ((t0 + t1) / 2);
+      const mz = az + dz * ((t0 + t1) / 2);
+      const segLen = (len / segs) * 0.98;
+      // AABB that covers rotated segment (conservative)
+      const extX = Math.abs(ux) * (segLen / 2) + Math.abs(px) * halfW + 0.15;
+      const extZ = Math.abs(uz) * (segLen / 2) + Math.abs(pz) * halfW + 0.15;
+      colliders.push({
+        min: new THREE.Vector3(mx - extX, bot, mz - extZ),
+        max: new THREE.Vector3(mx + extX, top, mz + extZ),
+        kind: 'floor',
+      });
+    }
+    // Rope side barriers (solid) — low walls along both flanks
+    const sideH = 1.05;
+    for (const side of [-1, 1]) {
+      const sx = ((ax + bx) / 2) + px * halfW * side;
+      const sz = ((az + bz) / 2) + pz * halfW * side;
+      const extX = Math.abs(ux) * (len / 2) + 0.12;
+      const extZ = Math.abs(uz) * (len / 2) + 0.12;
+      colliders.push({
+        min: new THREE.Vector3(sx - extX, deckY, sz - extZ),
+        max: new THREE.Vector3(sx + extX, deckY + sideH, sz + extZ),
+        kind: 'solid',
+      });
+    }
+  }
+  return { group: g, colliders };
 }
 
 export function plotBuildCatalogLabel(kind: PlotBuildKind): string {

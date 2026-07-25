@@ -22,7 +22,7 @@ import {
   type CommodityId,
 } from './economy';
 import { buildWorldSpanRopeBridge } from './plotBuild';
-import { plotLivePos, computeAutoBridges } from './plazaPlots';
+import { plotLivePos, computeAutoBridges, bridgeEdgePoints } from './plazaPlots';
 import { buildPrefab } from './cityEditor';
 import { CATALOG, type CatalogEntry } from './editorCatalog';
 import { buildMapSnapshot, type MapSnapshot } from './cityMap';
@@ -233,7 +233,7 @@ export interface SkyCityBuilt {
   circuits: PlazaCircuit[];
   /** Broker frame display groups by district */
   brokerDisplays: Record<string, THREE.Group>;
-  /** Recolor plot pads + rebuild simple structure meshes from ownership/builds */
+  /** Move fractured platforms, rebuild bridges + colliders */
   syncPlotOwnership: (
     plots: {
       id: string;
@@ -256,6 +256,8 @@ export interface SkyCityBuilt {
       isEdge?: boolean;
     }[],
   ) => void;
+  /** Live colliders for platforms + bridges (spatial grid chunk) */
+  getPlotDynamicsColliders: () => Collider[];
 }
 
 function hashDistrictFlower(districtId: string, flowerId: string, index: number): number {
@@ -979,7 +981,10 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       lowestY = Math.min(lowestY, c.min.y);
     };
 
-    const pad = floorPad(mats, sz, sz, cx, DECK_Y, cz, d.color);
+    // Fractured plaza: small civic center only — the 3×3 plot pads are separate
+    // walkable platforms that can drift free (gaps require bridges).
+    const centerSz = Math.min(sz * 0.3, 32);
+    const pad = floorPad(mats, centerSz, centerSz, cx, DECK_Y, cz, d.color);
     addMesh(pad.mesh);
     addCol(pad.col);
 
@@ -1034,52 +1039,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       placeScenery(dGroup, mats, 'vehicle', di % 5, cx - 14, cz + 8, 0.4, 1.0, 0.5);
     }
 
-    // Task 4: 3×3 plot grid overlay (ownership tint updated from game when owned)
-    {
-      const plotRoot = new THREE.Group();
-      plotRoot.name = `Plots_${d.id}`;
-      dGroup.add(plotRoot);
-      for (let cy = 0; cy < PLOT_GRID; cy++) {
-        for (let cxCell = 0; cxCell < PLOT_GRID; cxCell++) {
-          const { x: px, z: pz, cellSize } = plotWorldCenter(d, cxCell, cy);
-          const half = cellSize * 0.46;
-          const pad = new THREE.Mesh(
-            new THREE.PlaneGeometry(half * 2, half * 2),
-            new THREE.MeshStandardMaterial({
-              color: 0x556677,
-              transparent: true,
-              opacity: 0.22,
-              roughness: 0.9,
-              metalness: 0.05,
-              depthWrite: false,
-            }),
-          );
-          pad.rotation.x = -Math.PI / 2;
-          pad.position.set(px, DECK_Y + 0.04, pz);
-          pad.name = `plot_${d.id}_${cxCell}_${cy}`;
-          pad.userData.plotId = `plot_${d.id}_${cxCell}_${cy}`;
-          plotRoot.add(pad);
-          // Corner pegs
-          for (const [sx, sz] of [
-            [-1, -1],
-            [1, -1],
-            [-1, 1],
-            [1, 1],
-          ] as const) {
-            const peg = new THREE.Mesh(
-              new THREE.BoxGeometry(0.12, 0.35, 0.12),
-              new THREE.MeshStandardMaterial({
-                color: 0x8899aa,
-                emissive: 0x223344,
-                emissiveIntensity: 0.25,
-              }),
-            );
-            peg.position.set(px + sx * half * 0.92, DECK_Y + 0.2, pz + sz * half * 0.92);
-            plotRoot.add(peg);
-          }
-        }
-      }
-    }
+    // Plot platforms are built on the always-resident plotStructRoot (see below)
+    // so they can fracture free of the civic center and keep walk colliders.
 
     // Stall lease marker — visual filled later from player layout
     const stallG = new THREE.Group();
@@ -2416,150 +2377,235 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     }
   };
 
-  const plotStructRoot = new THREE.Group();
-  plotStructRoot.name = 'PlotStructures';
-  group.add(plotStructRoot);
+  /** Solid fractured plot pads — never cleared by building rebuilds */
+  const plotPlatformRoot = new THREE.Group();
+  plotPlatformRoot.name = 'PlotPlatforms';
+  group.add(plotPlatformRoot);
 
-  const ensurePlotPadMesh = (
+  /** Buildings + bridges rebuilt each ownership sync */
+  const plotBuildRoot = new THREE.Group();
+  plotBuildRoot.name = 'PlotStructures';
+  group.add(plotBuildRoot);
+
+  type PlotPlatformHandle = {
+    root: THREE.Group;
+    floorMesh: THREE.Mesh;
+    rimMesh: THREE.Mesh;
+    half: number;
+    col: Collider;
+  };
+  const plotPlatforms = new Map<string, PlotPlatformHandle>();
+  /** Dynamic bridge colliders (platforms keep stable collider objects) */
+  let plotBridgeCols: Collider[] = [];
+
+  const makePlotPlatform = (
+    plotKey: string,
+    d: CityDistrictDef,
+    px: number,
+    pz: number,
+    cellSize: number,
+  ): PlotPlatformHandle => {
+    // Abut at default grid (no gap); drift opens a fracture that needs bridges
+    const half = cellSize * 0.5;
+    const root = new THREE.Group();
+    root.name = plotKey;
+    root.position.set(px, 0, pz);
+    root.userData.plotId = plotKey;
+    const floor = new THREE.Mesh(
+      new THREE.BoxGeometry(half * 2, FLOOR_THICK, half * 2),
+      new THREE.MeshStandardMaterial({
+        color: d.color,
+        metalness: 0.22,
+        roughness: 0.68,
+      }),
+    );
+    floor.position.set(0, DECK_Y, 0);
+    floor.receiveShadow = true;
+    floor.castShadow = true;
+    floor.userData.plotId = plotKey;
+    root.add(floor);
+    const rim = new THREE.Mesh(
+      new THREE.BoxGeometry(half * 2 + 0.15, 0.12, half * 2 + 0.15),
+      new THREE.MeshStandardMaterial({
+        color: 0x667788,
+        transparent: true,
+        opacity: 0.45,
+        metalness: 0.3,
+        roughness: 0.5,
+        emissive: 0x000000,
+        emissiveIntensity: 0.05,
+      }),
+    );
+    rim.position.set(0, DECK_Y + FLOOR_THICK * 0.45, 0);
+    rim.userData.plotRim = true;
+    root.add(rim);
+    plotPlatformRoot.add(root);
+    const top = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+    const bot = DECK_Y - FLOOR_THICK / 2 - 0.08;
+    const col: Collider = {
+      min: new THREE.Vector3(px - half - 0.1, bot, pz - half - 0.1),
+      max: new THREE.Vector3(px + half + 0.1, top, pz + half + 0.1),
+      kind: 'floor',
+    };
+    const h: PlotPlatformHandle = { root, floorMesh: floor, rimMesh: rim, half, col };
+    plotPlatforms.set(plotKey, h);
+    return h;
+  };
+
+  // Spawn solid platforms for every core 3×3 plot (edge plots via ensure later)
+  for (const d of CITY_DISTRICTS) {
+    for (let cy = 0; cy < PLOT_GRID; cy++) {
+      for (let cxCell = 0; cxCell < PLOT_GRID; cxCell++) {
+        const { x: px, z: pz, cellSize } = plotWorldCenter(d, cxCell, cy);
+        const pid = `plot_${d.id}_${cxCell}_${cy}`;
+        makePlotPlatform(pid, d, px, pz, cellSize);
+      }
+    }
+  }
+
+  const setPlatformCol = (h: PlotPlatformHandle, x: number, z: number) => {
+    const top = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+    const bot = DECK_Y - FLOOR_THICK / 2 - 0.08;
+    h.col.min.set(x - h.half - 0.1, bot, z - h.half - 0.1);
+    h.col.max.set(x + h.half + 0.1, top, z + h.half + 0.1);
+  };
+
+  const ensurePlotPlatform = (
     districtId: string,
     cellX: number,
     cellY: number,
     plotKey: string,
-  ) => {
-    let found: THREE.Mesh | null = null;
-    group.traverse((obj) => {
-      if (found) return;
-      if ((obj as THREE.Object3D).userData?.plotId === plotKey && obj instanceof THREE.Mesh) {
-        found = obj;
-      }
-    });
-    if (found) return found;
+  ): PlotPlatformHandle | null => {
+    const existing = plotPlatforms.get(plotKey);
+    if (existing) return existing;
     const d = CITY_DISTRICTS.find((x) => x.id === districtId);
     if (!d) return null;
     const { x: px, z: pz, cellSize } = plotWorldCenter(d, cellX, cellY);
-    const half = cellSize * 0.46;
-    const pad = new THREE.Mesh(
-      new THREE.PlaneGeometry(half * 2, half * 2),
-      new THREE.MeshStandardMaterial({
-        color: 0x556677,
-        transparent: true,
-        opacity: 0.22,
-        roughness: 0.9,
-        metalness: 0.05,
-        depthWrite: false,
-      }),
-    );
-    pad.rotation.x = -Math.PI / 2;
-    pad.position.set(px, DECK_Y + 0.04, pz);
-    pad.name = plotKey;
-    pad.userData.plotId = plotKey;
-    group.add(pad);
-    return pad;
+    return makePlotPlatform(plotKey, d, px, pz, cellSize);
   };
 
-  const syncPlotOwnership = (
-    plots: {
-      id: string;
-      owner: string;
-      forSale: boolean;
-      districtId?: string;
-      cellX?: number;
-      cellY?: number;
-      worldX?: number;
-      worldZ?: number;
-      rotation?: number;
-      buildings?: {
-        kind: string;
-        facing?: number;
-        lx?: number;
-        lz?: number;
-        yaw?: number;
-        bridgeToPlotId?: string | null;
-      }[];
-      isEdge?: boolean;
-    }[],
+  const tintPlatform = (
+    h: PlotPlatformHandle,
+    owner: string,
+    forSale: boolean,
+    districtColor: number,
   ) => {
-    const byId = new Map(plots.map((p) => [p.id, p]));
+    const floorMat = h.floorMesh.material as THREE.MeshStandardMaterial;
+    const rimMat = h.rimMesh.material as THREE.MeshStandardMaterial;
+    if (owner === 'player') {
+      floorMat.color.setHex(0xc9a227);
+      rimMat.color.setHex(0xd4a017);
+      rimMat.opacity = 0.75;
+      rimMat.emissive?.setHex(0x664400);
+      if (rimMat.emissiveIntensity != null) rimMat.emissiveIntensity = 0.4;
+    } else if (forSale) {
+      floorMat.color.setHex(districtColor);
+      rimMat.color.setHex(0x44aa66);
+      rimMat.opacity = 0.55;
+      rimMat.emissive?.setHex(0x113322);
+      if (rimMat.emissiveIntensity != null) rimMat.emissiveIntensity = 0.25;
+    } else {
+      floorMat.color.setHex(districtColor);
+      rimMat.color.setHex(0x667788);
+      rimMat.opacity = 0.4;
+      rimMat.emissive?.setHex(0x000000);
+      if (rimMat.emissiveIntensity != null) rimMat.emissiveIntensity = 0.05;
+    }
+  };
 
-    // Move / recolor pads to free world positions
+  type PlotSyncInput = {
+    id: string;
+    owner: string;
+    forSale: boolean;
+    districtId?: string;
+    cellX?: number;
+    cellY?: number;
+    worldX?: number;
+    worldZ?: number;
+    rotation?: number;
+    buildings?: {
+      kind: string;
+      facing?: number;
+      lx?: number;
+      lz?: number;
+      yaw?: number;
+      bridgeToPlotId?: string | null;
+    }[];
+    isEdge?: boolean;
+  };
+
+  const toPlotLite = (p: PlotSyncInput) =>
+    ({
+      id: p.id,
+      cellX: p.cellX ?? 0,
+      cellY: p.cellY ?? 0,
+      worldX: p.worldX,
+      worldZ: p.worldZ,
+      districtId: p.districtId ?? '',
+      owner: p.owner as 'city' | 'npc' | 'player',
+      buildings: (p.buildings ?? []).map((b) => ({
+        kind: b.kind as import('./plazaPlots').PlotBuildKind,
+        bridgeToPlotId: b.bridgeToPlotId,
+      })),
+      npcOwnerId: null,
+      zoningHint: 'mixed' as const,
+      rentPolicy: null,
+      tenantNeighborId: null,
+      shape: 'square' as const,
+      rotation: p.rotation ?? 0,
+      layer: 0,
+      listPrice: 0,
+      forSale: p.forSale,
+      vacant: false,
+    }) as import('./plazaPlots').PlotState;
+
+  const syncPlotOwnership = (plots: PlotSyncInput[]) => {
+    const byId = new Map(plots.map((p) => [p.id, p]));
+    plotBridgeCols = [];
+
+    // Move / tint solid platforms to live free positions
     for (const p of plots) {
       if (p.districtId == null || p.cellX == null || p.cellY == null) continue;
       const d = CITY_DISTRICTS.find((x) => x.id === p.districtId);
       if (!d) continue;
-      const live = plotLivePos(
-        {
-          cellX: p.cellX,
-          cellY: p.cellY,
-          worldX: p.worldX,
-          worldZ: p.worldZ,
-        } as import('./plazaPlots').PlotState,
-        d,
-      );
-      let pad = null as THREE.Mesh | null;
-      group.traverse((obj) => {
-        if (pad) return;
-        if ((obj as THREE.Object3D).userData?.plotId === p.id && obj instanceof THREE.Mesh) {
-          pad = obj;
-        }
-      });
-      if (!pad) {
-        pad = ensurePlotPadMesh(p.districtId, p.cellX, p.cellY, p.id);
-      }
-      if (pad) {
-        pad.position.set(live.x, DECK_Y + 0.04, live.z);
-        const mat = pad.material as THREE.MeshStandardMaterial;
-        if (mat?.color) {
-          if (p.owner === 'player') {
-            mat.color.setHex(0xd4a017);
-            mat.opacity = 0.38;
-            mat.emissive?.setHex(0x664400);
-            if (mat.emissiveIntensity != null) mat.emissiveIntensity = 0.35;
-          } else if (p.forSale) {
-            mat.color.setHex(0x44aa66);
-            mat.opacity = 0.28;
-            mat.emissive?.setHex(0x113322);
-            if (mat.emissiveIntensity != null) mat.emissiveIntensity = 0.2;
-          } else {
-            mat.color.setHex(0x556677);
-            mat.opacity = 0.2;
-            mat.emissive?.setHex(0x000000);
-            if (mat.emissiveIntensity != null) mat.emissiveIntensity = 0.05;
-          }
-        }
-        if (typeof p.rotation === 'number') {
-          pad.rotation.z = 0;
-          pad.rotation.y = ((p.rotation ?? 0) * Math.PI) / 180;
-        }
-      }
+      const live = plotLivePos(toPlotLite(p), d);
+      const h = ensurePlotPlatform(p.districtId, p.cellX, p.cellY, p.id);
+      if (!h) continue;
+      h.root.position.set(live.x, 0, live.z);
+      h.root.rotation.y = ((p.rotation ?? 0) * Math.PI) / 180;
+      setPlatformCol(h, live.x, live.z);
+      tintPlatform(h, p.owner, p.forSale, d.color);
     }
 
-    // Rebuild structure meshes + bridges for player plots
-    while (plotStructRoot.children.length) {
-      const c = plotStructRoot.children[0]!;
-      plotStructRoot.remove(c);
+    // Rebuild buildings + bridges only (platforms stay put)
+    while (plotBuildRoot.children.length) {
+      const c = plotBuildRoot.children[0]!;
+      plotBuildRoot.remove(c);
+      c.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          obj.geometry?.dispose?.();
+          const m = obj.material;
+          if (Array.isArray(m)) m.forEach((x) => x.dispose?.());
+          else (m as THREE.Material | undefined)?.dispose?.();
+        }
+      });
     }
+
+    // Player-owned buildings on pads
     for (const p of plots) {
       if (p.owner !== 'player' || !p.districtId || p.cellX == null || p.cellY == null) {
         continue;
       }
       const d = CITY_DISTRICTS.find((x) => x.id === p.districtId);
       if (!d) continue;
-      const live = plotLivePos(
-        {
-          cellX: p.cellX,
-          cellY: p.cellY,
-          worldX: p.worldX,
-          worldZ: p.worldZ,
-        } as import('./plazaPlots').PlotState,
-        d,
-      );
+      const live = plotLivePos(toPlotLite(p), d);
       const { cellSize } = live;
       const px = live.x;
       const pz = live.z;
       const yaw = ((p.rotation ?? 0) * Math.PI) / 180;
       const buildings = p.buildings ?? [];
       const g = new THREE.Group();
-      g.position.set(px, DECK_Y, pz);
+      g.position.set(px, DECK_Y + FLOOR_THICK / 2, pz);
       g.rotation.y = yaw;
       const addBox = (
         w: number,
@@ -2608,62 +2654,29 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           if (other && other.districtId) {
             const od = CITY_DISTRICTS.find((x) => x.id === other.districtId);
             if (od) {
-              const op = plotLivePos(
-                {
-                  cellX: other.cellX ?? 0,
-                  cellY: other.cellY ?? 0,
-                  worldX: other.worldX,
-                  worldZ: other.worldZ,
-                } as import('./plazaPlots').PlotState,
-                od,
-              );
-              // World-space span (not parented to rotating pad)
+              const edges = bridgeEdgePoints(toPlotLite(p), toPlotLite(other), d);
               const span = buildWorldSpanRopeBridge(
-                px,
-                pz,
-                op.x,
-                op.z,
+                edges.ax,
+                edges.az,
+                edges.bx,
+                edges.bz,
                 3,
-                DECK_Y,
+                DECK_Y + FLOOR_THICK * 0.35,
                 false,
               );
-              plotStructRoot.add(span);
+              plotBuildRoot.add(span.group);
+              plotBridgeCols.push(...span.colliders);
             }
           }
         }
       }
-      if (g.children.length) plotStructRoot.add(g);
+      if (g.children.length) plotBuildRoot.add(g);
     }
 
-    // Auto connector bridges (5× placeable width) between separated owned platforms
+    // Auto bridges between nearby platforms (any owner) — edge-to-edge spans
     for (const d of CITY_DISTRICTS) {
-      // Build minimal PlotState-like for computeAutoBridges
       const pseudo = {
-        plots: plots
-          .filter((p) => p.districtId === d.id)
-          .map((p) => ({
-            id: p.id,
-            districtId: p.districtId!,
-            cellX: p.cellX ?? 0,
-            cellY: p.cellY ?? 0,
-            worldX: p.worldX,
-            worldZ: p.worldZ,
-            owner: p.owner as 'city' | 'npc' | 'player',
-            buildings: (p.buildings ?? []).map((b) => ({
-              kind: b.kind as import('./plazaPlots').PlotBuildKind,
-              bridgeToPlotId: b.bridgeToPlotId,
-            })),
-            npcOwnerId: null,
-            zoningHint: 'mixed' as const,
-            rentPolicy: null,
-            tenantNeighborId: null,
-            shape: 'square' as const,
-            rotation: p.rotation ?? 0,
-            layer: 0,
-            listPrice: 0,
-            forSale: p.forSale,
-            vacant: false,
-          })),
+        plots: plots.filter((p) => p.districtId === d.id).map(toPlotLite),
       };
       const links = computeAutoBridges(pseudo, d);
       for (const link of links) {
@@ -2673,12 +2686,20 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           link.bx,
           link.bz,
           5,
-          DECK_Y,
+          DECK_Y + FLOOR_THICK * 0.35,
           false,
         );
-        plotStructRoot.add(span);
+        plotBuildRoot.add(span.group);
+        plotBridgeCols.push(...span.colliders);
       }
     }
+  };
+
+  const getPlotDynamicsColliders = (): Collider[] => {
+    const out: Collider[] = [];
+    for (const h of plotPlatforms.values()) out.push(h.col);
+    out.push(...plotBridgeCols);
+    return out;
   };
 
   const animate = (cityTime: number, dt: number) => {
@@ -2882,6 +2903,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     circuits,
     brokerDisplays,
     syncPlotOwnership,
+    getPlotDynamicsColliders,
   };
   built.mapSnapshot = buildMapSnapshot(built);
   return built;

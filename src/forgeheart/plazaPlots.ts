@@ -787,22 +787,29 @@ export function movePlotFree(
 export interface AutoBridgeLink {
   fromId: string;
   toId: string;
+  /** Edge points (not centers) — bridge deck starts near each platform rim */
   ax: number;
   az: number;
   bx: number;
   bz: number;
 }
 
+/**
+ * Auto bridges between nearby platforms in a district — any owner.
+ * Spans edge-to-edge so the rope meets near each pad’s rim.
+ */
 export function computeAutoBridges(
   state: PlazaPlotsState,
   d: { id: string; x: number; z: number; size: number },
 ): AutoBridgeLink[] {
   const cellSize = plotWorldCenter(d, 0, 0).cellSize;
-  const minGap = cellSize * 1.05;
+  // Match solid platform half in skyCity (cellSize * 0.5) so edges meet the pad rim
+  const half = cellSize * 0.5;
+  // Edge-to-edge gap: default grid abuts (gap≈0) and diagonal corners kiss (gap≈0.41cs).
+  // Only span after a real fracture opens.
+  const minGap = cellSize * 0.5;
   const maxGap = cellSize * 4.5;
-  const list = state.plots.filter(
-    (p) => p.owner === 'player' && p.districtId === d.id,
-  );
+  const list = state.plots.filter((p) => p.districtId === d.id);
   const links: AutoBridgeLink[] = [];
   for (let i = 0; i < list.length; i++) {
     for (let j = i + 1; j < list.length; j++) {
@@ -814,20 +821,50 @@ export function computeAutoBridges(
       if (hasPlayerBridge) continue;
       const pa = plotLivePos(a, d);
       const pb = plotLivePos(b, d);
-      const dist = Math.hypot(pa.x - pb.x, pa.z - pb.z);
-      if (dist >= minGap && dist <= maxGap) {
-        links.push({
-          fromId: a.id,
-          toId: b.id,
-          ax: pa.x,
-          az: pa.z,
-          bx: pb.x,
-          bz: pb.z,
-        });
-      }
+      const dx = pb.x - pa.x;
+      const dz = pb.z - pa.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < 0.01) continue;
+      const gap = dist - 2 * half;
+      if (gap < minGap || gap > maxGap) continue;
+      const ux = dx / dist;
+      const uz = dz / dist;
+      // Start/end near platform edges facing each other
+      links.push({
+        fromId: a.id,
+        toId: b.id,
+        ax: pa.x + ux * half * 0.94,
+        az: pa.z + uz * half * 0.94,
+        bx: pb.x - ux * half * 0.94,
+        bz: pb.z - uz * half * 0.94,
+      });
     }
   }
   return links;
+}
+
+/** Edge points for a player bridge from plot A toward plot B */
+export function bridgeEdgePoints(
+  a: PlotState,
+  b: PlotState,
+  d: { x: number; z: number; size: number },
+): { ax: number; az: number; bx: number; bz: number } {
+  const cellSize = plotWorldCenter(d, 0, 0).cellSize;
+  const half = cellSize * 0.5;
+  const pa = plotLivePos(a, d);
+  const pb = plotLivePos(b, d);
+  const dx = pb.x - pa.x;
+  const dz = pb.z - pa.z;
+  const dist = Math.max(0.01, Math.hypot(dx, dz));
+  const ux = dx / dist;
+  const uz = dz / dist;
+  // Slightly inset from rim so planks sit on the pad edge
+  return {
+    ax: pa.x + ux * half * 0.94,
+    az: pa.z + uz * half * 0.94,
+    bx: pb.x - ux * half * 0.94,
+    bz: pb.z - uz * half * 0.94,
+  };
 }
 
 // ——— Task 9 edge growth ———

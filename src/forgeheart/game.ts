@@ -240,6 +240,7 @@ import {
   clampLocalOnPlot,
   nearestOwnedPlot,
   hasNearbyOwned,
+  bridgeEdgePoints,
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
@@ -7087,6 +7088,13 @@ export class ForgeHeartGame {
         isEdge: p.isEdge,
       })),
     );
+    // Platforms + rope bridges are walkable / solid — refresh spatial chunk
+    const dyn = this.skyCity.getPlotDynamicsColliders();
+    this.spatialGrid?.setChunk('plot_dynamics', dyn);
+    if (this.spatialGrid) {
+      this.colliders = this.spatialGrid.getAll() as Collider[];
+      perfStats.colliderCount = this.spatialGrid.count;
+    }
   }
 
   // ——— Build wizard dock (menu ↔ aim) ———
@@ -7436,6 +7444,7 @@ export class ForgeHeartGame {
       let endX = s.bridgeEndX;
       let endZ = s.bridgeEndZ;
       let targetId: string | null = null;
+      let targetPlot = null as typeof plot | null;
       const near = nearestOwnedPlot(this.inv.plazaPlots, plot, d);
       if (near) {
         const np = plotLivePos(near, d);
@@ -7444,23 +7453,39 @@ export class ForgeHeartGame {
           endX = np.x;
           endZ = np.z;
           targetId = near.id;
+          targetPlot = near;
         }
       }
       const start = plotLivePos(plot, d);
       const valid =
         !!targetId ||
         hasNearbyOwned(this.inv.plazaPlots, plot, d);
-      const ghost = buildWorldSpanRopeBridge(
-        start.x,
-        start.z,
-        endX,
-        endZ,
-        3,
-        0.28,
-        true,
-      );
+      // Edge-to-edge span (starts near each platform rim)
+      let ax: number;
+      let az: number;
+      let bx: number;
+      let bz: number;
+      if (targetPlot) {
+        const edges = bridgeEdgePoints(plot, targetPlot, d);
+        ax = edges.ax;
+        az = edges.az;
+        bx = edges.bx;
+        bz = edges.bz;
+      } else {
+        const dx = endX - start.x;
+        const dz = endZ - start.z;
+        const dist = Math.max(0.01, Math.hypot(dx, dz));
+        const half = s.cellSize * 0.5;
+        const ux = dx / dist;
+        const uz = dz / dist;
+        ax = start.x + ux * half * 0.94;
+        az = start.z + uz * half * 0.94;
+        bx = endX;
+        bz = endZ;
+      }
+      const built = buildWorldSpanRopeBridge(ax, az, bx, bz, 3, 0.28, true);
+      const ghost = built.group;
       liftGhost(ghost);
-      // Color hint: invalid slightly red via children materials if needed
       if (!valid || this.inv.brass < q.cost) {
         ghost.traverse((o) => {
           if (o instanceof THREE.Mesh && o.material && 'color' in o.material) {

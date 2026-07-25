@@ -71,6 +71,7 @@ import {
   clampPlotWorld,
   clampLocalOnPlot,
   computeAutoBridges,
+  bridgeEdgePoints,
   type PlazaPlotsState,
   type PlotState,
   type DistrictLite,
@@ -7070,6 +7071,7 @@ export {
   clampPlotWorld,
   clampLocalOnPlot,
   computeAutoBridges,
+  bridgeEdgePoints,
   movePlotFree,
 };
 
