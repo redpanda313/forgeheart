@@ -2389,7 +2389,7 @@ export const SOFT_GOALS: SoftGoalDef[] = [
   {
     id: 'plot_layer',
     title: 'Build an upper deck',
-    hint: 'Lease office · Upper deck upgrade on an owned plot',
+    hint: 'Lease office · Add deck L1+ on an owned plot (stack many)',
     empireOnly: true,
     isDone: (inv) =>
       !!inv.plazaPlots?.plots?.some((p) => p.owner === 'player' && (p.layer ?? 0) >= 1),

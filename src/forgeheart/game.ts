@@ -7427,7 +7427,7 @@ export class ForgeHeartGame {
       ghost.position.set(curX, 0, curZ);
       liftGhost(ghost);
       // Raise ghost for upper deck placement (after deck lift)
-      if ((s.placeLayer ?? 0) >= 1) ghost.position.y += 4.15;
+      if ((s.placeLayer ?? 0) >= 1) ghost.position.y += (s.placeLayer ?? 0) * 4.15;
       this.scene.add(ghost);
       this.plotBuildGhost = ghost;
     }
@@ -7523,12 +7523,13 @@ export class ForgeHeartGame {
         'Aim on pad (look/arrows) · [/] rotate entry · L toggles deck layer (if unlocked) · Confirm.';
       body.appendChild(p);
       if ((plot?.layer ?? 0) >= 1) {
+        const maxL = plot?.layer ?? 0;
         const lb = document.createElement('button');
         lb.type = 'button';
         lb.className = 'stall-wizard-btn';
-        lb.textContent = `Deck layer: L${s.placeLayer ?? 0} (click to toggle)`;
+        lb.textContent = `Place on deck L${s.placeLayer ?? 0} / L${maxL} (click to cycle)`;
         lb.addEventListener('click', () => {
-          s.placeLayer = (s.placeLayer ?? 0) >= 1 ? 0 : 1;
+          s.placeLayer = ((s.placeLayer ?? 0) + 1) % (maxL + 1);
           this.rebuildPlotBuildGhosts();
           this.refreshPlotBuildUi();
         });
@@ -7755,27 +7756,30 @@ export class ForgeHeartGame {
           row.appendChild(btn);
         }
 
-        // Task 11 — upper deck
-        if ((p.layer ?? 0) < 1) {
+        // Task 11 — stack another deck (many layers)
+        {
+          const curL = p.layer ?? 0;
           const cost = quotePlotLayerUpgrade(p);
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'romance-btn';
-          btn.textContent = `Upper deck ${cost.toLocaleString()}b`;
-          btn.title = 'Second deck + climb rails';
-          btn.addEventListener('click', () => {
-            const r = upgradePlotLayer(this.inv, p.id);
-            if (log) log.textContent = r.msg;
-            this.toast(r.msg, 4);
-            if (r.ok) {
-              this.brass = this.inv.brass;
-              this.syncPlotOwnershipVisuals();
-              writeSlot(this.activeSlot, this.buildSaveData());
-              this.syncEconomyHud();
-            }
-            this.fillLeaseOffice();
-          });
-          row.appendChild(btn);
+          if (cost > 0) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'romance-btn';
+            btn.textContent = `Add deck L${curL + 1} ${cost.toLocaleString()}b`;
+            btn.title = 'Stack another walkable deck + climb rails';
+            btn.addEventListener('click', () => {
+              const r = upgradePlotLayer(this.inv, p.id);
+              if (log) log.textContent = r.msg;
+              this.toast(r.msg, 4);
+              if (r.ok) {
+                this.brass = this.inv.brass;
+                this.syncPlotOwnershipVisuals();
+                writeSlot(this.activeSlot, this.buildSaveData());
+                this.syncEconomyHud();
+              }
+              this.fillLeaseOffice();
+            });
+            row.appendChild(btn);
+          }
         }
 
         // Task 12 — airways to other owned plots in district

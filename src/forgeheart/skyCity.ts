@@ -191,6 +191,8 @@ export interface CityNpc {
 export interface SkyRoute {
   path: THREE.Vector3[];
   pathDist: number[];
+  /** Cleared/rebuilt when player pad airways sync (Task 12) */
+  plotAirway?: boolean;
 }
 
 export interface SkyCityBuilt {
@@ -775,30 +777,45 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
   /**
    * Wind skyway — instanced ribbon planks + sparse board colliders.
    * Far links fade via distance LOD in animate().
+   * Plot airways use the same look; parent/cols can be redirected for rebuilds.
    */
   function windSkyway(
     ax: number,
     az: number,
     bx: number,
     bz: number,
-    opts?: { arch?: number; width?: number; entryLift?: number },
+    opts?: {
+      arch?: number;
+      width?: number;
+      entryLift?: number;
+      /** Parent group (default skywayGroup) */
+      parent?: THREE.Group;
+      /** Collect colliders here instead of main skywayCols */
+      collidersOut?: Collider[];
+      /** Mark route as player pad airway (cleared on resync) */
+      plotAirway?: boolean;
+      /** Start inset along path so short pad links still work */
+      endInset?: number;
+    },
   ) {
     const arch = opts?.arch ?? 10;
     const width = opts?.width ?? 9;
     const entryLift = opts?.entryLift ?? 0.85;
+    const endInset = opts?.endInset ?? 8;
     const dx = bx - ax;
     const dz = bz - az;
     const dist = Math.hypot(dx, dz);
-    if (dist < 4) return;
+    if (dist < 2) return;
 
     const ux = dx / dist;
     const uz = dz / dist;
     const px = -uz;
     const pz = ux;
     const curve = Math.min(28, dist * 0.12) * (Math.sin(ax * 0.01 + az * 0.007) > 0 ? 1 : -1);
+    const inset = Math.min(endInset, dist * 0.22);
 
-    const a0 = new THREE.Vector3(ax + ux * 8, DECK_Y + entryLift, az + uz * 8);
-    const b0 = new THREE.Vector3(bx - ux * 8, DECK_Y + entryLift, bz - uz * 8);
+    const a0 = new THREE.Vector3(ax + ux * inset, DECK_Y + entryLift, az + uz * inset);
+    const b0 = new THREE.Vector3(bx - ux * inset, DECK_Y + entryLift, bz - uz * inset);
     const mid = new THREE.Vector3(
       (ax + bx) / 2 + px * curve,
       DECK_Y + entryLift + arch,
@@ -826,12 +843,24 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           .addScaledVector(b0, t * t * t),
       );
     }
-    skyRoutes.push({ path: pts, pathDist: pathDist(pts) });
+    skyRoutes.push({
+      path: pts,
+      pathDist: pathDist(pts),
+      plotAirway: !!opts?.plotAirway,
+    });
 
     const linkRoot = new THREE.Group();
-    linkRoot.name = 'SkywayLink';
-    skywayGroup.add(linkRoot);
-    skywayLods.push({ root: linkRoot, x: (ax + bx) * 0.5, z: (az + bz) * 0.5 });
+    linkRoot.name = opts?.plotAirway ? 'PlotSkywayLink' : 'SkywayLink';
+    (opts?.parent ?? skywayGroup).add(linkRoot);
+    skywayLods.push({
+      root: linkRoot,
+      x: (ax + bx) * 0.5,
+      z: (az + bz) * 0.5,
+    });
+    if (opts?.plotAirway) {
+      (linkRoot as THREE.Object3D & { userData: { plotAirway?: boolean } }).userData.plotAirway =
+        true;
+    }
 
     // Collect instance transforms for 3 material layers
     type Inst = { mat: THREE.Matrix4 };
@@ -928,6 +957,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
 
     // Sparse skyway colliders (~every 28u of path) — path-snap style
     const colStride = Math.max(1, Math.ceil(28 / Math.max(1, dist / segs)));
+    const colTarget = opts?.collidersOut ?? skywayCols;
     for (let i = 0; i < pts.length - 1; i += colStride) {
       const p0 = pts[i]!;
       const p1 = pts[Math.min(pts.length - 1, i + colStride)]!;
@@ -948,9 +978,12 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         ),
         kind: 'skyway',
       };
-      skywayCols.push(col);
-      colliders.push(col);
-      lowestY = Math.min(lowestY, col.min.y);
+      colTarget.push(col);
+      // District skyways also join the main resident collider list once at build
+      if (!opts?.collidersOut) {
+        colliders.push(col);
+        lowestY = Math.min(lowestY, col.min.y);
+      }
     }
 
     // Soft entry rings
@@ -2400,8 +2433,18 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
   plotBuildRoot.name = 'PlotStructures';
   group.add(plotBuildRoot);
 
-  /** Upper deck height above world 0 (Task 11). */
-  const LAYER1_DECK_Y = DECK_Y + 4.15;
+  /** Vertical spacing between stacked decks (Task 11). */
+  const LAYER_SPACING = 4.15;
+  /** Highest unlockable layer index (ground = 0 → up to L7 = 8 decks). */
+  const MAX_PLOT_LAYER = 7;
+
+  const layerDeckY = (layer: number) => DECK_Y + Math.max(0, layer) * LAYER_SPACING;
+
+  type PlotDeckLevel = {
+    root: THREE.Group;
+    col: Collider;
+    railCols: Collider[];
+  };
 
   type PlotPlatformHandle = {
     root: THREE.Group;
@@ -2410,9 +2453,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     half: number;
     col: Collider;
     shape: PlotShape;
-    upperRoot: THREE.Group | null;
-    upperCol: Collider | null;
-    railCols: Collider[];
+    /** Upper decks for layers 1..N */
+    decks: PlotDeckLevel[];
   };
   const plotPlatforms = new Map<string, PlotPlatformHandle>();
   /** Dynamic building colliders (platforms keep stable collider objects) */
@@ -2523,9 +2565,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       half,
       col,
       shape,
-      upperRoot: null,
-      upperCol: null,
-      railCols: [],
+      decks: [],
     };
     plotPlatforms.set(plotKey, h);
     return h;
@@ -2544,85 +2584,103 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     (h.floorMesh.material as THREE.MeshStandardMaterial).color.setHex(color);
   };
 
-  const ensureUpperDeck = (
+  /** Rebuild upper decks 1..maxLayer with ladders between consecutive levels. */
+  const syncPlotDecks = (
     h: PlotPlatformHandle,
     px: number,
     pz: number,
     shape: PlotShape,
     color: number,
+    maxLayer: number,
   ) => {
-    if (h.upperRoot) {
-      while (h.upperRoot.children.length) {
-        const c = h.upperRoot.children[0]!;
-        h.upperRoot.remove(c);
-        if (c instanceof THREE.Mesh) c.geometry?.dispose?.();
-      }
-    } else {
-      h.upperRoot = new THREE.Group();
-      h.upperRoot.name = `${h.root.name}_upper`;
-      h.root.add(h.upperRoot);
+    // Clear existing upper decks
+    for (const d of h.decks) {
+      h.root.remove(d.root);
+      d.root.traverse((o) => {
+        if (o instanceof THREE.Mesh) o.geometry?.dispose?.();
+      });
     }
-    const floor = new THREE.Mesh(makeShapeFloorGeo(shape, h.half * 0.92), floorMatFor(color));
-    floor.position.set(0, LAYER1_DECK_Y, 0);
-    floor.userData.plotUpper = true;
-    floor.receiveShadow = true;
-    floor.castShadow = true;
-    h.upperRoot.add(floor);
-    const rim = new THREE.Mesh(makeShapeRimGeo(shape, h.half * 0.92), rimMat());
-    rim.position.set(0, LAYER1_DECK_Y + FLOOR_THICK * 0.45, 0);
-    rim.userData.plotRim = true;
-    h.upperRoot.add(rim);
+    h.decks = [];
+    const topLayer = Math.max(0, Math.min(MAX_PLOT_LAYER, maxLayer));
+    if (topLayer < 1) return;
 
-    // Climb rails (ladder on +Z edge)
     const railMat = new THREE.MeshStandardMaterial({
       color: 0xb0a090,
       metalness: 0.45,
       roughness: 0.4,
     });
-    for (const sx of [-0.35, 0.35]) {
-      const post = new THREE.Mesh(
-        new THREE.BoxGeometry(0.12, LAYER1_DECK_Y - DECK_Y, 0.12),
-        railMat,
-      );
-      post.position.set(sx * h.half, (LAYER1_DECK_Y + DECK_Y) / 2, h.half * 0.88);
-      h.upperRoot.add(post);
-    }
-    const rungs = 6;
-    for (let i = 0; i < rungs; i++) {
-      const t = (i + 1) / (rungs + 1);
-      const y = DECK_Y + t * (LAYER1_DECK_Y - DECK_Y);
-      const rung = new THREE.Mesh(new THREE.BoxGeometry(h.half * 0.75, 0.08, 0.1), railMat);
-      rung.position.set(0, y, h.half * 0.88);
-      h.upperRoot.add(rung);
-    }
 
-    const top = LAYER1_DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
-    const bot = LAYER1_DECK_Y - FLOOR_THICK / 2 - 0.08;
-    const uh = h.half * 0.92;
-    h.upperCol = {
-      min: new THREE.Vector3(px - uh - 0.1, bot, pz - uh - 0.1),
-      max: new THREE.Vector3(px + uh + 0.1, top, pz + uh + 0.1),
-      kind: 'floor',
-    };
-    h.railCols = [];
-    for (let i = 0; i < rungs; i++) {
-      const t = (i + 1) / (rungs + 1);
-      const y = DECK_Y + t * (LAYER1_DECK_Y - DECK_Y);
-      h.railCols.push({
-        min: new THREE.Vector3(px - h.half * 0.4, y - 0.08, pz + h.half * 0.7),
-        max: new THREE.Vector3(px + h.half * 0.4, y + 0.12, pz + h.half * 0.98),
-        kind: 'floor',
+    for (let layer = 1; layer <= topLayer; layer++) {
+      const deckY = layerDeckY(layer);
+      const prevY = layerDeckY(layer - 1);
+      const deckRoot = new THREE.Group();
+      deckRoot.name = `${h.root.name}_L${layer}`;
+      h.root.add(deckRoot);
+
+      const shrink = Math.max(0.78, 0.96 - layer * 0.02);
+      const floor = new THREE.Mesh(
+        makeShapeFloorGeo(shape, h.half * shrink),
+        floorMatFor(color),
+      );
+      floor.position.set(0, deckY, 0);
+      floor.receiveShadow = true;
+      floor.castShadow = true;
+      deckRoot.add(floor);
+      const rim = new THREE.Mesh(makeShapeRimGeo(shape, h.half * shrink), rimMat());
+      rim.position.set(0, deckY + FLOOR_THICK * 0.45, 0);
+      deckRoot.add(rim);
+
+      // Ladder from previous deck to this one (+Z edge, rotated offset per layer)
+      const edgeAng = ((layer - 1) % 4) * (Math.PI / 2);
+      const ex = Math.sin(edgeAng) * h.half * 0.88;
+      const ez = Math.cos(edgeAng) * h.half * 0.88;
+      for (const side of [-0.35, 0.35]) {
+        const ox = Math.cos(edgeAng) * side * h.half;
+        const oz = -Math.sin(edgeAng) * side * h.half;
+        const post = new THREE.Mesh(
+          new THREE.BoxGeometry(0.12, deckY - prevY, 0.12),
+          railMat,
+        );
+        post.position.set(ex + ox, (deckY + prevY) / 2, ez + oz);
+        deckRoot.add(post);
+      }
+      const rungs = 6;
+      const railCols: Collider[] = [];
+      for (let i = 0; i < rungs; i++) {
+        const t = (i + 1) / (rungs + 1);
+        const y = prevY + t * (deckY - prevY);
+        const rung = new THREE.Mesh(new THREE.BoxGeometry(h.half * 0.7, 0.08, 0.1), railMat);
+        rung.position.set(ex, y, ez);
+        rung.rotation.y = edgeAng;
+        deckRoot.add(rung);
+        railCols.push({
+          min: new THREE.Vector3(
+            px + ex - h.half * 0.4,
+            y - 0.08,
+            pz + ez - h.half * 0.25,
+          ),
+          max: new THREE.Vector3(
+            px + ex + h.half * 0.4,
+            y + 0.12,
+            pz + ez + h.half * 0.25,
+          ),
+          kind: 'floor',
+        });
+      }
+
+      const uh = h.half * shrink;
+      const top = deckY + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+      const bot = deckY - FLOOR_THICK / 2 - 0.08;
+      h.decks.push({
+        root: deckRoot,
+        col: {
+          min: new THREE.Vector3(px - uh - 0.1, bot, pz - uh - 0.1),
+          max: new THREE.Vector3(px + uh + 0.1, top, pz + uh + 0.1),
+          kind: 'floor',
+        },
+        railCols,
       });
     }
-  };
-
-  const clearUpperDeck = (h: PlotPlatformHandle) => {
-    if (h.upperRoot) {
-      h.root.remove(h.upperRoot);
-      h.upperRoot = null;
-    }
-    h.upperCol = null;
-    h.railCols = [];
   };
 
   // Spawn solid platforms for every core 3×3 plot (edge plots via ensure later)
@@ -2761,11 +2819,14 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         : 'square') as PlotShape;
       applyPlotShape(h, shape, p.owner === 'player' ? 0xc9a227 : d.color);
       tintPlatform(h, p.owner, p.forSale, d.color);
-      if ((p.layer ?? 0) >= 1) {
-        ensureUpperDeck(h, live.x, live.z, shape, p.owner === 'player' ? 0xc9a227 : d.color);
-      } else {
-        clearUpperDeck(h);
-      }
+      syncPlotDecks(
+        h,
+        live.x,
+        live.z,
+        shape,
+        p.owner === 'player' ? 0xc9a227 : d.color,
+        p.layer ?? 0,
+      );
     }
 
     // Rebuild buildings only
@@ -2782,8 +2843,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       });
     }
 
-    const walkY0 = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
-    const walkY1 = LAYER1_DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+    const walkYForLayer = (layer: number) =>
+      layerDeckY(layer) + FLOOR_THICK / 2 + FLOOR_COL_PAD;
 
     const shellKind = (kind: string): EnterableKind | null => {
       if (kind === 'home') return 'home';
@@ -2810,8 +2871,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         const lx = b.lx ?? 0;
         const lz = b.lz ?? 0;
         const lyaw = ((b.yaw ?? 0) * Math.PI) / 180;
-        const bLayer = Math.min(p.layer ?? 0, b.layer ?? 0);
-        const walkY = bLayer >= 1 ? walkY1 : walkY0;
+        const bLayer = Math.max(0, Math.min(p.layer ?? 0, b.layer ?? 0));
+        const walkY = walkYForLayer(bLayer);
         const wx = px + lx;
         const wz = pz + lz;
         const sk = shellKind(b.kind);
@@ -2862,26 +2923,23 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       }
     }
 
-    // Task 12 — player airways between owned plots (board skyway colliders)
+    // Task 12 — player airways use the same wind-skyway look as city routes
     while (plotAirwayRoot.children.length) {
       const c = plotAirwayRoot.children[0]!;
       plotAirwayRoot.remove(c);
-      c.traverse((o) => {
-        if (o instanceof THREE.Mesh) o.geometry?.dispose?.();
-      });
+    }
+    // Drop prior plot-airway routes / LODs so resync does not stack
+    for (let i = skyRoutes.length - 1; i >= 0; i--) {
+      if (skyRoutes[i]?.plotAirway) skyRoutes.splice(i, 1);
+    }
+    for (let i = skywayLods.length - 1; i >= 0; i--) {
+      const r = skywayLods[i]!;
+      if (r.root.userData?.plotAirway || r.root.name === 'PlotSkywayLink') {
+        skywayLods.splice(i, 1);
+      }
     }
     const byId = new Map(plots.map((p) => [p.id, p]));
     const links = airways ?? [];
-    const airMat = new THREE.MeshStandardMaterial({
-      color: 0x88ddff,
-      emissive: 0x2288cc,
-      emissiveIntensity: 0.55,
-      transparent: true,
-      opacity: 0.72,
-      metalness: 0.35,
-      roughness: 0.35,
-      depthWrite: false,
-    });
     for (const link of links) {
       const a = byId.get(link.fromId);
       const b = byId.get(link.toId);
@@ -2891,41 +2949,16 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       if (!da || !db) continue;
       const pa = plotLivePos(toPlotLite(a), da);
       const pb = plotLivePos(toPlotLite(b), db);
-      const dx = pb.x - pa.x;
-      const dz = pb.z - pa.z;
-      const len = Math.hypot(dx, dz);
-      if (len < 2) continue;
-      const segs = Math.max(6, Math.ceil(len / 6));
-      for (let i = 0; i < segs; i++) {
-        const t0 = i / segs;
-        const t1 = (i + 1) / segs;
-        const tm = (t0 + t1) / 2;
-        const arch = Math.sin(tm * Math.PI) * 8;
-        const y = DECK_Y + 2.2 + arch;
-        const mx = pa.x + dx * tm;
-        const mz = pa.z + dz * tm;
-        const segLen = len / segs;
-        const plank = new THREE.Mesh(
-          new THREE.BoxGeometry(5.2, 0.18, segLen * 0.95),
-          airMat,
-        );
-        plank.position.set(mx, y, mz);
-        plank.rotation.y = Math.atan2(dx, dz);
-        plotAirwayRoot.add(plank);
-        // Board-only skyway colliders
-        const halfW = 2.8;
-        const ux = dx / len;
-        const uz = dz / len;
-        const pxn = -uz;
-        const pzn = ux;
-        const extX = Math.abs(ux) * (segLen * 0.5) + Math.abs(pxn) * halfW;
-        const extZ = Math.abs(uz) * (segLen * 0.5) + Math.abs(pzn) * halfW;
-        plotAirwayCols.push({
-          min: new THREE.Vector3(mx - extX, y - 0.35, mz - extZ),
-          max: new THREE.Vector3(mx + extX, y + 0.25, mz + extZ),
-          kind: 'skyway',
-        });
-      }
+      // Match district skyway visuals; shorter inset for pad-to-pad spans
+      windSkyway(pa.x, pa.z, pb.x, pb.z, {
+        arch: Math.min(14, Math.hypot(pb.x - pa.x, pb.z - pa.z) * 0.14 + 5),
+        width: 7,
+        entryLift: 1.1,
+        endInset: 4,
+        parent: plotAirwayRoot,
+        collidersOut: plotAirwayCols,
+        plotAirway: true,
+      });
     }
   };
 
@@ -2933,8 +2966,10 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     const out: Collider[] = [];
     for (const h of plotPlatforms.values()) {
       out.push(h.col);
-      if (h.upperCol) out.push(h.upperCol);
-      out.push(...h.railCols);
+      for (const d of h.decks) {
+        out.push(d.col);
+        out.push(...d.railCols);
+      }
     }
     out.push(...plotBuildingCols);
     out.push(...plotAirwayCols);

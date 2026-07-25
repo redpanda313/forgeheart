@@ -73,8 +73,8 @@ export interface PlotState {
   /** Degrees — free rotation, UI snaps 90° for now */
   rotation: number;
   /**
-   * Highest unlocked deck index (0 = ground only, 1 = upper deck unlocked).
-   * Task 11 layered plots.
+   * Highest unlocked deck index (0 = ground only; up to MAX_PLOT_LAYER).
+   * Task 11 multi-layer plots.
    */
   layer: number;
   listPrice: number;
@@ -595,10 +595,16 @@ export function quotePlotShapeChange(plot: PlotState, shape: PlotShape): number 
   return Math.max(2_500, base[shape] ?? 5_000);
 }
 
-/** Cost to unlock upper deck (Task 11). */
+/** Highest deck index players can unlock (0..MAX = 8 total decks). */
+export const MAX_PLOT_LAYER = 7;
+
+/** Cost to unlock the next deck layer (Task 11). */
 export function quotePlotLayerUpgrade(plot: PlotState): number {
-  if ((plot.layer ?? 0) >= 1) return 0;
-  return Math.max(18_000, Math.round(plot.listPrice * 0.22));
+  const cur = plot.layer ?? 0;
+  if (cur >= MAX_PLOT_LAYER) return 0;
+  const next = cur + 1;
+  const base = Math.max(14_000, Math.round(plot.listPrice * 0.18));
+  return Math.round(base * Math.pow(1.38, next - 1));
 }
 
 /** Cost to open a player airway between two owned plots (Task 12). */
@@ -638,15 +644,16 @@ export function unlockPlotUpperDeck(
   if (!plot || plot.owner !== 'player') {
     return { ok: false, msg: 'Own the plot to add a deck.', cost: 0 };
   }
-  if ((plot.layer ?? 0) >= 1) {
-    return { ok: false, msg: 'Upper deck already unlocked.', cost: 0 };
+  const cur = plot.layer ?? 0;
+  if (cur >= MAX_PLOT_LAYER) {
+    return { ok: false, msg: `Already at max deck L${MAX_PLOT_LAYER}.`, cost: 0 };
   }
   const cost = quotePlotLayerUpgrade(plot);
-  plot.layer = 1;
+  plot.layer = cur + 1;
   return {
     ok: true,
     cost,
-    msg: `Upper deck + climb rails unlocked (−${cost.toLocaleString()}b).`,
+    msg: `Deck L${plot.layer} + climb rails unlocked (−${cost.toLocaleString()}b).`,
   };
 }
 
@@ -1005,7 +1012,7 @@ export function plazaPlotsFromSave(
         typeof r.tenantNeighborId === 'string' ? r.tenantNeighborId : null,
       shape,
       rotation: Number(r.rotation) || 0,
-      layer: Math.max(0, Math.min(1, Number(r.layer) || 0)),
+      layer: Math.max(0, Math.min(MAX_PLOT_LAYER, Number(r.layer) || 0)),
       listPrice: typeof r.listPrice === 'number' ? r.listPrice : 10_000,
       forSale: r.forSale !== false,
       vacant: !!r.vacant,
