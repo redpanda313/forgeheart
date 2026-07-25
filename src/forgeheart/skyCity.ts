@@ -2588,12 +2588,13 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       const c = plotBuildRoot.children[0]!;
       plotBuildRoot.remove(c);
       c.traverse((obj) => {
-        if (obj instanceof THREE.Mesh) {
-          obj.geometry?.dispose?.();
-          const m = obj.material;
-          if (Array.isArray(m)) m.forEach((x) => x.dispose?.());
-          else (m as THREE.Material | undefined)?.dispose?.();
-        }
+        if (!(obj instanceof THREE.Mesh)) return;
+        // Skip shared bridge geo/mats (city-wide pool)
+        if (obj.userData?.sharedAssets) return;
+        obj.geometry?.dispose?.();
+        const m = obj.material;
+        if (Array.isArray(m)) m.forEach((x) => x.dispose?.());
+        else (m as THREE.Material | undefined)?.dispose?.();
       });
     }
 

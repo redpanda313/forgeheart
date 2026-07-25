@@ -171,13 +171,33 @@ export function plotPlatformHalf(cellSize: number): number {
   return cellSize * PLOT_PLATFORM_HALF_MUL;
 }
 
-/** Min edge-to-edge air before a bridge is allowed (abutting pads stay bridgeless). */
+/**
+ * Min edge-to-edge air before a bridge is allowed.
+ * Must exceed the default-grid diagonal rest gap (~0.41×cellSize) so an
+ * unmoved 3×3 never spawns bridges (that was spawning hundreds city-wide).
+ */
 export function bridgeMinGap(cellSize: number): number {
-  return Math.max(2.5, cellSize * 0.28);
+  return Math.max(3, cellSize * 0.55);
 }
 
 export function bridgeMaxGap(cellSize: number): number {
-  return cellSize * 4.5;
+  // Only short local spans — not spiderwebs across a whole district
+  return cellSize * 2.2;
+}
+
+/** How far a pad must drift from its grid home to count as “moved”. */
+export function plotDisplaceEpsilon(cellSize: number): number {
+  return cellSize * 0.12;
+}
+
+/** True if the platform is away from its default grid cell center. */
+export function plotIsDisplaced(
+  plot: PlotState,
+  d: { x: number; z: number; size: number },
+): boolean {
+  const home = plotWorldCenter(d, plot.cellX, plot.cellY);
+  const live = plotLivePos(plot, d);
+  return Math.hypot(live.x - home.x, live.z - home.z) > plotDisplaceEpsilon(home.cellSize);
 }
 
 /** Edge-to-edge void between two pads (≤0 = touching / overlapping). */
@@ -871,8 +891,9 @@ export interface AutoBridgeLink {
 }
 
 /**
- * Auto bridges only when pads are clearly separated.
- * Default abutting 3×3 has gap≈0 → no bridges. Move a pad → void opens → bridge.
+ * Auto bridges only when at least one pad has been moved off its grid home
+ * and a real air gap exists. Caps to a few nearest links per pad so districts
+ * never explode into hundreds of rope meshes (perf + visual).
  */
 export function computeAutoBridges(
   state: PlazaPlotsState,
@@ -883,11 +904,17 @@ export function computeAutoBridges(
   const minGap = bridgeMinGap(cellSize);
   const maxGap = bridgeMaxGap(cellSize);
   const list = state.plots.filter((p) => p.districtId === d.id);
-  const links: AutoBridgeLink[] = [];
+  // Fast path: nothing moved → zero auto bridges (default plaza)
+  if (!list.some((p) => plotIsDisplaced(p, d))) return [];
+
+  type Cand = AutoBridgeLink & { key: string };
+  const candidates: Cand[] = [];
   for (let i = 0; i < list.length; i++) {
     for (let j = i + 1; j < list.length; j++) {
       const a = list[i]!;
       const b = list[j]!;
+      // Require a real fracture: at least one pad left its home cell
+      if (!plotIsDisplaced(a, d) && !plotIsDisplaced(b, d)) continue;
       const hasPlayerBridge =
         a.buildings.some((x) => x.kind === 'bridge' && x.bridgeToPlotId === b.id) ||
         b.buildings.some((x) => x.kind === 'bridge' && x.bridgeToPlotId === a.id);
@@ -902,8 +929,9 @@ export function computeAutoBridges(
       if (gap < minGap || gap > maxGap) continue;
       const ux = dx / dist;
       const uz = dz / dist;
-      // Exact facing rims — bridge hangs in the open space only
-      links.push({
+      const key = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
+      candidates.push({
+        key,
         fromId: a.id,
         toId: b.id,
         ax: pa.x + ux * half,
@@ -913,6 +941,27 @@ export function computeAutoBridges(
         gap,
       });
     }
+  }
+  // Prefer shortest gaps; keep at most 2 bridges per plot (local connectors only)
+  candidates.sort((x, y) => x.gap - y.gap);
+  const degree = new Map<string, number>();
+  const links: AutoBridgeLink[] = [];
+  const MAX_PER_PLOT = 2;
+  for (const c of candidates) {
+    const da = degree.get(c.fromId) ?? 0;
+    const db = degree.get(c.toId) ?? 0;
+    if (da >= MAX_PER_PLOT || db >= MAX_PER_PLOT) continue;
+    degree.set(c.fromId, da + 1);
+    degree.set(c.toId, db + 1);
+    links.push({
+      fromId: c.fromId,
+      toId: c.toId,
+      ax: c.ax,
+      az: c.az,
+      bx: c.bx,
+      bz: c.bz,
+      gap: c.gap,
+    });
   }
   return links;
 }

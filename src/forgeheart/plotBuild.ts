@@ -479,118 +479,166 @@ function makeSolidStructure(
  * Rope-and-plank sky bridge along local +Z by default; facing rotates yaw.
  * facing: 0=+X 1=+Z 2=-X 3=-Z
  */
+/** Shared mats so hundreds of bridges don't allocate unique materials. */
+let _bridgeMatsSolid: {
+  wood: THREE.MeshStandardMaterial;
+  rope: THREE.MeshStandardMaterial;
+  post: THREE.MeshStandardMaterial;
+} | null = null;
+let _bridgeMatsGhost: {
+  wood: THREE.MeshStandardMaterial;
+  rope: THREE.MeshStandardMaterial;
+  post: THREE.MeshStandardMaterial;
+} | null = null;
+
+function bridgeMats(ghost: boolean) {
+  if (ghost) {
+    if (!_bridgeMatsGhost) {
+      _bridgeMatsGhost = {
+        wood: new THREE.MeshStandardMaterial({
+          color: 0x8b5a2b,
+          roughness: 0.92,
+          metalness: 0.04,
+          transparent: true,
+          opacity: 0.75,
+          depthWrite: false,
+          emissive: 0x3a2208,
+          emissiveIntensity: 0.15,
+        }),
+        rope: new THREE.MeshStandardMaterial({
+          color: 0xc9a66a,
+          roughness: 0.88,
+          metalness: 0.08,
+          transparent: true,
+          opacity: 0.75,
+          depthWrite: false,
+          emissive: 0x554418,
+          emissiveIntensity: 0.12,
+        }),
+        post: new THREE.MeshStandardMaterial({
+          color: 0x5c3d28,
+          roughness: 0.85,
+          metalness: 0.08,
+          transparent: true,
+          opacity: 0.75,
+          depthWrite: false,
+          emissive: 0x2a1810,
+          emissiveIntensity: 0.1,
+        }),
+      };
+    }
+    return _bridgeMatsGhost;
+  }
+  if (!_bridgeMatsSolid) {
+    _bridgeMatsSolid = {
+      wood: new THREE.MeshStandardMaterial({
+        color: 0x8b5a2b,
+        roughness: 0.92,
+        metalness: 0.04,
+        emissive: 0x3a2208,
+        emissiveIntensity: 0.02,
+      }),
+      rope: new THREE.MeshStandardMaterial({
+        color: 0xc9a66a,
+        roughness: 0.88,
+        metalness: 0.08,
+        emissive: 0x554418,
+        emissiveIntensity: 0.02,
+      }),
+      post: new THREE.MeshStandardMaterial({
+        color: 0x5c3d28,
+        roughness: 0.85,
+        metalness: 0.08,
+        emissive: 0x2a1810,
+        emissiveIntensity: 0.02,
+      }),
+    };
+  }
+  return _bridgeMatsSolid;
+}
+
+// Shared low-poly geometries (scaled/positioned per instance)
+const _postGeo = new THREE.BoxGeometry(0.1, 1.05, 0.1);
+const _plankGeo = new THREE.BoxGeometry(1, 0.065, 0.38);
+const _ropeGeo = new THREE.CylinderGeometry(0.028, 0.028, 1, 4);
+
 /**
  * Rope-plank sky bridge (island style).
  * Local +Z is the open-gap span; end posts sit on each platform rim and
  * planks hang only across the void between them.
- * @param widthMul visual width (≈1.2–1.6 island look; avoid huge decks)
- * @param lengthOverride edge-to-edge gap length in world units
+ * Lightweight mesh budget for city-scale use.
  */
 export function buildRopePlankBridgeMesh(
   cellSize: number,
   facing: number,
   ghost = false,
-  opacityOverride?: number,
+  _opacityOverride?: number,
   widthMul = 1,
   lengthOverride?: number,
 ): THREE.Group {
   const g = new THREE.Group();
   g.name = 'RopePlankBridge';
   const w = Math.max(0.9, Math.min(widthMul, 2.2));
-  // Narrow walkway like floating-island references
   const halfW = 0.45 * w;
   const len = Math.max(1.2, lengthOverride ?? cellSize * 0.95);
   const halfL = len * 0.5;
-  const opacity = Math.max(0.4, opacityOverride ?? (ghost ? 0.75 : 1));
-  const wood = new THREE.MeshStandardMaterial({
-    color: 0x8b5a2b,
-    roughness: 0.92,
-    metalness: 0.04,
-    transparent: true,
-    opacity,
-    depthWrite: !ghost,
-    depthTest: true,
-    emissive: 0x3a2208,
-    emissiveIntensity: ghost ? 0.15 : 0.02,
-  });
-  const rope = new THREE.MeshStandardMaterial({
-    color: 0xc9a66a,
-    roughness: 0.88,
-    metalness: 0.08,
-    transparent: true,
-    opacity,
-    depthWrite: !ghost,
-    depthTest: true,
-    emissive: 0x554418,
-    emissiveIntensity: ghost ? 0.12 : 0.02,
-  });
-  const postMat = new THREE.MeshStandardMaterial({
-    color: 0x5c3d28,
-    roughness: 0.85,
-    metalness: 0.08,
-    transparent: true,
-    opacity,
-    depthWrite: !ghost,
-    depthTest: true,
-    emissive: 0x2a1810,
-    emissiveIntensity: ghost ? 0.1 : 0.02,
-  });
+  const mats = bridgeMats(ghost);
 
   const yaw = (facing % 4) * (Math.PI / 2);
   g.rotation.y = yaw;
 
-  // End posts at each rim (±halfL = bridge endpoints on platform edges)
-  const postH = 1.05;
+  // Shared geo/mats — mark so rebuild dispose does not free them
+  const markShared = (m: THREE.Mesh) => {
+    m.userData.sharedAssets = true;
+  };
+
+  // End posts at each rim
   for (const z of [-halfL, halfL]) {
     for (const x of [-halfW, halfW]) {
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, postH, 0.1), postMat);
-      post.position.set(x, postH * 0.5, z);
+      const post = new THREE.Mesh(_postGeo, mats.post);
+      post.position.set(x, 0.525, z);
+      markShared(post);
       g.add(post);
     }
   }
 
-  // Planks only in the open void between posts
-  const plankCount = Math.max(5, Math.round(len / 0.6));
+  // Fewer planks — still reads as a rope bridge
+  const plankCount = Math.max(4, Math.min(14, Math.round(len / 1.1)));
   const plankW = halfW * 2 * 0.92;
-  const sagAmp = Math.min(0.55, Math.max(0.14, len * 0.045));
+  const sagAmp = Math.min(0.45, Math.max(0.12, len * 0.04));
   for (let i = 0; i < plankCount; i++) {
     const t = plankCount <= 1 ? 0.5 : i / (plankCount - 1);
     const z = -halfL * 0.9 + t * len * 0.9;
     const sag = Math.sin(t * Math.PI) * sagAmp;
-    const plank = new THREE.Mesh(
-      new THREE.BoxGeometry(plankW, 0.065, Math.min(0.42, (len / plankCount) * 0.7)),
-      wood,
-    );
+    const plank = new THREE.Mesh(_plankGeo, mats.wood);
+    plank.scale.set(plankW, 1, 1);
     plank.position.set(0, 0.12 - sag, z);
-    plank.rotation.y = ((i % 3) - 1) * 0.03;
+    markShared(plank);
     g.add(plank);
   }
 
-  // Rope rails post-to-post with matching sag
-  const ropeSegs = Math.max(10, Math.round(len / 0.55));
+  // Single upper rope rail per side (4–10 segs) — was 2 rails × many segs
+  const ropeSegs = Math.max(4, Math.min(10, Math.round(len / 1.4)));
   for (const x of [-halfW * 0.98, halfW * 0.98]) {
-    for (const yBase of [0.92, 0.38]) {
-      const railSag = yBase > 0.5 ? sagAmp * 1.15 : sagAmp * 0.85;
-      for (let i = 0; i < ropeSegs; i++) {
-        const t0 = i / ropeSegs;
-        const t1 = (i + 1) / ropeSegs;
-        const z0 = -halfL + t0 * len;
-        const z1 = -halfL + t1 * len;
-        const y0 = yBase - Math.sin(t0 * Math.PI) * railSag;
-        const y1 = yBase - Math.sin(t1 * Math.PI) * railSag;
-        const dy = y1 - y0;
-        const dz = z1 - z0;
-        const segLen = Math.hypot(dy, dz);
-        if (segLen < 0.02) continue;
-        const seg = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.028, 0.028, segLen, 5),
-          rope,
-        );
-        seg.position.set(x, (y0 + y1) / 2, (z0 + z1) / 2);
-        const dir = new THREE.Vector3(0, dy, dz).normalize();
-        seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-        g.add(seg);
-      }
+    const yBase = 0.9;
+    for (let i = 0; i < ropeSegs; i++) {
+      const t0 = i / ropeSegs;
+      const t1 = (i + 1) / ropeSegs;
+      const z0 = -halfL + t0 * len;
+      const z1 = -halfL + t1 * len;
+      const y0 = yBase - Math.sin(t0 * Math.PI) * sagAmp * 1.1;
+      const y1 = yBase - Math.sin(t1 * Math.PI) * sagAmp * 1.1;
+      const dy = y1 - y0;
+      const dz = z1 - z0;
+      const segLen = Math.hypot(dy, dz);
+      if (segLen < 0.02) continue;
+      const seg = new THREE.Mesh(_ropeGeo, mats.rope);
+      seg.scale.set(1, segLen, 1);
+      seg.position.set(x, (y0 + y1) / 2, (z0 + z1) / 2);
+      const dir = new THREE.Vector3(0, dy, dz).normalize();
+      seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      markShared(seg);
+      g.add(seg);
     }
   }
 
@@ -638,33 +686,25 @@ export function buildWorldSpanRopeBridge(
     const uz = dz / len;
     const px = -uz;
     const pz = ux;
-    const top = deckY + 0.38;
-    const bot = deckY - 0.35;
-    const segs = Math.max(2, Math.ceil(len / 3.5));
-    for (let i = 0; i < segs; i++) {
-      const t0 = i / segs;
-      const t1 = (i + 1) / segs;
-      const tm = (t0 + t1) / 2;
-      const mx = ax + dx * tm;
-      const mz = az + dz * tm;
-      const segLen = (len / segs) * 0.96;
-      const extX = Math.abs(ux) * (segLen / 2) + Math.abs(px) * halfW + 0.12;
-      const extZ = Math.abs(uz) * (segLen / 2) + Math.abs(pz) * halfW + 0.12;
-      colliders.push({
-        min: new THREE.Vector3(mx - extX, bot, mz - extZ),
-        max: new THREE.Vector3(mx + extX, top, mz + extZ),
-        kind: 'floor',
-      });
-    }
+    // One floor box + two side boxes (was many segs) — cheap spatial queries
+    const mx = (ax + bx) / 2;
+    const mz = (az + bz) / 2;
+    const extX = Math.abs(ux) * (len / 2) + Math.abs(px) * halfW + 0.15;
+    const extZ = Math.abs(uz) * (len / 2) + Math.abs(pz) * halfW + 0.15;
+    colliders.push({
+      min: new THREE.Vector3(mx - extX, deckY - 0.35, mz - extZ),
+      max: new THREE.Vector3(mx + extX, deckY + 0.38, mz + extZ),
+      kind: 'floor',
+    });
     const sideH = 1.0;
     for (const side of [-1, 1]) {
-      const sx = (ax + bx) / 2 + px * halfW * 1.05 * side;
-      const sz = (az + bz) / 2 + pz * halfW * 1.05 * side;
-      const extX = Math.abs(ux) * (len / 2) + 0.1;
-      const extZ = Math.abs(uz) * (len / 2) + 0.1;
+      const sx = mx + px * halfW * 1.05 * side;
+      const sz = mz + pz * halfW * 1.05 * side;
+      const sExtX = Math.abs(ux) * (len / 2) + 0.12;
+      const sExtZ = Math.abs(uz) * (len / 2) + 0.12;
       colliders.push({
-        min: new THREE.Vector3(sx - extX, deckY - 0.15, sz - extZ),
-        max: new THREE.Vector3(sx + extX, deckY + sideH, sz + extZ),
+        min: new THREE.Vector3(sx - sExtX, deckY - 0.15, sz - sExtZ),
+        max: new THREE.Vector3(sx + sExtX, deckY + sideH, sz + sExtZ),
         kind: 'solid',
       });
     }
