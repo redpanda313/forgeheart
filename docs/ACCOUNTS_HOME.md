@@ -20,25 +20,47 @@ GitHub Pages (static game)  ──HTTPS──►  Cloudflare Tunnel  ──►  
 
 ---
 
-## Run on your home computer
+## What you must run (home computer)
+
+Accounts are **not** hosted on GitHub. The static game is. Your Mac runs the login API.
+
+### Every time you want cloud logins to work
+
+**Terminal 1 — account API (leave open)**
+```bash
+cd /path/to/forgeheart
+npm run accounts
+```
+
+**Terminal 2 — public tunnel (leave open)**  
+Install once: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/
 
 ```bash
-# Terminal 1 — account API
-npm run accounts
-
-# Terminal 2 — public tunnel (install cloudflared once)
 cloudflared tunnel --url http://127.0.0.1:8787
 ```
 
-Copy the printed `https://….trycloudflare.com` URL.
+You’ll get a URL like `https://random-words.trycloudflare.com`.
 
-### Title screen (any browser)
+### Auto-fill that URL for all players (recommended once per tunnel)
 
-1. Paste that URL into **Server URL**  
-2. **Create account** or **Log in** (any username · any password, including empty)  
-3. **First login on this device:** local guest saves are uploaded into **empty** account slots (cloud slots that already have a save are never overwritten)  
-4. Pick **Slot 1–3** · New Game / Continue  
-5. Saves while logged in write **local + cloud**
+1. Put the tunnel URL in `public/account-api.json`:
+   ```json
+   { "url": "https://YOUR-SUBDOMAIN.trycloudflare.com" }
+   ```
+2. Commit + push `main` (GitHub Pages rebuilds).
+3. Title screen **auto-populates Server URL** from that file.
+
+**Note:** free `trycloudflare.com` URLs **change every time** you restart cloudflared.  
+When the URL changes: update `account-api.json` and push again, **or** paste once in the title field (browser remembers it).
+
+**Stable URL (best):** Cloudflare named tunnel + your own hostname so you never change the json again.
+
+### Title screen
+
+1. Server URL should already be filled (config file, last visit, or localhost when developing).  
+2. **Create account** or **Log in**  
+3. Local guest saves migrate into **empty** cloud slots  
+4. Pick slot · New Game / Continue  
 
 `Test server` pings `/health`.
 

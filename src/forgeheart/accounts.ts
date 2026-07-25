@@ -10,6 +10,9 @@ const TOKEN_KEY = 'forgeheart-account-token';
 const USER_KEY = 'forgeheart-account-user';
 const API_URL_KEY = 'forgeheart-account-api-url';
 
+/** Filled once from public/account-api.json (GitHub Pages auto-default). */
+let bundledApiUrl = '';
+
 export interface AccountSlotInfo {
   index: number;
   empty: boolean;
@@ -29,7 +32,13 @@ function trimUrl(u: string): string {
   return u.trim().replace(/\/+$/, '');
 }
 
-/** Runtime API base. Build-time env wins only as default. */
+/**
+ * Resolve API base, in order:
+ * 1. localStorage (player override / last successful URL)
+ * 2. public/account-api.json bundled with the site
+ * 3. VITE_ACCOUNT_API_URL at build time
+ * 4. localhost when playing on this machine
+ */
 export function getAccountApiUrl(): string {
   try {
     const stored = localStorage.getItem(API_URL_KEY);
@@ -37,6 +46,7 @@ export function getAccountApiUrl(): string {
   } catch {
     /* ignore */
   }
+  if (bundledApiUrl) return bundledApiUrl;
   const env = (import.meta as ImportMeta & { env?: { VITE_ACCOUNT_API_URL?: string } }).env
     ?.VITE_ACCOUNT_API_URL;
   if (env && String(env).trim()) return trimUrl(String(env));
@@ -55,6 +65,36 @@ export function setAccountApiUrl(url: string): void {
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Load default server URL from the static site (account-api.json).
+ * Safe to call multiple times; no-ops if already loaded or offline.
+ */
+export async function loadAccountApiConfig(): Promise<string> {
+  // Already have a player override
+  try {
+    const stored = localStorage.getItem(API_URL_KEY);
+    if (stored && stored.trim()) return trimUrl(stored);
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    const base = (import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env?.BASE_URL || './';
+    const url = `${base}account-api.json`.replace(/([^:]\/)\/+/g, '$1');
+    const res = await fetch(url, { cache: 'no-store' });
+    if (res.ok) {
+      const j = (await res.json()) as { url?: string };
+      if (j?.url && String(j.url).trim()) {
+        bundledApiUrl = trimUrl(String(j.url));
+      }
+    }
+  } catch {
+    /* missing file / offline */
+  }
+
+  return getAccountApiUrl();
 }
 
 export function getSession(): AccountSession | null {

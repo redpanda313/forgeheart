@@ -1,0 +1,4 @@
+{
+  "url": "",
+  "hint": "Paste your public account-server URL here (cloudflared tunnel), then commit & push so GitHub Pages players get it automatically. Example: https://xxxx.trycloudflare.com"
+}

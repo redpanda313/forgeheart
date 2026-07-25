@@ -16,6 +16,7 @@ import {
 import {
   getAccountApiUrl,
   setAccountApiUrl,
+  loadAccountApiConfig,
   getSession,
   isLoggedIn,
   loginAccount,
@@ -77,8 +78,14 @@ function syncAccountChrome() {
   btnRegister?.classList.toggle('hidden', logged);
   if (accountUsername) accountUsername.disabled = logged;
   if (accountPassword) accountPassword.disabled = logged;
-  if (accountApiUrl && !accountApiUrl.value) {
-    accountApiUrl.value = getAccountApiUrl();
+  // Always keep the field filled from resolved URL (localStorage / site config / localhost)
+  if (accountApiUrl) {
+    const resolved = getAccountApiUrl();
+    if (resolved && accountApiUrl.value.trim() !== resolved) {
+      accountApiUrl.value = resolved;
+    } else if (!accountApiUrl.value.trim() && resolved) {
+      accountApiUrl.value = resolved;
+    }
   }
 }
 
@@ -262,6 +269,7 @@ btnLogin?.addEventListener('click', () => {
   void (async () => {
     const form = readAuthForm();
     if (!form) return;
+    setAccountApiUrl(form.apiUrl); // remember for next visit
     setAccountMsg('Logging in…');
     const r = await loginAccount(form.username, form.password);
     if (!r.ok) {
@@ -276,6 +284,7 @@ btnRegister?.addEventListener('click', () => {
   void (async () => {
     const form = readAuthForm();
     if (!form) return;
+    setAccountApiUrl(form.apiUrl);
     setAccountMsg('Creating account…');
     const r = await registerAccount(form.username, form.password);
     if (!r.ok) {
@@ -301,6 +310,7 @@ btnPing?.addEventListener('click', () => {
     if (accountApiUrl) setAccountApiUrl(accountApiUrl.value);
     setAccountMsg('Pinging server…');
     const r = await pingAccountServer();
+    if (r.ok && accountApiUrl?.value) setAccountApiUrl(accountApiUrl.value);
     setAccountMsg(r.msg, r.ok ? 'ok' : 'error');
   })();
 });
@@ -459,12 +469,23 @@ if (mobileHint && isMobileBrowser()) {
 }
 
 async function bootstrapTitle() {
+  // Auto-fill server URL from localStorage, then public/account-api.json, then localhost
+  await loadAccountApiConfig();
   syncAccountChrome();
+
+  const api = getAccountApiUrl();
+  if (api) {
+    // Remember resolved default so next visit pre-fills even without the json file
+    if (accountApiUrl && !localStorage.getItem('forgeheart-account-api-url')) {
+      // Don't force-persist bundled URL until user interacts — only show it.
+      // Successful login/ping will persist via setAccountApiUrl.
+    }
+  }
+
   if (isLoggedIn() && getAccountApiUrl()) {
     setAccountMsg('Restoring cloud slots…');
     await syncCloudAfterAuth(`Cloud ready · ${getSession()?.username ?? 'player'}`);
     if (!cloudMode) {
-      // syncCloudAfterAuth left guest mode on failure
       if (/Not logged in|Wrong|401/i.test(accountMsg?.textContent || '')) {
         await logoutAccount();
         syncAccountChrome();
@@ -472,6 +493,13 @@ async function bootstrapTitle() {
     }
   } else {
     cloudMode = false;
+    if (!getAccountApiUrl()) {
+      setAccountMsg(
+        'Guest mode. For cloud saves: run account server at home, tunnel it, put the URL in Server URL (or public/account-api.json).',
+      );
+    } else {
+      setAccountMsg(`Server URL ready · ${getAccountApiUrl()} · create account or log in`, 'ok');
+    }
   }
   selectedSlot = getLastSlotIndex() ?? selectedSlot;
   refreshSlots();
