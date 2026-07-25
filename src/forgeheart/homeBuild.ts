@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import type { Mats } from './materials';
-import { buildEnterableShell } from './enterableBuilding';
+import { buildEnterableShell, rotateOffsetColliders } from './enterableBuilding';
 import type { Collider } from './level';
 import type { HomeLayout, HomeRoom, HomeRoomKind, HomeTier, SiteProp } from './economy';
 import { CITY_DISTRICTS } from './economy';
@@ -278,30 +278,8 @@ function addHomePropMesh(
 }
 
 /** Rotate an AABB around Y then translate into plot-local space. */
-function offsetYawCollider(c: Collider, lx: number, lz: number, yaw: number): Collider {
-  const cos = Math.cos(yaw);
-  const sin = Math.sin(yaw);
-  const corners = [
-    new THREE.Vector3(c.min.x, c.min.y, c.min.z),
-    new THREE.Vector3(c.max.x, c.min.y, c.min.z),
-    new THREE.Vector3(c.min.x, c.min.y, c.max.z),
-    new THREE.Vector3(c.max.x, c.min.y, c.max.z),
-    new THREE.Vector3(c.min.x, c.max.y, c.min.z),
-    new THREE.Vector3(c.max.x, c.max.y, c.min.z),
-    new THREE.Vector3(c.min.x, c.max.y, c.max.z),
-    new THREE.Vector3(c.max.x, c.max.y, c.max.z),
-  ].map((p) => {
-    const rx = p.x * cos - p.z * sin;
-    const rz = p.x * sin + p.z * cos;
-    return new THREE.Vector3(lx + rx, p.y, lz + rz);
-  });
-  const min = corners[0]!.clone();
-  const max = corners[0]!.clone();
-  for (const p of corners) {
-    min.min(p);
-    max.max(p);
-  }
-  return { min, max, kind: c.kind };
+function offsetYawColliders(cols: Collider[], lx: number, lz: number, yaw: number): Collider[] {
+  return rotateOffsetColliders(cols, lx, 0, lz, yaw);
 }
 
 function roomLocalPoint(lx: number, lz: number, yaw: number, ox: number, oy: number, oz: number): THREE.Vector3 {
@@ -398,21 +376,14 @@ function addRoomWing(
     wing.add(box(wood, 0.35, 1.2, 0.35, 2.2, 0.7, -2.2));
     wing.add(box(cloth, 1.2, 0.8, 1.2, 0, 0.55, 0));
     g.add(wing);
-    cols.push(
-      liftCollider(
-        offsetYawCollider(
-          {
-            min: new THREE.Vector3(-2.75, 0, -2.75),
-            max: new THREE.Vector3(2.75, 0.2, 2.75),
-            kind: 'floor',
-          },
-          room.lx,
-          room.lz,
-          room.yaw,
-        ),
-        contentY,
-      ),
-    );
+    for (const c of offsetYawColliders(
+      [{ min: new THREE.Vector3(-2.75, 0, -2.75), max: new THREE.Vector3(2.75, 0.2, 2.75), kind: 'floor' }],
+      room.lx,
+      room.lz,
+      room.yaw,
+    )) {
+      cols.push(liftCollider(c, contentY));
+    }
     return out;
   }
 
@@ -456,10 +427,11 @@ function addRoomWing(
     wing.add(box(wood, 1.6, 0.45, 0.8, 1.2, 0.4, -1.0));
   }
   g.add(wing);
-  for (const c of shell.colliders) {
-    // Ground floor of wing is covered by home pad — keep upper floors + solids
-    if (c.kind === 'floor' && c.max.y < 1.0) continue;
-    cols.push(liftCollider(offsetYawCollider(c, room.lx, room.lz, room.yaw), contentY));
+  {
+    const keep = shell.colliders.filter((c) => !(c.kind === 'floor' && c.max.y < 1.0));
+    for (const c of offsetYawColliders(keep, room.lx, room.lz, room.yaw)) {
+      cols.push(liftCollider(c, contentY));
+    }
   }
   return out;
 }

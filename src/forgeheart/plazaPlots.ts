@@ -238,6 +238,11 @@ export interface PlazaPlotsState {
    * wrongly placed bridges disappear; new bridges can still be built later.
    */
   bridgesClearedV1?: boolean;
+  /**
+   * One-time: snap all pad worldX/worldZ/rotation back to grid home
+   * (clears free-move legacy saves after pad transform removal).
+   */
+  padsResetV1?: boolean;
 }
 
 export interface DistrictLite {
@@ -669,6 +674,21 @@ export function clearAllPlacedBridges(state: PlazaPlotsState): number {
   return removed;
 }
 
+/** Snap every pad back to its default grid center and clear free rotation. */
+export function resetAllPadPlacements(
+  state: PlazaPlotsState,
+  districts: DistrictLite[],
+): void {
+  for (const p of state.plots) {
+    const d = districts.find((x) => x.id === p.districtId);
+    if (!d) continue;
+    const home = plotWorldCenter(d, p.cellX, p.cellY);
+    p.worldX = home.x;
+    p.worldZ = home.z;
+    p.rotation = 0;
+  }
+}
+
 export function ensurePlazaPlots(
   state: PlazaPlotsState | null | undefined,
   districts: DistrictLite[],
@@ -682,6 +702,11 @@ export function ensurePlazaPlots(
   // Always strip bridges (feature removed)
   clearAllPlacedBridges(state);
   state.bridgesClearedV1 = true;
+  // One-time: undo free-moved / rotated pads from legacy saves
+  if (!state.padsResetV1) {
+    resetAllPadPlacements(state, districts);
+    state.padsResetV1 = true;
+  }
   return state;
 }
 
@@ -723,6 +748,7 @@ export function quotePlotBuyPrice(
 export function plazaPlotsToSave(state: PlazaPlotsState) {
   return {
     bridgesClearedV1: !!state.bridgesClearedV1,
+    padsResetV1: !!state.padsResetV1,
     plots: state.plots.map((p) => ({
       id: p.id,
       districtId: p.districtId,
@@ -753,10 +779,15 @@ export function plazaPlotsFromSave(
   districts: DistrictLite[],
 ): PlazaPlotsState {
   if (!raw || typeof raw !== 'object') return emptyPlazaPlots(districts);
-  const o = raw as { plots?: unknown[]; bridgesClearedV1?: boolean };
+  const o = raw as {
+    plots?: unknown[];
+    bridgesClearedV1?: boolean;
+    padsResetV1?: boolean;
+  };
   if (!Array.isArray(o.plots) || !o.plots.length) return emptyPlazaPlots(districts);
   // One-time: legacy saves without this flag still hold bad bridge placements
   const alreadyCleared = !!o.bridgesClearedV1;
+  const padsAlreadyReset = !!o.padsResetV1;
   const plots: PlotState[] = [];
   for (const row of o.plots) {
     if (!row || typeof row !== 'object') continue;
@@ -813,7 +844,12 @@ export function plazaPlotsFromSave(
     }
   }
   return ensurePlazaPlots(
-    { plots, bridgesClearedV1: true },
+    {
+      plots,
+      bridgesClearedV1: true,
+      // Unset → ensurePlazaPlots runs pad snap once for legacy free-move saves
+      padsResetV1: padsAlreadyReset ? true : undefined,
+    },
     districts,
   );
 }

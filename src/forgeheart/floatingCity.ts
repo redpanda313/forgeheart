@@ -510,7 +510,8 @@ function buildBuilding(
   const g = new THREE.Group();
   g.name = `Building_${kind}`;
   const boxes: AttachedBox[] = [];
-  const floorH = 3.1;
+  // Clear headroom for full player jump without ceiling clip (~JUMP_H + PLAYER_H)
+  const floorH = 3.7;
   const nFloors = Math.max(1, floorsWanted);
 
   const wood = mats.wood;
@@ -568,8 +569,10 @@ function buildBuilding(
         }
       }
     }
-    addMesh(g, new THREE.BoxGeometry(w + 0.4, 0.25, d + 0.4), brass, 0, nFloors * floorH, 0);
-    boxes.push(attach(g, 0, nFloors * floorH - 0.05, 0, w + 0.4, 0.3, d + 0.4, 'floor'));
+    // Solid ceiling + walkable roof top (solid blocks jump pop-through)
+    addMesh(g, new THREE.BoxGeometry(w + 0.4, 0.32, d + 0.4), brass, 0, nFloors * floorH, 0);
+    boxes.push(attach(g, 0, nFloors * floorH - 0.05, 0, w + 0.4, 0.35, d + 0.4, 'solid'));
+    boxes.push(attach(g, 0, nFloors * floorH + 0.18, 0, w + 0.45, 0.22, d + 0.45, 'floor'));
     addMesh(g, new THREE.CylinderGeometry(0.08, 0.12, 2.2, 6), iron, 2, nFloors * floorH + 1.2, -2);
     plaque(g, mats, 'VOSS & CO.', 0, 2.6, d / 2 + 0.05, 0);
     return { group: g, boxes, footprint: Math.max(w, d) * 0.55 };
@@ -625,11 +628,12 @@ function buildBuilding(
     const w = 7;
     const d = 6.5;
     const doorW = 2.2;
+    const homeFloorH = floorH;
     for (let f = 0; f < Math.min(nFloors, 3); f++) {
-      const y = f * 2.85;
+      const y = f * homeFloorH;
       addMesh(g, new THREE.BoxGeometry(w, 0.2, d), wood, 0, y, 0);
       boxes.push(attach(g, 0, y - 0.02, 0, w, 0.28, d, 'floor'));
-      const wh = 2.7;
+      const wh = homeFloorH - 0.25;
       addMesh(g, new THREE.BoxGeometry(w, wh, 0.28), wood, 0, y + wh / 2, -d / 2);
       boxes.push(attach(g, 0, y, -d / 2, w, wh, 0.4, 'solid'));
       for (const sx of [-1, 1]) {
@@ -648,6 +652,11 @@ function buildBuilding(
         boxes.push(attach(g, 0, y, d / 2, w, wh, 0.4, 'solid'));
         addMesh(g, new THREE.BoxGeometry(1.2, 0.8, 0.05), glass, 0, y + 1.4, d / 2 + 0.1);
       }
+      // Between-floor solid ceiling so jumps don't pop through
+      if (f < Math.min(nFloors, 3) - 1) {
+        addMesh(g, new THREE.BoxGeometry(w, 0.18, d), wood, 0, y + homeFloorH - 0.08, 0);
+        boxes.push(attach(g, 0, y + homeFloorH - 0.15, 0, w, 0.25, d, 'solid'));
+      }
       addMesh(g, new THREE.BoxGeometry(1.6, 0.5, 0.7), mats.woodDark, 1.5, y + 0.3, -1);
       boxes.push(attach(g, 1.5, y, -1, 1.6, 0.55, 0.7, 'solid'));
       if (f < Math.min(nFloors, 3) - 1) {
@@ -656,8 +665,11 @@ function buildBuilding(
         }
       }
     }
-    const top = Math.min(nFloors, 3) * 2.85;
+    const top = Math.min(nFloors, 3) * homeFloorH;
     addMesh(g, new THREE.ConeGeometry(5.2, 2.2, 4), mats.copper, 0, top + 1.0, 0, 0, Math.PI / 4, 0);
+    // Solid roof plate under the cone
+    boxes.push(attach(g, 0, top - 0.05, 0, w + 0.3, 0.35, d + 0.3, 'solid'));
+    boxes.push(attach(g, 0, top + 0.2, 0, w + 0.35, 0.22, d + 0.35, 'floor'));
     plaque(g, mats, 'SKYFLAT 3B', 0, 2.2, d / 2 + 0.05, 0);
     return { group: g, boxes, footprint: Math.max(w, d) * 0.58 };
   }
@@ -665,7 +677,7 @@ function buildBuilding(
   if (kind === 'church') {
     const w = 8;
     const d = 12;
-    const naveH = 5.5;
+    const naveH = 5.8; // headroom for full jump
     const doorW = 2.8;
     addMesh(g, new THREE.BoxGeometry(w, 0.25, d), stone, 0, 0, 0);
     boxes.push(attach(g, 0, -0.02, 0, w, 0.32, d, 'floor'));
@@ -738,8 +750,13 @@ function buildBuilding(
         }
       }
     }
-    addMesh(g, new THREE.BoxGeometry(w + 0.3, 0.3, d + 0.3), brass, 0, Math.min(nFloors, 2) * floorH, 0);
-    boxes.push(attach(g, 0, Math.min(nFloors, 2) * floorH - 0.05, 0, w + 0.3, 0.3, d + 0.3, 'floor'));
+    addMesh(g, new THREE.BoxGeometry(w + 0.3, 0.32, d + 0.3), brass, 0, Math.min(nFloors, 2) * floorH, 0);
+    boxes.push(
+      attach(g, 0, Math.min(nFloors, 2) * floorH - 0.05, 0, w + 0.3, 0.35, d + 0.3, 'solid'),
+    );
+    boxes.push(
+      attach(g, 0, Math.min(nFloors, 2) * floorH + 0.18, 0, w + 0.35, 0.22, d + 0.35, 'floor'),
+    );
     plaque(g, mats, 'CLOUD ACADEMY', 0, 2.5, d / 2 + 0.05, 0);
     return { group: g, boxes, footprint: Math.max(w, d) * 0.52 };
   }
