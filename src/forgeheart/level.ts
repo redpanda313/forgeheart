@@ -58,10 +58,19 @@ export interface LevelBuilt {
   };
 }
 
-const WALL_H = 3.2;
-export const JUMP_H = WALL_H * 0.5;
+/**
+ * Jump apex height (fixed). Do not derive from room height or taller rooms
+ * would raise jump and reintroduce ceiling clips.
+ */
+export const JUMP_H = 1.6;
 export const PLAYER_H = 1.6;
 export const PLAYER_R = 0.35;
+
+/**
+ * Tutorial workshop lab height — must clear standing head + JUMP_H + margin
+ * (~PLAYER_H*0.9 + JUMP_H + 0.4 ≈ 3.45). Use solid ceiling so jumps block.
+ */
+const LAB_H = 4.2;
 
 function box(
   _mats: Mats,
@@ -72,6 +81,7 @@ function box(
   x: number,
   y: number,
   z: number,
+  kind?: Collider['kind'],
 ): { mesh: THREE.Mesh; col: Collider } {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
   mesh.position.set(x, y, z);
@@ -80,6 +90,7 @@ function box(
   const col: Collider = {
     min: new THREE.Vector3(x - w / 2, y - h / 2, z - d / 2),
     max: new THREE.Vector3(x + w / 2, y + h / 2, z + d / 2),
+    kind,
   };
   return { mesh, col };
 }
@@ -187,7 +198,7 @@ export function buildBrotherWorkshop(): LevelBuilt {
   };
 
   const wall = (w: number, h: number, d: number, x: number, y: number, z: number, m = mats.brass) => {
-    const b = box(mats, m, w, h, d, x, y, z);
+    const b = box(mats, m, w, h, d, x, y, z, 'solid');
     add(b.mesh, b.col);
     return b;
   };
@@ -202,27 +213,28 @@ export function buildBrotherWorkshop(): LevelBuilt {
     add(f.mesh);
   }
 
-  // Outer walls (north wall has door gap later)
-  wall(22.5, WALL_H, 0.45, 0, WALL_H / 2, -8, mats.iron); // south
-  wall(0.45, WALL_H, 16.5, -11, WALL_H / 2, 0, mats.iron); // west
-  wall(0.45, WALL_H, 16.5, 11, WALL_H / 2, 0, mats.brassDark); // east
+  // Outer walls (north wall has door gap later) — tall enough that a full jump
+  // cannot drive the head through the solid ceiling.
+  wall(22.5, LAB_H, 0.45, 0, LAB_H / 2, -8, mats.iron); // south
+  wall(0.45, LAB_H, 16.5, -11, LAB_H / 2, 0, mats.iron); // west
+  wall(0.45, LAB_H, 16.5, 11, LAB_H / 2, 0, mats.brassDark); // east
 
   // North wall with doorway (center gap ~4.4 wide between wall edges at ±2.2)
-  wall(9, WALL_H, 0.45, -6.7, WALL_H / 2, 8, mats.brass);
-  wall(9, WALL_H, 0.45, 6.7, WALL_H / 2, 8, mats.brass);
+  wall(9, LAB_H, 0.45, -6.7, LAB_H / 2, 8, mats.brass);
+  wall(9, LAB_H, 0.45, 6.7, LAB_H / 2, 8, mats.brass);
   // Sealed iron doors — full opening width + height so player cannot leave early.
   // Removed entirely on breach (meshes + colliders).
   {
     // Two leaves overlapping walls slightly so no squeeze gap at the jambs
-    const doorH = WALL_H + 0.05;
+    const doorH = LAB_H + 0.05;
     const doorD = 0.55; // thick enough that substeps can't tunnel
-    const left = box(mats, mats.ironDark, 2.45, doorH, doorD, -1.15, doorH / 2, 8);
-    const right = box(mats, mats.ironDark, 2.45, doorH, doorD, 1.15, doorH / 2, 8);
+    const left = box(mats, mats.ironDark, 2.45, doorH, doorD, -1.15, doorH / 2, 8, 'solid');
+    const right = box(mats, mats.ironDark, 2.45, doorH, doorD, 1.15, doorH / 2, 8, 'solid');
     // Center seam + top lintel (visual weight + extra block)
-    const seam = box(mats, mats.brass, 0.28, doorH, doorD + 0.08, 0, doorH / 2, 8);
-    const lintel = box(mats, mats.brass, 5.0, 0.35, doorD + 0.12, 0, doorH - 0.1, 8);
+    const seam = box(mats, mats.brass, 0.28, doorH, doorD + 0.08, 0, doorH / 2, 8, 'solid');
+    const lintel = box(mats, mats.brass, 5.0, 0.35, doorD + 0.12, 0, doorH - 0.1, 8, 'solid');
     // Invisible full-slot blocker (belt-and-suspenders collision)
-    const seal = box(mats, mats.iron, 4.7, doorH, 0.7, 0, doorH / 2, 8);
+    const seal = box(mats, mats.iron, 4.7, doorH, 0.7, 0, doorH / 2, 8, 'solid');
     seal.mesh.visible = false;
     for (const d of [left, right, seam, lintel, seal]) {
       group.add(d.mesh);
@@ -233,7 +245,7 @@ export function buildBrotherWorkshop(): LevelBuilt {
     }
     // Decorative rivets / bars (no colliders)
     for (const x of [-1.8, -0.5, 0.5, 1.8]) {
-      for (const y of [0.6, 1.5, 2.4]) {
+      for (const y of [0.8, 1.8, 2.9, 3.6]) {
         const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 6), mats.brass);
         rivet.position.set(x, y, 8.32);
         group.add(rivet);
@@ -242,14 +254,14 @@ export function buildBrotherWorkshop(): LevelBuilt {
     }
   }
 
-  // Ceiling
+  // Ceiling — solid so jump hits underside (thin untagged slabs were treated as floors)
   {
-    const ceil = box(mats, mats.woodDark, 22, 0.3, 16.5, 0, WALL_H + 0.1, 0);
+    const ceil = box(mats, mats.woodDark, 22, 0.35, 16.5, 0, LAB_H + 0.12, 0, 'solid');
     add(ceil.mesh, ceil.col);
   }
   for (const bx of [-7, 0, 7]) {
-    const beam = box(mats, mats.wood, 0.4, 0.35, 15, bx, WALL_H - 0.25, 0);
-    add(beam.mesh);
+    const beam = box(mats, mats.wood, 0.4, 0.35, 15, bx, LAB_H - 0.3, 0, 'solid');
+    add(beam.mesh, beam.col);
   }
 
   // Big industrial windows (west + east)
