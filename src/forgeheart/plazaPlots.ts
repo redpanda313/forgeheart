@@ -200,7 +200,24 @@ export function plotIsDisplaced(
   return Math.hypot(live.x - home.x, live.z - home.z) > plotDisplaceEpsilon(home.cellSize);
 }
 
-/** Edge-to-edge void between two pads (≤0 = touching / overlapping). */
+/**
+ * Midpoint of the square platform face that looks toward a neighbor.
+ * Short ends of bridges sit here (edge of pad A ↔ edge of pad B).
+ */
+export function platformFacingEdgeMid(
+  cx: number,
+  cz: number,
+  half: number,
+  towardX: number,
+  towardZ: number,
+): { x: number; z: number } {
+  if (Math.abs(towardX) >= Math.abs(towardZ)) {
+    return { x: cx + Math.sign(towardX || 1) * half, z: cz };
+  }
+  return { x: cx, z: cz + Math.sign(towardZ || 1) * half };
+}
+
+/** Edge-to-edge void between facing sides (≤0 = touching / overlapping). */
 export function platformEdgeGap(
   a: PlotState,
   b: PlotState,
@@ -210,7 +227,11 @@ export function platformEdgeGap(
   const half = plotPlatformHalf(cellSize);
   const pa = plotLivePos(a, d);
   const pb = plotLivePos(b, d);
-  return Math.hypot(pb.x - pa.x, pb.z - pa.z) - 2 * half;
+  const dx = pb.x - pa.x;
+  const dz = pb.z - pa.z;
+  const ma = platformFacingEdgeMid(pa.x, pa.z, half, dx, dz);
+  const mb = platformFacingEdgeMid(pb.x, pb.z, half, -dx, -dz);
+  return Math.hypot(mb.x - ma.x, mb.z - ma.z);
 }
 
 /** True when there is open space between pads for a rope bridge. */
@@ -223,6 +244,9 @@ export function platformsSeparatedForBridge(
   const gap = platformEdgeGap(a, b, d);
   return gap >= bridgeMinGap(cellSize) && gap <= bridgeMaxGap(cellSize);
 }
+
+/** Default bridge deck width multiplier (short ends) — 4× prior island width. */
+export const BRIDGE_WIDTH_MUL = 6;
 
 export function plotId(districtId: string, cellX: number, cellY: number): string {
   return `plot_${districtId}_${cellX}_${cellY}`;
@@ -923,21 +947,21 @@ export function computeAutoBridges(
       const pb = plotLivePos(b, d);
       const dx = pb.x - pa.x;
       const dz = pb.z - pa.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < 0.01) continue;
-      const gap = dist - 2 * half;
+      if (Math.hypot(dx, dz) < 0.01) continue;
+      // Short ends sit on midpoints of facing platform sides
+      const ma = platformFacingEdgeMid(pa.x, pa.z, half, dx, dz);
+      const mb = platformFacingEdgeMid(pb.x, pb.z, half, -dx, -dz);
+      const gap = Math.hypot(mb.x - ma.x, mb.z - ma.z);
       if (gap < minGap || gap > maxGap) continue;
-      const ux = dx / dist;
-      const uz = dz / dist;
       const key = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
       candidates.push({
         key,
         fromId: a.id,
         toId: b.id,
-        ax: pa.x + ux * half,
-        az: pa.z + uz * half,
-        bx: pb.x - ux * half,
-        bz: pb.z - uz * half,
+        ax: ma.x,
+        az: ma.z,
+        bx: mb.x,
+        bz: mb.z,
         gap,
       });
     }
@@ -967,7 +991,8 @@ export function computeAutoBridges(
 }
 
 /**
- * Rim endpoints A→B. Segment length equals the air gap when pads are separated.
+ * Short-end endpoints: midpoints of each pad’s facing side.
+ * Long axis of the bridge spans the open air between those edges.
  */
 export function bridgeEdgePoints(
   a: PlotState,
@@ -980,15 +1005,14 @@ export function bridgeEdgePoints(
   const pb = plotLivePos(b, d);
   const dx = pb.x - pa.x;
   const dz = pb.z - pa.z;
-  const dist = Math.max(0.01, Math.hypot(dx, dz));
-  const ux = dx / dist;
-  const uz = dz / dist;
+  const ma = platformFacingEdgeMid(pa.x, pa.z, half, dx, dz);
+  const mb = platformFacingEdgeMid(pb.x, pb.z, half, -dx, -dz);
   return {
-    ax: pa.x + ux * half,
-    az: pa.z + uz * half,
-    bx: pb.x - ux * half,
-    bz: pb.z - uz * half,
-    gap: dist - 2 * half,
+    ax: ma.x,
+    az: ma.z,
+    bx: mb.x,
+    bz: mb.z,
+    gap: Math.hypot(mb.x - ma.x, mb.z - ma.z),
   };
 }
 

@@ -74,6 +74,8 @@ import {
   bridgeEdgePoints,
   platformsSeparatedForBridge,
   plotPlatformHalf,
+  platformFacingEdgeMid,
+  BRIDGE_WIDTH_MUL,
   type PlazaPlotsState,
   type PlotState,
   type DistrictLite,
@@ -7076,6 +7078,8 @@ export {
   bridgeEdgePoints,
   platformsSeparatedForBridge,
   plotPlatformHalf,
+  platformFacingEdgeMid,
+  BRIDGE_WIDTH_MUL,
   movePlotFree,
 };
 

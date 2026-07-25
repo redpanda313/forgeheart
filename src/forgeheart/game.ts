@@ -242,6 +242,8 @@ import {
   bridgeEdgePoints,
   platformsSeparatedForBridge,
   plotPlatformHalf,
+  platformFacingEdgeMid,
+  BRIDGE_WIDTH_MUL,
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
@@ -7477,16 +7479,14 @@ export class ForgeHeartGame {
       } else {
         const dx = endX - start.x;
         const dz = endZ - start.z;
-        const dist = Math.max(0.01, Math.hypot(dx, dz));
         const half = plotPlatformHalf(s.cellSize);
-        const ux = dx / dist;
-        const uz = dz / dist;
-        ax = start.x + ux * half;
-        az = start.z + uz * half;
+        const mid = platformFacingEdgeMid(start.x, start.z, half, dx, dz);
+        ax = mid.x;
+        az = mid.z;
         bx = endX;
         bz = endZ;
       }
-      const built = buildWorldSpanRopeBridge(ax, az, bx, bz, 1.35, 0.28, true);
+      const built = buildWorldSpanRopeBridge(ax, az, bx, bz, BRIDGE_WIDTH_MUL, 0.28, true);
       const ghost = built.group;
       liftGhost(ghost);
       if (!valid) {
@@ -8785,6 +8785,10 @@ export class ForgeHeartGame {
         pathDist = best.pathDist;
         rails = best.rails;
       }
+    }
+    // Rope long-sides on plot bridges are grindable
+    if (this.skyCity?.getPlotBridgeRails) {
+      rails = [...rails, ...this.skyCity.getPlotBridgeRails()];
     }
 
     // Free-roam: island decks + board-only skyways (no solid roads between islands)

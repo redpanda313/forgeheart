@@ -28,7 +28,9 @@ import {
   bridgeEdgePoints,
   plotPlatformHalf,
   platformsSeparatedForBridge,
+  BRIDGE_WIDTH_MUL,
 } from './plazaPlots';
+import type { RaceRail } from './raceway';
 import { buildPrefab } from './cityEditor';
 import { CATALOG, type CatalogEntry } from './editorCatalog';
 import { buildMapSnapshot, type MapSnapshot } from './cityMap';
@@ -264,6 +266,8 @@ export interface SkyCityBuilt {
   ) => void;
   /** Live colliders for platforms + bridges (spatial grid chunk) */
   getPlotDynamicsColliders: () => Collider[];
+  /** Grind rails along bridge rope long-sides (surfboard) */
+  getPlotBridgeRails: () => RaceRail[];
 }
 
 function hashDistrictFlower(districtId: string, flowerId: string, index: number): number {
@@ -2403,6 +2407,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
   const plotPlatforms = new Map<string, PlotPlatformHandle>();
   /** Dynamic bridge colliders (platforms keep stable collider objects) */
   let plotBridgeCols: Collider[] = [];
+  /** Grind rails along bridge rope long-sides */
+  let plotBridgeRails: RaceRail[] = [];
 
   const makePlotPlatform = (
     plotKey: string,
@@ -2568,6 +2574,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
   const syncPlotOwnership = (plots: PlotSyncInput[]) => {
     const byId = new Map(plots.map((p) => [p.id, p]));
     plotBridgeCols = [];
+    plotBridgeRails = [];
 
     // Move / tint solid platforms to live free positions
     for (const p of plots) {
@@ -2671,13 +2678,14 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
                   edges.az,
                   edges.bx,
                   edges.bz,
-                  1.35,
+                  BRIDGE_WIDTH_MUL,
                   DECK_Y + FLOOR_THICK * 0.35,
                   false,
                 );
                 if (span.group.children.length) {
                   plotBuildRoot.add(span.group);
                   plotBridgeCols.push(...span.colliders);
+                  plotBridgeRails.push(...span.rails);
                 }
               }
             }
@@ -2699,13 +2707,14 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           link.az,
           link.bx,
           link.bz,
-          1.5,
+          BRIDGE_WIDTH_MUL,
           DECK_Y + FLOOR_THICK * 0.35,
           false,
         );
         if (!span.group.children.length) continue;
         plotBuildRoot.add(span.group);
         plotBridgeCols.push(...span.colliders);
+        plotBridgeRails.push(...span.rails);
       }
     }
   };
@@ -2716,6 +2725,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     out.push(...plotBridgeCols);
     return out;
   };
+
+  const getPlotBridgeRails = (): RaceRail[] => plotBridgeRails;
 
   const animate = (cityTime: number, dt: number) => {
     // Skyway distance LOD — hide far ribbon groups
@@ -2919,6 +2930,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     brokerDisplays,
     syncPlotOwnership,
     getPlotDynamicsColliders,
+    getPlotBridgeRails,
   };
   built.mapSnapshot = buildMapSnapshot(built);
   return built;
