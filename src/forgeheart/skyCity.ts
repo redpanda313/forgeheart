@@ -1225,7 +1225,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           id: `vendor_${d.id}_${v.id}`,
           kind: 'vendor',
           position: stand.interactPos.clone(),
-          radius: 2.7,
+          // Customer front where seller faces — roomy for counter approach
+          radius: 3.2,
           mesh: stand.keeperRoot,
           vendor: v,
           label: `${v.title} · ${v.name} (${d.name})`,

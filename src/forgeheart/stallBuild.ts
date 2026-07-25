@@ -513,14 +513,27 @@ export function buildStallVisual(mats: Mats, layout: StallLayout): StallVisualBu
   return { group: g, colliders: cols, interactLocal, enterable };
 }
 
+/**
+ * Yaw transform matching THREE.Object3D rotation.y:
+ * x' = x cos + z sin,  z' = -x sin + z cos
+ * (so local +Z is the facing / customer front after group.rotation.y = yaw)
+ */
+export function rotateLocal(local: THREE.Vector3, yaw: number, wx: number, wz: number): THREE.Vector3 {
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  return new THREE.Vector3(
+    wx + local.x * cos + local.z * sin,
+    local.y,
+    wz - local.x * sin + local.z * cos,
+  );
+}
+
 export function worldStallColliders(
   built: StallVisualBuilt,
   wx: number,
   wz: number,
   yaw: number,
 ): Collider[] {
-  const cos = Math.cos(yaw);
-  const sin = Math.sin(yaw);
   return built.colliders.map((c) => {
     const corners = [
       new THREE.Vector3(c.min.x, c.min.y, c.min.z),
@@ -532,9 +545,8 @@ export function worldStallColliders(
       new THREE.Vector3(c.min.x, c.max.y, c.max.z),
       new THREE.Vector3(c.max.x, c.max.y, c.max.z),
     ].map((p) => {
-      const rx = p.x * cos - p.z * sin;
-      const rz = p.x * sin + p.z * cos;
-      return new THREE.Vector3(wx + rx, p.y, wz + rz);
+      const r = rotateLocal(p, yaw, wx, wz);
+      return new THREE.Vector3(r.x, p.y, r.z);
     });
     const min = corners[0]!.clone();
     const max = corners[0]!.clone();
@@ -544,16 +556,6 @@ export function worldStallColliders(
     }
     return { min, max, kind: c.kind };
   });
-}
-
-export function rotateLocal(local: THREE.Vector3, yaw: number, wx: number, wz: number): THREE.Vector3 {
-  const cos = Math.cos(yaw);
-  const sin = Math.sin(yaw);
-  return new THREE.Vector3(
-    wx + local.x * cos - local.z * sin,
-    local.y,
-    wz + local.x * sin + local.z * cos,
-  );
 }
 
 export { offsetColliders };
@@ -571,14 +573,15 @@ export function decorIndexToProps(decor: number): SiteProp[] {
 
 /**
  * NPC market stand — tutorial-style pad + counter + awning + kit shopkeeper.
- * Local +Z is the customer side (facing out from the stand).
+ * Local +Z is the customer front (where the seller faces / trade from).
+ * Interact is placed on that front so E-trade works from the seller’s side.
  */
 export function buildVendorMarketStand(
   mats: Mats,
   opts: {
     x: number;
     z: number;
-    /** World yaw: direction the counter faces (toward customers) */
+    /** World yaw: local +Z faces customers (seller looks this way) */
     yaw: number;
     vendorName: string;
     vendorTitle?: string;
@@ -592,7 +595,7 @@ export function buildVendorMarketStand(
 ): {
   group: THREE.Group;
   colliders: Collider[];
-  /** Front of counter — where the player stands to trade */
+  /** Customer front of counter — stand here facing the seller to trade */
   interactPos: THREE.Vector3;
   keeperRoot: THREE.Group;
 } {
@@ -719,13 +722,13 @@ export function buildVendorMarketStand(
     group.add(good);
   }
 
-  // Shopkeeper behind counter (−Z)
+  // Shopkeeper behind counter (−Z), looking +Z at customers
   const kit = makeKitNpc('vendor', mats, { variant });
   kit.root.position.set(0, 0.12, -0.55);
   kit.root.rotation.y = 0; // faces +Z toward customers (group already yawed)
   group.add(kit.root);
 
-  // Sign
+  // Sign faces customers
   const title = opts.vendorTitle
     ? `${opts.vendorName}\n${opts.vendorTitle}`
     : opts.vendorName;
@@ -743,12 +746,13 @@ export function buildVendorMarketStand(
     worldWidth: 2.6,
     srgb: true,
   });
-  sign.position.set(0, 2.85, 0.2);
+  sign.position.set(0, 2.85, 0.55);
   group.add(sign);
   setSignWorldWidth(sign, 2.6);
 
-  // Customer interact point in front of counter
-  const interactLocal = new THREE.Vector3(0, 1.0, 1.65);
+  // Trade point on the customer front (seller-facing side of the counter).
+  // Far enough past the counter that solids don’t block standing there.
+  const interactLocal = new THREE.Vector3(0, 1.0, 2.15);
   const interactPos = rotateLocal(interactLocal, yaw, opts.x, opts.z);
   interactPos.y = deckY + 1.0;
 

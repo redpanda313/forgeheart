@@ -241,7 +241,8 @@ export function buildMarketHub(): MarketHubBuilt {
       id: vendor.id,
       kind: 'vendor',
       position: stand.interactPos.clone(),
-      radius: 2.6,
+      // Front of stall (seller-facing) — generous so counter solids don’t block E
+      radius: 3.2,
       mesh: stand.keeperRoot,
       vendor,
       label: `${vendor.title} · ${vendor.name}`,
