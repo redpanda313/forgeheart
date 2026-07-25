@@ -21,7 +21,7 @@ import {
   type CityDistrictDef,
   type CommodityId,
 } from './economy';
-import { buildWorldSpanRopeBridge } from './plotBuild';
+import { buildWorldSpanRopeBridge, bridgeDeckYForWalkSurface } from './plotBuild';
 import {
   plotLivePos,
   computeAutoBridges,
@@ -2673,13 +2673,15 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
               // Only spawn when pads are separated — bridge sits in open space
               if (platformsSeparatedForBridge(pa, pb, d)) {
                 const edges = bridgeEdgePoints(pa, pb, d);
+                // Match platform walk surface so floors hold the player
+                const walkY = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
                 const span = buildWorldSpanRopeBridge(
                   edges.ax,
                   edges.az,
                   edges.bx,
                   edges.bz,
                   BRIDGE_WIDTH_MUL,
-                  DECK_Y + FLOOR_THICK * 0.35,
+                  bridgeDeckYForWalkSurface(walkY),
                   false,
                 );
                 if (span.group.children.length) {
@@ -2701,6 +2703,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         plots: plots.filter((p) => p.districtId === d.id).map(toPlotLite),
       };
       const links = computeAutoBridges(pseudo, d);
+      const walkY = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+      const bridgeDeckY = bridgeDeckYForWalkSurface(walkY);
       for (const link of links) {
         const span = buildWorldSpanRopeBridge(
           link.ax,
@@ -2708,7 +2712,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           link.bx,
           link.bz,
           BRIDGE_WIDTH_MUL,
-          DECK_Y + FLOOR_THICK * 0.35,
+          bridgeDeckY,
           false,
         );
         if (!span.group.children.length) continue;

@@ -172,16 +172,14 @@ export function plotPlatformHalf(cellSize: number): number {
 }
 
 /**
- * Min edge-to-edge air before a bridge is allowed.
- * Must exceed the default-grid diagonal rest gap (~0.41×cellSize) so an
- * unmoved 3×3 never spawns bridges (that was spawning hundreds city-wide).
+ * Min open-air gap (rim-to-rim) before a bridge is allowed.
+ * Above default diagonal rest gap so an unmoved 3×3 never bridges.
  */
 export function bridgeMinGap(cellSize: number): number {
   return Math.max(3, cellSize * 0.55);
 }
 
 export function bridgeMaxGap(cellSize: number): number {
-  // Only short local spans — not spiderwebs across a whole district
   return cellSize * 2.2;
 }
 
@@ -189,6 +187,12 @@ export function bridgeMaxGap(cellSize: number): number {
 export function plotDisplaceEpsilon(cellSize: number): number {
   return cellSize * 0.12;
 }
+
+/** Short ends sit barely past the rim onto the deck (world units). */
+export const BRIDGE_RIM_INSET = 0.75;
+
+/** Default bridge deck width multiplier (short ends) — 4× prior island width. */
+export const BRIDGE_WIDTH_MUL = 6;
 
 /** True if the platform is away from its default grid cell center. */
 export function plotIsDisplaced(
@@ -200,9 +204,146 @@ export function plotIsDisplaced(
   return Math.hypot(live.x - home.x, live.z - home.z) > plotDisplaceEpsilon(home.cellSize);
 }
 
+/** One local side of a (possibly rotated) square pad. */
+export interface PadSide {
+  /** 0=+localX 1=+localZ 2=-localX 3=-localZ */
+  id: 0 | 1 | 2 | 3;
+  outwardX: number;
+  outwardZ: number;
+  tangentX: number;
+  tangentZ: number;
+  midX: number;
+  midZ: number;
+  half: number;
+}
+
+/** Local N/S/E/W edges after plot rotation (user: rotated W becomes new N, etc.). */
+export function plotPadSides(
+  plot: PlotState,
+  d: { x: number; z: number; size: number },
+): PadSide[] {
+  const live = plotLivePos(plot, d);
+  const half = plotPlatformHalf(live.cellSize);
+  const r = ((plot.rotation ?? 0) * Math.PI) / 180;
+  const cos = Math.cos(r);
+  const sin = Math.sin(r);
+  // Local axes in world XZ (Y-up yaw)
+  const xAx = { x: cos, z: -sin };
+  const zAx = { x: sin, z: cos };
+  const mk = (
+    id: 0 | 1 | 2 | 3,
+    ox: number,
+    oz: number,
+    tx: number,
+    tz: number,
+  ): PadSide => ({
+    id,
+    outwardX: ox,
+    outwardZ: oz,
+    tangentX: tx,
+    tangentZ: tz,
+    midX: live.x + ox * half,
+    midZ: live.z + oz * half,
+    half,
+  });
+  return [
+    mk(0, xAx.x, xAx.z, zAx.x, zAx.z),
+    mk(1, zAx.x, zAx.z, xAx.x, xAx.z),
+    mk(2, -xAx.x, -xAx.z, zAx.x, zAx.z),
+    mk(3, -zAx.x, -zAx.z, xAx.x, xAx.z),
+  ];
+}
+
+/** Attach point: slightly inset past the rim onto the pad, with lateral offset along the edge. */
+export function sideAttachPoint(
+  side: PadSide,
+  lateral = 0,
+  inset = BRIDGE_RIM_INSET,
+): { x: number; z: number } {
+  const lat = Math.max(-side.half * 0.7, Math.min(side.half * 0.7, lateral));
+  return {
+    x: side.midX - side.outwardX * inset + side.tangentX * lat,
+    z: side.midZ - side.outwardZ * inset + side.tangentZ * lat,
+  };
+}
+
 /**
- * Midpoint of the square platform face that looks toward a neighbor.
- * Short ends of bridges sit here (edge of pad A ↔ edge of pad B).
+ * Best opposite local sides for a cardinal bridge A↔B.
+ * Rejects diagonals: both outsides must face each other along the connection.
+ */
+export function bestCardinalSidePair(
+  a: PlotState,
+  b: PlotState,
+  d: { x: number; z: number; size: number },
+): { sideA: PadSide; sideB: PadSide; gap: number } | null {
+  const pa = plotLivePos(a, d);
+  const pb = plotLivePos(b, d);
+  const dx = pb.x - pa.x;
+  const dz = pb.z - pa.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 0.01) return null;
+  const toBx = dx / dist;
+  const toBz = dz / dist;
+  const sidesA = plotPadSides(a, d);
+  const sidesB = plotPadSides(b, d);
+  let best: { sideA: PadSide; sideB: PadSide; score: number; gap: number } | null =
+    null;
+  for (const sa of sidesA) {
+    // A’s chosen face should look toward B
+    const faceA = sa.outwardX * toBx + sa.outwardZ * toBz;
+    if (faceA < 0.55) continue;
+    for (const sb of sidesB) {
+      // B’s face should look toward A (opposite)
+      const faceB = sb.outwardX * -toBx + sb.outwardZ * -toBz;
+      if (faceB < 0.55) continue;
+      // Outward normals roughly opposite (not a diagonal skew pair)
+      const opp = sa.outwardX * sb.outwardX + sa.outwardZ * sb.outwardZ;
+      if (opp > -0.45) continue;
+      // Rim-to-rim open air (before inset)
+      const gap = Math.hypot(sb.midX - sa.midX, sb.midZ - sa.midZ);
+      const score = faceA + faceB - opp;
+      if (!best || score > best.score) {
+        best = { sideA: sa, sideB: sb, score, gap };
+      }
+    }
+  }
+  return best ? { sideA: best.sideA, sideB: best.sideB, gap: best.gap } : null;
+}
+
+/** Edge-to-edge void between facing cardinal sides (≤0 / small = touching). */
+export function platformEdgeGap(
+  a: PlotState,
+  b: PlotState,
+  d: { x: number; z: number; size: number },
+): number {
+  const pair = bestCardinalSidePair(a, b, d);
+  if (!pair) {
+    // Not a cardinal facing pair — treat as “no valid bridge gap”
+    return -1;
+  }
+  return pair.gap;
+}
+
+/** True when pads face each other cardinally with open air for a rope bridge. */
+export function platformsSeparatedForBridge(
+  a: PlotState,
+  b: PlotState,
+  d: { x: number; z: number; size: number },
+): boolean {
+  const cellSize = plotWorldCenter(d, 0, 0).cellSize;
+  const gap = platformEdgeGap(a, b, d);
+  return gap >= bridgeMinGap(cellSize) && gap <= bridgeMaxGap(cellSize);
+}
+
+/** Original grid orthogonal neighbors (share an edge on the 3×3 / edge grid). */
+export function isOriginalOrthoNeighbor(a: PlotState, b: PlotState): boolean {
+  if (a.districtId !== b.districtId) return false;
+  return Math.abs(a.cellX - b.cellX) + Math.abs(a.cellY - b.cellY) === 1;
+}
+
+/**
+ * Midpoint of the world-axis face that looks toward a neighbor (legacy helper).
+ * Prefer plotPadSides / bestCardinalSidePair for rotated pads.
  */
 export function platformFacingEdgeMid(
   cx: number,
@@ -216,37 +357,6 @@ export function platformFacingEdgeMid(
   }
   return { x: cx, z: cz + Math.sign(towardZ || 1) * half };
 }
-
-/** Edge-to-edge void between facing sides (≤0 = touching / overlapping). */
-export function platformEdgeGap(
-  a: PlotState,
-  b: PlotState,
-  d: { x: number; z: number; size: number },
-): number {
-  const cellSize = plotWorldCenter(d, 0, 0).cellSize;
-  const half = plotPlatformHalf(cellSize);
-  const pa = plotLivePos(a, d);
-  const pb = plotLivePos(b, d);
-  const dx = pb.x - pa.x;
-  const dz = pb.z - pa.z;
-  const ma = platformFacingEdgeMid(pa.x, pa.z, half, dx, dz);
-  const mb = platformFacingEdgeMid(pb.x, pb.z, half, -dx, -dz);
-  return Math.hypot(mb.x - ma.x, mb.z - ma.z);
-}
-
-/** True when there is open space between pads for a rope bridge. */
-export function platformsSeparatedForBridge(
-  a: PlotState,
-  b: PlotState,
-  d: { x: number; z: number; size: number },
-): boolean {
-  const cellSize = plotWorldCenter(d, 0, 0).cellSize;
-  const gap = platformEdgeGap(a, b, d);
-  return gap >= bridgeMinGap(cellSize) && gap <= bridgeMaxGap(cellSize);
-}
-
-/** Default bridge deck width multiplier (short ends) — 4× prior island width. */
-export const BRIDGE_WIDTH_MUL = 6;
 
 export function plotId(districtId: string, cellX: number, cellY: number): string {
   return `plot_${districtId}_${cellX}_${cellY}`;
@@ -902,7 +1012,7 @@ export function movePlotFree(
 
 /**
  * Auto connector across an open void (any owner).
- * Endpoints are pad rims — mesh lives only in empty air between platforms.
+ * Short ends inset onto facing local sides; long axis spans the gap.
  */
 export interface AutoBridgeLink {
   fromId: string;
@@ -912,107 +1022,225 @@ export interface AutoBridgeLink {
   bx: number;
   bz: number;
   gap: number;
+  sideA: 0 | 1 | 2 | 3;
+  sideB: 0 | 1 | 2 | 3;
 }
 
 /**
- * Auto bridges only when at least one pad has been moved off its grid home
- * and a real air gap exists. Caps to a few nearest links per pad so districts
- * never explode into hundreds of rope meshes (perf + visual).
+ * Cardinal-only auto bridges after a pad is moved and a clear gap opens.
+ * Prefer original grid N/S/E/W neighbors; otherwise free cardinal pairs.
+ * Multiple bridges on one side are spaced evenly so short ends don’t overlap.
  */
 export function computeAutoBridges(
   state: PlazaPlotsState,
   d: { id: string; x: number; z: number; size: number },
 ): AutoBridgeLink[] {
   const cellSize = plotWorldCenter(d, 0, 0).cellSize;
-  const half = plotPlatformHalf(cellSize);
   const minGap = bridgeMinGap(cellSize);
   const maxGap = bridgeMaxGap(cellSize);
   const list = state.plots.filter((p) => p.districtId === d.id);
-  // Fast path: nothing moved → zero auto bridges (default plaza)
   if (!list.some((p) => plotIsDisplaced(p, d))) return [];
 
-  type Cand = AutoBridgeLink & { key: string };
-  const candidates: Cand[] = [];
+  // Approx short-end half-width for non-overlap packing on a side
+  const halfW = 0.45 * BRIDGE_WIDTH_MUL;
+  const minLateralSep = halfW * 2.15;
+
+  type Raw = {
+    a: PlotState;
+    b: PlotState;
+    sideA: PadSide;
+    sideB: PadSide;
+    gap: number;
+    original: boolean;
+    /** Preferred lateral on A’s side (projection of B) */
+    prefLatA: number;
+    prefLatB: number;
+  };
+  const raws: Raw[] = [];
+
   for (let i = 0; i < list.length; i++) {
     for (let j = i + 1; j < list.length; j++) {
       const a = list[i]!;
       const b = list[j]!;
-      // Require a real fracture: at least one pad left its home cell
       if (!plotIsDisplaced(a, d) && !plotIsDisplaced(b, d)) continue;
       const hasPlayerBridge =
         a.buildings.some((x) => x.kind === 'bridge' && x.bridgeToPlotId === b.id) ||
         b.buildings.some((x) => x.kind === 'bridge' && x.bridgeToPlotId === a.id);
       if (hasPlayerBridge) continue;
-      const pa = plotLivePos(a, d);
+      const pair = bestCardinalSidePair(a, b, d);
+      if (!pair) continue;
+      if (pair.gap < minGap || pair.gap > maxGap) continue;
       const pb = plotLivePos(b, d);
-      const dx = pb.x - pa.x;
-      const dz = pb.z - pa.z;
-      if (Math.hypot(dx, dz) < 0.01) continue;
-      // Short ends sit on midpoints of facing platform sides
-      const ma = platformFacingEdgeMid(pa.x, pa.z, half, dx, dz);
-      const mb = platformFacingEdgeMid(pb.x, pb.z, half, -dx, -dz);
-      const gap = Math.hypot(mb.x - ma.x, mb.z - ma.z);
-      if (gap < minGap || gap > maxGap) continue;
-      const key = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
-      candidates.push({
-        key,
-        fromId: a.id,
-        toId: b.id,
-        ax: ma.x,
-        az: ma.z,
-        bx: mb.x,
-        bz: mb.z,
-        gap,
+      const pa = plotLivePos(a, d);
+      const prefLatA =
+        (pb.x - pair.sideA.midX) * pair.sideA.tangentX +
+        (pb.z - pair.sideA.midZ) * pair.sideA.tangentZ;
+      const prefLatB =
+        (pa.x - pair.sideB.midX) * pair.sideB.tangentX +
+        (pa.z - pair.sideB.midZ) * pair.sideB.tangentZ;
+      raws.push({
+        a,
+        b,
+        sideA: pair.sideA,
+        sideB: pair.sideB,
+        gap: pair.gap,
+        original: isOriginalOrthoNeighbor(a, b),
+        prefLatA,
+        prefLatB,
       });
     }
   }
-  // Prefer shortest gaps; keep at most 2 bridges per plot (local connectors only)
-  candidates.sort((x, y) => x.gap - y.gap);
-  const degree = new Map<string, number>();
-  const links: AutoBridgeLink[] = [];
-  const MAX_PER_PLOT = 2;
-  for (const c of candidates) {
-    const da = degree.get(c.fromId) ?? 0;
-    const db = degree.get(c.toId) ?? 0;
-    if (da >= MAX_PER_PLOT || db >= MAX_PER_PLOT) continue;
-    degree.set(c.fromId, da + 1);
-    degree.set(c.toId, db + 1);
-    links.push({
-      fromId: c.fromId,
-      toId: c.toId,
-      ax: c.ax,
-      az: c.az,
-      bx: c.bx,
-      bz: c.bz,
-      gap: c.gap,
-    });
+
+  // Prefer original grid neighbors when both kinds exist for a pad-side
+  const sideKey = (plotId: string, sideId: number) => `${plotId}:${sideId}`;
+  const hasOriginalOnSide = new Set<string>();
+  for (const r of raws) {
+    if (!r.original) continue;
+    hasOriginalOnSide.add(sideKey(r.a.id, r.sideA.id));
+    hasOriginalOnSide.add(sideKey(r.b.id, r.sideB.id));
   }
-  return links;
+  const filtered = raws.filter((r) => {
+    if (r.original) return true;
+    // Free cardinal only if that side has no original-neighbor candidate
+    const aHas = hasOriginalOnSide.has(sideKey(r.a.id, r.sideA.id));
+    const bHas = hasOriginalOnSide.has(sideKey(r.b.id, r.sideB.id));
+    return !aHas && !bHas;
+  });
+
+  // Greedy: shortest gaps first; pack laterals on each pad-side without overlap
+  filtered.sort((x, y) => {
+    if (x.original !== y.original) return x.original ? -1 : 1;
+    return x.gap - y.gap;
+  });
+
+  type Placed = {
+    raw: Raw;
+    latA: number;
+    latB: number;
+  };
+  const placed: Placed[] = [];
+  const usedA = new Map<string, number[]>(); // sideKey → laterals
+  const usedB = new Map<string, number[]>();
+
+  const canPack = (used: number[], lat: number) =>
+    used.every((u) => Math.abs(u - lat) >= minLateralSep);
+
+  const clampLat = (side: PadSide, lat: number) =>
+    Math.max(-side.half * 0.65, Math.min(side.half * 0.65, lat));
+
+  for (const r of filtered) {
+    const ka = sideKey(r.a.id, r.sideA.id);
+    const kb = sideKey(r.b.id, r.sideB.id);
+    const listA = usedA.get(ka) ?? [];
+    const listB = usedB.get(kb) ?? [];
+
+    // Even packing: start from preferred projection; if blocked, step along edge
+    let latA = clampLat(r.sideA, r.prefLatA);
+    let latB = clampLat(r.sideB, r.prefLatB);
+    const tryOffsets = [0, 1, -1, 2, -2, 3, -3, 4, -4];
+    let ok = false;
+    for (const step of tryOffsets) {
+      const ta = clampLat(r.sideA, r.prefLatA + step * minLateralSep * 0.55);
+      const tb = clampLat(r.sideB, r.prefLatB + step * minLateralSep * 0.55);
+      if (canPack(listA, ta) && canPack(listB, tb)) {
+        latA = ta;
+        latB = tb;
+        ok = true;
+        break;
+      }
+    }
+    if (!ok) continue;
+
+    listA.push(latA);
+    listB.push(latB);
+    usedA.set(ka, listA);
+    usedB.set(kb, listB);
+    placed.push({ raw: r, latA, latB });
+  }
+
+  // Optional even re-spread on sides with 2+ bridges
+  const bySideA = new Map<string, Placed[]>();
+  for (const p of placed) {
+    const k = sideKey(p.raw.a.id, p.raw.sideA.id);
+    const arr = bySideA.get(k) ?? [];
+    arr.push(p);
+    bySideA.set(k, arr);
+  }
+  for (const [, arr] of bySideA) {
+    if (arr.length < 2) continue;
+    arr.sort((u, v) => u.latA - v.latA);
+    const half = arr[0]!.raw.sideA.half;
+    const span = half * 1.2;
+    for (let i = 0; i < arr.length; i++) {
+      const t = arr.length === 1 ? 0.5 : i / (arr.length - 1);
+      arr[i]!.latA = -span * 0.5 + t * span;
+    }
+  }
+  const bySideB = new Map<string, Placed[]>();
+  for (const p of placed) {
+    const k = sideKey(p.raw.b.id, p.raw.sideB.id);
+    const arr = bySideB.get(k) ?? [];
+    arr.push(p);
+    bySideB.set(k, arr);
+  }
+  for (const [, arr] of bySideB) {
+    if (arr.length < 2) continue;
+    arr.sort((u, v) => u.latB - v.latB);
+    const half = arr[0]!.raw.sideB.half;
+    const span = half * 1.2;
+    for (let i = 0; i < arr.length; i++) {
+      const t = arr.length === 1 ? 0.5 : i / (arr.length - 1);
+      arr[i]!.latB = -span * 0.5 + t * span;
+    }
+  }
+
+  return placed.map((p) => {
+    const aPt = sideAttachPoint(p.raw.sideA, p.latA);
+    const bPt = sideAttachPoint(p.raw.sideB, p.latB);
+    return {
+      fromId: p.raw.a.id,
+      toId: p.raw.b.id,
+      ax: aPt.x,
+      az: aPt.z,
+      bx: bPt.x,
+      bz: bPt.z,
+      gap: p.raw.gap,
+      sideA: p.raw.sideA.id,
+      sideB: p.raw.sideB.id,
+    };
+  });
 }
 
 /**
- * Short-end endpoints: midpoints of each pad’s facing side.
- * Long axis of the bridge spans the open air between those edges.
+ * Short-end endpoints for a player bridge A→B (cardinal facing sides, inset onto pads).
  */
 export function bridgeEdgePoints(
   a: PlotState,
   b: PlotState,
   d: { x: number; z: number; size: number },
 ): { ax: number; az: number; bx: number; bz: number; gap: number } {
-  const cellSize = plotWorldCenter(d, 0, 0).cellSize;
-  const half = plotPlatformHalf(cellSize);
-  const pa = plotLivePos(a, d);
+  const pair = bestCardinalSidePair(a, b, d);
+  if (!pair) {
+    // Fallback: no cardinal pair — zero-length (caller should treat as invalid)
+    const pa = plotLivePos(a, d);
+    return { ax: pa.x, az: pa.z, bx: pa.x, bz: pa.z, gap: 0 };
+  }
   const pb = plotLivePos(b, d);
-  const dx = pb.x - pa.x;
-  const dz = pb.z - pa.z;
-  const ma = platformFacingEdgeMid(pa.x, pa.z, half, dx, dz);
-  const mb = platformFacingEdgeMid(pb.x, pb.z, half, -dx, -dz);
+  const pa = plotLivePos(a, d);
+  const latA =
+    (pb.x - pair.sideA.midX) * pair.sideA.tangentX +
+    (pb.z - pair.sideA.midZ) * pair.sideA.tangentZ;
+  const latB =
+    (pa.x - pair.sideB.midX) * pair.sideB.tangentX +
+    (pa.z - pair.sideB.midZ) * pair.sideB.tangentZ;
+  const aPt = sideAttachPoint(pair.sideA, latA);
+  const bPt = sideAttachPoint(pair.sideB, latB);
   return {
-    ax: ma.x,
-    az: ma.z,
-    bx: mb.x,
-    bz: mb.z,
-    gap: Math.hypot(mb.x - ma.x, mb.z - ma.z),
+    ax: aPt.x,
+    az: aPt.z,
+    bx: bPt.x,
+    bz: bPt.z,
+    gap: pair.gap,
   };
 }
 

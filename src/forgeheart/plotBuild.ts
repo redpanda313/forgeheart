@@ -685,8 +685,17 @@ export function buildRopePlankBridgeMesh(
 }
 
 /**
- * World-space rope bridge from facing-edge mid A→B.
- * Floor/rope colliders match visual plank + rope placement.
+ * Group Y so visual plank tops align with a platform walk surface Y.
+ * (Plank center at PLANK_Y, half-height PLANK_HALF_H.)
+ */
+export function bridgeDeckYForWalkSurface(walkSurfaceY: number): number {
+  return walkSurfaceY - PLANK_Y - PLANK_HALF_H;
+}
+
+/**
+ * World-space rope bridge from attach A→B (short ends on pads).
+ * Colliders are rebuilt from the same span vectors as the mesh rotation/scale
+ * so floors and rope rails stay correct as pads move.
  */
 export function buildWorldSpanRopeBridge(
   ax: number,
@@ -710,12 +719,13 @@ export function buildWorldSpanRopeBridge(
   const halfL = len * 0.5;
   const ux = dx / len;
   const uz = dz / len;
-  // Perpendicular across short ends (local +X in bridge space)
+  // Local +X of the bridge (across short ends) = perpendicular in XZ
   const px = -uz;
   const pz = ux;
   const mx = (ax + bx) / 2;
   const mz = (az + bz) / 2;
 
+  // Mesh: positioned at span center, rotated so local +Z = A→B
   g.position.set(mx, deckY, mz);
   g.rotation.y = Math.atan2(dx, dz);
   const br = buildRopePlankBridgeMesh(
@@ -730,31 +740,30 @@ export function buildWorldSpanRopeBridge(
 
   const colliders: Collider[] = [];
   if (!ghost) {
-    // One floor box per plank — same Z stations as the mesh so the deck holds
-    const floorHalfAlong = PLANK_ALONG * 0.55 + 0.06; // slight overlap, no holes
-    const floorHalfAcross = halfW * 0.98 + 0.12;
-    for (let i = 0; i < plankCount; i++) {
-      const t = plankCount <= 1 ? 0.5 : i / (plankCount - 1);
-      const localZ = plankLocalZ(i, plankCount, halfL, usable);
-      // World position of plank center (group at mx,mz,deckY; +Z along span)
-      const wx = mx + ux * localZ;
-      const wz = mz + uz * localZ;
-      const sag = Math.sin(t * Math.PI) * sagAmp;
-      const plankTop = deckY + PLANK_Y - sag + PLANK_HALF_H;
-      const plankBot = deckY + PLANK_Y - sag - PLANK_HALF_H - 0.08;
-      // Conservative AABB covering rotated plank
+    // Flat walk surface (no sag holes) — dense segments follow the rotated span
+    // so AABBs track placement after every pad move rebuild.
+    const walkTop = deckY + PLANK_Y + PLANK_HALF_H + 0.1;
+    const walkBot = deckY - 0.2;
+    const floorSegs = Math.max(plankCount + 1, Math.ceil(len / 0.4));
+    const floorHalfAlong = (len / floorSegs) * 0.55 + 0.08;
+    const floorHalfAcross = halfW + 0.2;
+    for (let i = 0; i < floorSegs; i++) {
+      const t = (i + 0.5) / floorSegs;
+      // Parametric from A→B (same as mesh long axis)
+      const wx = ax + dx * t;
+      const wz = az + dz * t;
       const extX =
-        Math.abs(ux) * floorHalfAlong + Math.abs(px) * floorHalfAcross + 0.05;
+        Math.abs(ux) * floorHalfAlong + Math.abs(px) * floorHalfAcross;
       const extZ =
-        Math.abs(uz) * floorHalfAlong + Math.abs(pz) * floorHalfAcross + 0.05;
+        Math.abs(uz) * floorHalfAlong + Math.abs(pz) * floorHalfAcross;
       colliders.push({
-        min: new THREE.Vector3(wx - extX, plankBot, wz - extZ),
-        max: new THREE.Vector3(wx + extX, plankTop + 0.06, wz + extZ),
+        min: new THREE.Vector3(wx - extX, walkBot, wz - extZ),
+        max: new THREE.Vector3(wx + extX, walkTop, wz + extZ),
         kind: 'floor',
       });
     }
 
-    // Rope solids + grind rails — same lateral/Y path as mesh ropes
+    // Rope solids + grind: same lateral offset as mesh (±halfW * ROPE_X_FRAC)
     for (const side of [-1, 1] as const) {
       const ox = px * halfW * ROPE_X_FRAC * side;
       const oz = pz * halfW * ROPE_X_FRAC * side;
@@ -762,23 +771,22 @@ export function buildWorldSpanRopeBridge(
         const t0 = i / ropeSegs;
         const t1 = (i + 1) / ropeSegs;
         const tm = (t0 + t1) / 2;
+        // Match mesh: localZ = -halfL + t * len → world = mid + ux*localZ
         const localZ = -halfL + tm * len;
-        const y0 = ropeLocalY(t0, sagAmp);
-        const y1 = ropeLocalY(t1, sagAmp);
-        const yMid = (y0 + y1) / 2;
         const wx = mx + ux * localZ + ox;
         const wz = mz + uz * localZ + oz;
-        const segAlong = (len / ropeSegs) * 0.55 + 0.04;
+        const y0 = ropeLocalY(t0, sagAmp);
+        const y1 = ropeLocalY(t1, sagAmp);
+        const yMid = deckY + (y0 + y1) / 2;
+        const segAlong = (len / ropeSegs) * 0.55 + 0.05;
         const extX = Math.abs(ux) * segAlong + ROPE_COL_R;
         const extZ = Math.abs(uz) * segAlong + ROPE_COL_R;
-        const wy = deckY + yMid;
         colliders.push({
-          min: new THREE.Vector3(wx - extX, wy - ROPE_COL_R, wz - extZ),
-          max: new THREE.Vector3(wx + extX, wy + ROPE_COL_R + 0.08, wz + extZ),
+          min: new THREE.Vector3(wx - extX, yMid - ROPE_COL_R, wz - extZ),
+          max: new THREE.Vector3(wx + extX, yMid + ROPE_COL_R + 0.1, wz + extZ),
           kind: 'solid',
         });
       }
-      // Grind rail follows rope centerline exactly
       const pts: THREE.Vector3[] = [];
       const samples = Math.max(4, ropeSegs);
       for (let i = 0; i <= samples; i++) {
@@ -793,6 +801,22 @@ export function buildWorldSpanRopeBridge(
         );
       }
       rails.push({ points: pts });
+    }
+
+    // Also stamp floor under each visual plank station (extra grip / no seams)
+    for (let i = 0; i < plankCount; i++) {
+      const localZ = plankLocalZ(i, plankCount, halfL, usable);
+      const wx = mx + ux * localZ;
+      const wz = mz + uz * localZ;
+      const ha = PLANK_ALONG * 0.55 + 0.1;
+      const hc = halfW * 0.98 + 0.15;
+      const extX = Math.abs(ux) * ha + Math.abs(px) * hc;
+      const extZ = Math.abs(uz) * ha + Math.abs(pz) * hc;
+      colliders.push({
+        min: new THREE.Vector3(wx - extX, walkBot, wz - extZ),
+        max: new THREE.Vector3(wx + extX, walkTop, wz + extZ),
+        kind: 'floor',
+      });
     }
   }
   return { group: g, colliders, rails };
