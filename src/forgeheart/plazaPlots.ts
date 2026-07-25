@@ -29,8 +29,15 @@ export type PlotBuildKind =
 export interface PlotBuildingStub {
   kind: PlotBuildKind;
   tenantSlots?: number;
-  /** Bridge facing: 0=+X 1=+Z 2=-X 3=-Z */
+  /** Local offset on platform (free placement) */
+  lx?: number;
+  lz?: number;
+  /** Local yaw degrees for the building */
+  yaw?: number;
+  /** Bridge facing: 0=+X 1=+Z 2=-X 3=-Z (legacy) */
   facing?: number;
+  /** Player bridge: linked neighbor plot */
+  bridgeToPlotId?: string | null;
   paid?: number;
 }
 
@@ -39,6 +46,12 @@ export interface PlotState {
   districtId: string;
   cellX: number;
   cellY: number;
+  /**
+   * Free world XZ of the platform center.
+   * Defaults from grid cell; move updates these (not locked to grid).
+   */
+  worldX?: number;
+  worldZ?: number;
   owner: PlotOwnerKind;
   /** Neighbor / homeowner id when npc-owned or player tenant link */
   npcOwnerId: string | null;
@@ -48,7 +61,7 @@ export interface PlotState {
   /** Neighbor id paying rent on this plot (if any) */
   tenantNeighborId: string | null;
   shape: 'square';
-  /** Degrees, multiples of 90 (Task 8) */
+  /** Degrees — free rotation, UI snaps 90° for now */
   rotation: number;
   layer: number;
   listPrice: number;
@@ -168,7 +181,7 @@ export function zoningForDistrictRole(role: string): ZoningHint {
   }
 }
 
-/** World XZ center of a plot cell on a district plaza */
+/** Grid home position for a cell (before free world offset) */
 export function plotWorldCenter(
   d: { x: number; z: number; size: number },
   cellX: number,
@@ -181,6 +194,64 @@ export function plotWorldCenter(
     x: originX + cellX * cellSize,
     z: originZ + cellY * cellSize,
     cellSize,
+  };
+}
+
+/** Live platform center — free worldX/Z or grid default */
+export function plotLivePos(
+  plot: PlotState,
+  d: { x: number; z: number; size: number },
+): { x: number; z: number; cellSize: number } {
+  const base = plotWorldCenter(d, plot.cellX, plot.cellY);
+  return {
+    x: typeof plot.worldX === 'number' ? plot.worldX : base.x,
+    z: typeof plot.worldZ === 'number' ? plot.worldZ : base.z,
+    cellSize: base.cellSize,
+  };
+}
+
+/** How far a platform may drift from district center */
+export function plotMoveLimits(d: { x: number; z: number; size: number }): {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+} {
+  const r = d.size * 0.95;
+  return {
+    minX: d.x - r,
+    maxX: d.x + r,
+    minZ: d.z - r,
+    maxZ: d.z + r,
+  };
+}
+
+export function clampPlotWorld(
+  d: { x: number; z: number; size: number },
+  x: number,
+  z: number,
+): { x: number; z: number } {
+  const lim = plotMoveLimits(d);
+  return {
+    x: Math.max(lim.minX, Math.min(lim.maxX, x)),
+    z: Math.max(lim.minZ, Math.min(lim.maxZ, z)),
+  };
+}
+
+/** Half-extent for free building placement on the platform pad */
+export function plotBuildPlaceRadius(cellSize: number): number {
+  return cellSize * 0.38;
+}
+
+export function clampLocalOnPlot(
+  cellSize: number,
+  lx: number,
+  lz: number,
+): { lx: number; lz: number } {
+  const r = plotBuildPlaceRadius(cellSize);
+  return {
+    lx: Math.max(-r, Math.min(r, lx)),
+    lz: Math.max(-r, Math.min(r, lz)),
   };
 }
 
@@ -272,11 +343,14 @@ export function emptyPlazaPlots(districts: DistrictLite[]): PlazaPlotsState {
           forSale = true;
         }
 
+        const home = plotWorldCenter(d, cx, cy);
         plots.push({
           id,
           districtId: d.id,
           cellX: cx,
           cellY: cy,
+          worldX: home.x,
+          worldZ: home.z,
           owner,
           npcOwnerId,
           zoningHint: zone,
@@ -365,6 +439,8 @@ export function plazaPlotsToSave(state: PlazaPlotsState) {
       vacant: p.vacant,
       isEdge: !!p.isEdge,
       retailBound: !!p.retailBound,
+      worldX: p.worldX,
+      worldZ: p.worldZ,
     })),
   };
 }
@@ -411,7 +487,20 @@ export function plazaPlotsFromSave(
       vacant: !!r.vacant,
       isEdge: !!r.isEdge,
       retailBound: !!r.retailBound,
+      worldX: typeof r.worldX === 'number' ? r.worldX : undefined,
+      worldZ: typeof r.worldZ === 'number' ? r.worldZ : undefined,
     });
+  }
+  // Migrate missing world positions from grid
+  for (const p of plots) {
+    if (typeof p.worldX !== 'number' || typeof p.worldZ !== 'number') {
+      const d = districts.find((x) => x.id === p.districtId);
+      if (d) {
+        const home = plotWorldCenter(d, p.cellX, p.cellY);
+        p.worldX = home.x;
+        p.worldZ = home.z;
+      }
+    }
   }
   return ensurePlazaPlots({ plots }, districts);
 }
@@ -530,30 +619,34 @@ export function quotePlotBuild(
 export function applyPlotBuild(
   plot: PlotState,
   kind: PlotBuildKind,
-  opts?: { bridgeFacing?: number; adjacentOwned?: boolean },
+  opts?: {
+    bridgeFacing?: number;
+    bridgeToPlotId?: string | null;
+    lx?: number;
+    lz?: number;
+    yaw?: number;
+    /** Nearby owned plot exists (distance-based) */
+    nearbyOwned?: boolean;
+  },
 ): { ok: boolean; msg: string; cost: number; offZone: boolean } {
   const q = quotePlotBuild(plot, kind);
   if (!q.ok || !q.def) return { ok: false, msg: q.msg ?? 'Cannot build.', cost: 0, offZone: false };
 
   if (kind === 'bridge') {
-    if (!opts?.adjacentOwned) {
+    if (!opts?.nearbyOwned && !opts?.bridgeToPlotId) {
       return {
         ok: false,
-        msg: 'Bridge needs an adjacent owned plot.',
+        msg: 'No nearby owned platform to bridge to — own another plot in range.',
         cost: 0,
         offZone: false,
       };
     }
-    if (plotHasBuild(plot, 'bridge')) {
-      return { ok: false, msg: 'Bridge already placed.', cost: 0, offZone: false };
-    }
   }
 
-  // Replace prior primary if placing a new primary; keep décor + bridges
-  if (q.def.primary) {
-    plot.buildings = plot.buildings.filter(
-      (b) => b.kind === 'decor' || b.kind === 'bridge',
-    );
+  // Multiple buildings allowed; primary replaces only same-kind primary, not free multi
+  if (q.def.primary && kind !== 'bridge') {
+    // Allow multiple apartments etc. — only strip empty stubs
+    plot.buildings = plot.buildings.filter((b) => b.kind !== 'empty');
   } else {
     plot.buildings = plot.buildings.filter((b) => b.kind !== 'empty');
   }
@@ -561,7 +654,11 @@ export function applyPlotBuild(
   const b: PlotBuildingStub = {
     kind,
     tenantSlots: q.def.tenantSlots,
+    lx: opts?.lx ?? 0,
+    lz: opts?.lz ?? 0,
+    yaw: opts?.yaw ?? 0,
     facing: kind === 'bridge' ? opts?.bridgeFacing ?? 0 : undefined,
+    bridgeToPlotId: kind === 'bridge' ? opts?.bridgeToPlotId ?? null : undefined,
     paid: q.cost,
   };
   plot.buildings.push(b);
@@ -572,112 +669,165 @@ export function applyPlotBuild(
   if (kind === 'retail') plot.retailBound = true;
 
   const zoneBit = q.offZone ? ' · off-zone surcharge' : '';
+  const posBit =
+    kind !== 'bridge'
+      ? ` @ (${(b.lx ?? 0).toFixed(1)}, ${(b.lz ?? 0).toFixed(1)})`
+      : opts?.bridgeToPlotId
+        ? ' · linked platform'
+        : '';
   return {
     ok: true,
     cost: q.cost,
     offZone: q.offZone,
-    msg: `Built ${q.def.name} (−${q.cost.toLocaleString()}b)${zoneBit}`,
+    msg: `Built ${q.def.name}${posBit} (−${q.cost.toLocaleString()}b)${zoneBit}`,
   };
 }
 
+/** Distance between live centers of two plots (needs district for cellSize fallback) */
+export function plotDistance(
+  a: PlotState,
+  b: PlotState,
+  d: { x: number; z: number; size: number },
+): number {
+  const pa = plotLivePos(a, d);
+  const pb = plotLivePos(b, d);
+  return Math.hypot(pa.x - pb.x, pa.z - pb.z);
+}
+
+/** Nearest other player-owned plot in same district within maxDist */
+export function nearestOwnedPlot(
+  state: PlazaPlotsState,
+  plot: PlotState,
+  d: { x: number; z: number; size: number },
+  maxDist?: number,
+): PlotState | null {
+  const cellSize = plotWorldCenter(d, 0, 0).cellSize;
+  const max = maxDist ?? cellSize * 5.5;
+  const origin = plotLivePos(plot, d);
+  let best: PlotState | null = null;
+  let bestD = Infinity;
+  for (const p of state.plots) {
+    if (p.id === plot.id || p.owner !== 'player') continue;
+    if (p.districtId !== plot.districtId) continue;
+    const pos = plotLivePos(p, d);
+    const dist = Math.hypot(pos.x - origin.x, pos.z - origin.z);
+    if (dist < bestD && dist <= max && dist > 0.5) {
+      bestD = dist;
+      best = p;
+    }
+  }
+  return best;
+}
+
+export function hasNearbyOwned(
+  state: PlazaPlotsState,
+  plot: PlotState,
+  d: { x: number; z: number; size: number },
+): boolean {
+  return !!nearestOwnedPlot(state, plot, d);
+}
+
+/** @deprecated grid-adjacency — use hasNearbyOwned */
 export function hasAdjacentOwned(
   state: PlazaPlotsState,
   plot: PlotState,
 ): boolean {
-  const dirs = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ];
-  for (const [dx, dy] of dirs) {
-    const other = state.plots.find(
-      (p) =>
-        p.districtId === plot.districtId &&
-        p.cellX === plot.cellX + dx &&
-        p.cellY === plot.cellY + dy &&
-        p.owner === 'player',
-    );
-    if (other) return true;
-  }
-  return false;
+  // Fallback without district: any other player plot in same district
+  return state.plots.some(
+    (p) =>
+      p.owner === 'player' &&
+      p.districtId === plot.districtId &&
+      p.id !== plot.id,
+  );
 }
 
-// ——— Task 8 transform ———
+// ——— Free transform ———
 
 export function rotatePlayerPlot(
   state: PlazaPlotsState,
   plotKey: string,
+  yaw?: number,
 ): { ok: boolean; msg: string } {
   const plot = getPlot(state, plotKey);
   if (!plot || plot.owner !== 'player') {
     return { ok: false, msg: 'Own the plot to rotate it.' };
   }
-  plot.rotation = (plot.rotation + 90) % 360;
-  return { ok: true, msg: `Plot rotated to ${plot.rotation}°.` };
+  if (typeof yaw === 'number') {
+    plot.rotation = ((yaw % 360) + 360) % 360;
+  } else {
+    plot.rotation = (plot.rotation + 90) % 360;
+  }
+  return { ok: true, msg: `Plot rotated to ${Math.round(plot.rotation)}°.` };
 }
 
 /**
- * Swap this plot with an adjacent cell: either empty player lot or vacant city lot
- * you effectively re-slot onto (city cell must be forSale or empty ownership transfer).
+ * Free-move platform within district limits (not grid-locked).
  */
-export function swapPlotWithAdjacent(
+export function movePlotFree(
   state: PlazaPlotsState,
   plotKey: string,
-  dir: 0 | 1 | 2 | 3,
+  worldX: number,
+  worldZ: number,
+  d: { x: number; z: number; size: number },
 ): { ok: boolean; msg: string } {
   const plot = getPlot(state, plotKey);
   if (!plot || plot.owner !== 'player') {
     return { ok: false, msg: 'Own the plot to move it.' };
   }
-  const deltas: [number, number][] = [
-    [1, 0],
-    [0, 1],
-    [-1, 0],
-    [0, -1],
-  ];
-  const [dx, dy] = deltas[dir]!;
-  const tx = plot.cellX + dx;
-  const ty = plot.cellY + dy;
-  const target = state.plots.find(
-    (p) => p.districtId === plot.districtId && p.cellX === tx && p.cellY === ty,
-  );
-  if (!target) {
-    return {
-      ok: false,
-      msg: 'No plot that way — buy an edge cell first (plaza growth).',
-    };
-  }
-  if (target.owner === 'player') {
-    // Swap cell coords
-    const ax = plot.cellX;
-    const ay = plot.cellY;
-    plot.cellX = target.cellX;
-    plot.cellY = target.cellY;
-    target.cellX = ax;
-    target.cellY = ay;
-    // Fix ids to match cells for world lookup consistency
-    rekeyPlotId(plot);
-    rekeyPlotId(target);
-    return { ok: true, msg: `Swapped with your plot (${tx},${ty}).` };
-  }
-  if (target.owner === 'city' && target.forSale && !target.tenantNeighborId) {
-    // Move onto city lot: swap ownership+payload conceptually by swapping cells
-    const ax = plot.cellX;
-    const ay = plot.cellY;
-    plot.cellX = target.cellX;
-    plot.cellY = target.cellY;
-    target.cellX = ax;
-    target.cellY = ay;
-    rekeyPlotId(plot);
-    rekeyPlotId(target);
-    return { ok: true, msg: `Moved plot to (${tx},${ty}).` };
-  }
-  return { ok: false, msg: 'Target cell is occupied or not free to swap.' };
+  const c = clampPlotWorld(d, worldX, worldZ);
+  plot.worldX = c.x;
+  plot.worldZ = c.z;
+  return {
+    ok: true,
+    msg: `Platform moved to (${c.x.toFixed(0)}, ${c.z.toFixed(0)}).`,
+  };
 }
 
-function rekeyPlotId(plot: PlotState): void {
-  plot.id = plotId(plot.districtId, plot.cellX, plot.cellY);
+/** Gaps that should get auto connector bridges (5× placeable width) */
+export interface AutoBridgeLink {
+  fromId: string;
+  toId: string;
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+}
+
+export function computeAutoBridges(
+  state: PlazaPlotsState,
+  d: { id: string; x: number; z: number; size: number },
+): AutoBridgeLink[] {
+  const cellSize = plotWorldCenter(d, 0, 0).cellSize;
+  const minGap = cellSize * 1.05;
+  const maxGap = cellSize * 4.5;
+  const list = state.plots.filter(
+    (p) => p.owner === 'player' && p.districtId === d.id,
+  );
+  const links: AutoBridgeLink[] = [];
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i]!;
+      const b = list[j]!;
+      const hasPlayerBridge =
+        a.buildings.some((x) => x.kind === 'bridge' && x.bridgeToPlotId === b.id) ||
+        b.buildings.some((x) => x.kind === 'bridge' && x.bridgeToPlotId === a.id);
+      if (hasPlayerBridge) continue;
+      const pa = plotLivePos(a, d);
+      const pb = plotLivePos(b, d);
+      const dist = Math.hypot(pa.x - pb.x, pa.z - pb.z);
+      if (dist >= minGap && dist <= maxGap) {
+        links.push({
+          fromId: a.id,
+          toId: b.id,
+          ax: pa.x,
+          az: pa.z,
+          bx: pb.x,
+          bz: pb.z,
+        });
+      }
+    }
+  }
+  return links;
 }
 
 // ——— Task 9 edge growth ———
@@ -746,11 +896,14 @@ export function createEdgePlot(
   const id = plotId(d.id, cellX, cellY);
   const existing = getPlot(state, id);
   if (existing) return existing;
+  const home = plotWorldCenter(d, cellX, cellY);
   const plot: PlotState = {
     id,
     districtId: d.id,
     cellX,
     cellY,
+    worldX: home.x,
+    worldZ: home.z,
     owner: 'city',
     npcOwnerId: null,
     zoningHint: zoningForDistrictRole(d.role),

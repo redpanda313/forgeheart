@@ -58,13 +58,19 @@ import {
   quotePlotBuild,
   applyPlotBuild,
   hasAdjacentOwned,
+  hasNearbyOwned,
+  nearestOwnedPlot,
   rotatePlayerPlot,
-  swapPlotWithAdjacent,
+  movePlotFree,
   listEdgeCandidates,
   createEdgePlot,
   plotPrimaryBuilding,
   plotHasBuild,
   plotRentIncome,
+  plotLivePos,
+  clampPlotWorld,
+  clampLocalOnPlot,
+  computeAutoBridges,
   type PlazaPlotsState,
   type PlotState,
   type DistrictLite,
@@ -7054,10 +7060,17 @@ export {
   PLOT_BUILD_CATALOG,
   quotePlotBuild,
   hasAdjacentOwned,
+  hasNearbyOwned,
+  nearestOwnedPlot,
   listEdgeCandidates,
   plotPrimaryBuilding,
   plotHasBuild,
   plotRentIncome,
+  plotLivePos,
+  clampPlotWorld,
+  clampLocalOnPlot,
+  computeAutoBridges,
+  movePlotFree,
 };
 
 /**
@@ -7184,18 +7197,32 @@ export function setPlotRentPolicy(
   };
 }
 
-/** Task 7: develop an owned plot */
+/** Task 7: develop an owned plot (free local placement + bridges) */
 export function developPlot(
   inv: InventoryState,
   plotKey: string,
   kind: PlotBuildKind,
-  opts?: { bridgeFacing?: number },
+  opts?: {
+    bridgeFacing?: number;
+    bridgeToPlotId?: string | null;
+    lx?: number;
+    lz?: number;
+    yaw?: number;
+  },
 ): { ok: boolean; msg: string } {
   ensureInvPlots(inv);
   ensureStandingState(inv);
   const plot = getPlot(inv.plazaPlots, plotKey);
   if (!plot) return { ok: false, msg: 'Unknown plot.' };
-  const adj = hasAdjacentOwned(inv.plazaPlots, plot);
+  const dist = districtById(plot.districtId);
+  const nearby = dist
+    ? hasNearbyOwned(inv.plazaPlots, plot, dist)
+    : hasAdjacentOwned(inv.plazaPlots, plot);
+  let bridgeTo = opts?.bridgeToPlotId ?? null;
+  if (kind === 'bridge' && !bridgeTo && dist) {
+    const n = nearestOwnedPlot(inv.plazaPlots, plot, dist);
+    bridgeTo = n?.id ?? null;
+  }
   const q = quotePlotBuild(plot, kind);
   if (!q.ok) return { ok: false, msg: q.msg ?? 'Cannot build.' };
   if (inv.brass < q.cost) {
@@ -7204,9 +7231,18 @@ export function developPlot(
       msg: `Need ${q.cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
     };
   }
+  const live = dist ? plotLivePos(plot, dist) : { cellSize: 20 };
+  const clamped =
+    kind === 'bridge'
+      ? { lx: 0, lz: 0 }
+      : clampLocalOnPlot(live.cellSize, opts?.lx ?? 0, opts?.lz ?? 0);
   const r = applyPlotBuild(plot, kind, {
-    adjacentOwned: adj,
+    nearbyOwned: nearby || !!bridgeTo,
     bridgeFacing: opts?.bridgeFacing,
+    bridgeToPlotId: bridgeTo,
+    lx: clamped.lx,
+    lz: clamped.lz,
+    yaw: opts?.yaw ?? 0,
   });
   if (!r.ok) return { ok: false, msg: r.msg };
   inv.brass -= r.cost;
@@ -7217,11 +7253,9 @@ export function developPlot(
   } else {
     applyStanding(inv, 1, { districtId: plot.districtId, districtDelta: 1 });
   }
-  // Retail front: ensure district stall owned/open
   if (kind === 'retail') {
     const stall = ensureCityStall(inv, plot.districtId);
     if (!stall.owned) {
-      // Bind without full stallCost if already paid retail build — soft grant
       stall.owned = true;
       stall.open = true;
     }
@@ -7234,18 +7268,25 @@ export function developPlot(
 export function rotatePlot(
   inv: InventoryState,
   plotKey: string,
+  yaw?: number,
 ): { ok: boolean; msg: string } {
   ensureInvPlots(inv);
-  return rotatePlayerPlot(inv.plazaPlots, plotKey);
+  return rotatePlayerPlot(inv.plazaPlots, plotKey, yaw);
 }
 
+/** Free-move platform within district limits */
 export function movePlot(
   inv: InventoryState,
   plotKey: string,
-  dir: 0 | 1 | 2 | 3,
+  worldX: number,
+  worldZ: number,
 ): { ok: boolean; msg: string } {
   ensureInvPlots(inv);
-  return swapPlotWithAdjacent(inv.plazaPlots, plotKey, dir);
+  const plot = getPlot(inv.plazaPlots, plotKey);
+  if (!plot) return { ok: false, msg: 'Unknown plot.' };
+  const d = districtById(plot.districtId);
+  if (!d) return { ok: false, msg: 'Unknown district.' };
+  return movePlotFree(inv.plazaPlots, plotKey, worldX, worldZ, d);
 }
 
 /** Task 9: buy edge attachment cell then optionally take ownership immediately */

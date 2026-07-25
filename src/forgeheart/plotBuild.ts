@@ -19,7 +19,7 @@ export interface PlotBuildSession {
   districtId: string;
   cellX: number;
   cellY: number;
-  /** World center of the plot */
+  /** Live platform center (free world) */
   centerX: number;
   centerZ: number;
   cellSize: number;
@@ -28,11 +28,17 @@ export interface PlotBuildSession {
   buildKind: PlotBuildKind | null;
   /** Transform mode */
   transform: PlotTransformTool | null;
-  /** Preview rotation degrees */
+  /** Preview rotation degrees (platform or building) */
   previewYaw: number;
-  /** Move direction 0=+X 1=+Z 2=-X 3=-Z */
-  moveDir: 0 | 1 | 2 | 3;
-  /** Bridge facing same as moveDir */
+  /** Free platform move preview (world XZ) */
+  previewWorldX: number;
+  previewWorldZ: number;
+  /** Free building local placement on platform */
+  placeLx: number;
+  placeLz: number;
+  /** Bridge aim endpoint (world) — snaps to nearest owned platform on confirm */
+  bridgeEndX: number;
+  bridgeEndZ: number;
   bridgeFacing: 0 | 1 | 2 | 3;
   quotedCost: number;
   offZone: boolean;
@@ -45,8 +51,10 @@ export function makePlotBuildSession(
   const cellSize = d.size * 0.26;
   const originX = d.x - cellSize;
   const originZ = d.z - cellSize;
-  const x = originX + plot.cellX * cellSize;
-  const z = originZ + plot.cellY * cellSize;
+  const homeX = originX + plot.cellX * cellSize;
+  const homeZ = originZ + plot.cellY * cellSize;
+  const x = typeof plot.worldX === 'number' ? plot.worldX : homeX;
+  const z = typeof plot.worldZ === 'number' ? plot.worldZ : homeZ;
   return {
     plotId: plot.id,
     districtId: plot.districtId,
@@ -59,7 +67,12 @@ export function makePlotBuildSession(
     buildKind: null,
     transform: null,
     previewYaw: plot.rotation ?? 0,
-    moveDir: 0,
+    previewWorldX: x,
+    previewWorldZ: z,
+    placeLx: 0,
+    placeLz: 0,
+    bridgeEndX: x + cellSize * 0.9,
+    bridgeEndZ: z,
     bridgeFacing: 0,
     quotedCost: 0,
     offZone: false,
@@ -287,13 +300,16 @@ export function makePlotContentPreview(
   for (const b of buildings) {
     if (b.kind === 'empty') continue;
     if (b.kind === 'bridge') {
-      // Bridge mesh has its own facing; keep local so rope runs toward front
-      const br = buildRopePlankBridgeMesh(cellSize, 1, true, opacity);
+      // Player bridge width 3× — preview only; world span uses buildWorldSpanRopeBridge
+      const br = buildRopePlankBridgeMesh(cellSize, 1, true, opacity, 3);
       br.position.z += cellSize * 0.35;
       g.add(br);
       continue;
     }
-    g.add(makeSolidStructure(b.kind, cellSize, opacity, role));
+    const piece = makeSolidStructure(b.kind, cellSize, opacity, role);
+    piece.position.set(b.lx ?? 0, 0, b.lz ?? 0);
+    if (typeof b.yaw === 'number') piece.rotation.y = (b.yaw * Math.PI) / 180;
+    g.add(piece);
   }
 
   g.rotation.y = (yawDeg * Math.PI) / 180;
@@ -315,19 +331,22 @@ export function makePlotBuildGhost(
     yawDeg?: number;
     role?: PlotPreviewRole;
     opacity?: number;
+    lx?: number;
+    lz?: number;
+    /** Platform yaw for footprint */
+    platformYaw?: number;
   },
 ): THREE.Group {
   const role = opts?.role ?? 'preview';
   const buildings: PlotBuildingStub[] =
     kind === 'bridge'
-      ? [{ kind: 'bridge', facing: opts?.bridgeFacing ?? 1 }]
-      : [{ kind }];
-  // For non-bridge, use yawDeg for section orientation; bridge uses bridgeFacing
+      ? [{ kind: 'bridge', facing: opts?.bridgeFacing ?? 1, lx: 0, lz: 0 }]
+      : [{ kind, lx: opts?.lx ?? 0, lz: opts?.lz ?? 0, yaw: opts?.yawDeg ?? 0 }];
   return makePlotContentPreview(buildings, cellSize, {
     role,
     valid: opts?.valid,
-    opacity: opts?.opacity ?? (role === 'preview' ? 0.78 : 0.22),
-    yawDeg: kind === 'bridge' ? undefined : opts?.yawDeg ?? 0,
+    opacity: opts?.opacity ?? (role === 'preview' ? 0.88 : 0.38),
+    yawDeg: opts?.platformYaw ?? 0,
     bridgeFacing: opts?.bridgeFacing ?? 1,
   });
 }
@@ -459,15 +478,24 @@ function makeSolidStructure(
  * Rope-and-plank sky bridge along local +Z by default; facing rotates yaw.
  * facing: 0=+X 1=+Z 2=-X 3=-Z
  */
+/**
+ * Rope-plank bridge.
+ * @param widthMul 1 = original, 3 = player placeable, 5 = auto connector
+ * @param lengthOverride world length (span); default ~cellSize
+ */
 export function buildRopePlankBridgeMesh(
   cellSize: number,
   facing: number,
   ghost = false,
   opacityOverride?: number,
+  widthMul = 1,
+  lengthOverride?: number,
 ): THREE.Group {
   const g = new THREE.Group();
   g.name = 'RopePlankBridge';
-  const len = cellSize * 0.95;
+  const w = Math.max(1, widthMul);
+  const halfW = 0.55 * w;
+  const len = lengthOverride ?? cellSize * 0.95;
   const opacity = Math.max(0.4, opacityOverride ?? (ghost ? 0.75 : 1));
   const wood = new THREE.MeshStandardMaterial({
     color: 0x8a6a40,
@@ -507,26 +535,33 @@ export function buildRopePlankBridgeMesh(
   g.rotation.y = yaw;
 
   for (const z of [-len * 0.42, len * 0.42]) {
-    for (const x of [-0.55, 0.55]) {
-      const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.15, 0.12), postMat);
+    for (const x of [-halfW, halfW]) {
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12 * Math.min(w, 2), 1.15, 0.12 * Math.min(w, 2)),
+        postMat,
+      );
       post.position.set(x, 0.55, z);
       g.add(post);
     }
   }
 
   const plankCount = Math.max(6, Math.round(len / 0.55));
+  const plankW = 1.15 * w;
   for (let i = 0; i < plankCount; i++) {
     const t = plankCount <= 1 ? 0.5 : i / (plankCount - 1);
     const z = -len * 0.4 + t * len * 0.8;
     const sag = Math.sin(t * Math.PI) * 0.12;
-    const plank = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.07, 0.38), wood);
+    const plank = new THREE.Mesh(
+      new THREE.BoxGeometry(plankW, 0.07, 0.38),
+      wood,
+    );
     plank.position.set(0, 0.28 - sag, z);
     plank.rotation.y = ((i % 3) - 1) * 0.04;
     g.add(plank);
   }
 
-  const ropeSegs = 12;
-  for (const x of [-0.52, 0.52]) {
+  const ropeSegs = Math.max(12, Math.round(12 * (len / (cellSize * 0.95))));
+  for (const x of [-halfW * 0.95, halfW * 0.95]) {
     for (const yBase of [0.95, 0.32]) {
       for (let i = 0; i < ropeSegs; i++) {
         const t0 = i / ropeSegs;
@@ -541,7 +576,7 @@ export function buildRopePlankBridgeMesh(
         const dz = z1 - z0;
         const segLen = Math.hypot(dy, dz);
         const seg = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.025, 0.025, segLen, 5),
+          new THREE.CylinderGeometry(0.025 * Math.min(w, 2), 0.025 * Math.min(w, 2), segLen, 5),
           rope,
         );
         seg.position.set(x, (y0 + y1) / 2, (z0 + z1) / 2);
@@ -550,22 +585,38 @@ export function buildRopePlankBridgeMesh(
         g.add(seg);
       }
     }
-    for (let i = 1; i < plankCount; i += 2) {
-      const t = i / (plankCount - 1);
-      const z = -len * 0.4 + t * len * 0.8;
-      const sag = Math.sin(t * Math.PI) * 0.18;
-      const topY = 0.95 - sag;
-      const botY = 0.32 - Math.sin(t * Math.PI) * 0.1;
-      const h = topY - botY;
-      const hang = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.018, 0.018, h, 4),
-        rope,
-      );
-      hang.position.set(x, (topY + botY) / 2, z);
-      g.add(hang);
-    }
   }
 
+  return g;
+}
+
+/** Span a rope bridge in world space from A→B (auto connectors / linked plots) */
+export function buildWorldSpanRopeBridge(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  widthMul: number,
+  deckY: number,
+  ghost = false,
+): THREE.Group {
+  const dx = bx - ax;
+  const dz = bz - az;
+  const len = Math.hypot(dx, dz);
+  const g = new THREE.Group();
+  g.position.set((ax + bx) / 2, deckY, (az + bz) / 2);
+  g.rotation.y = Math.atan2(dx, dz);
+  // Mesh is built along local +Z; un-rotate facing so local Z is length
+  const br = buildRopePlankBridgeMesh(
+    Math.max(len / 0.95, 4),
+    1,
+    ghost,
+    ghost ? 0.8 : 1,
+    widthMul,
+    len,
+  );
+  // buildRopePlankBridgeMesh with facing 1 already along +Z
+  g.add(br);
   return g;
 }
 
