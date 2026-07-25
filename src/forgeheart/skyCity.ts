@@ -21,22 +21,18 @@ import {
   type CityDistrictDef,
   type CommodityId,
 } from './economy';
-import { buildWorldSpanRopeBridge, bridgeDeckYForWalkSurface } from './plotBuild';
-import {
-  plotLivePos,
-  computeAutoBridges,
-  bridgeEdgePoints,
-  plotPlatformHalf,
-  platformsSeparatedForBridge,
-  BRIDGE_WIDTH_MUL,
-} from './plazaPlots';
-import type { RaceRail } from './raceway';
+import { plotLivePos, plotPlatformHalf } from './plazaPlots';
 import { buildPrefab } from './cityEditor';
 import { CATALOG, type CatalogEntry } from './editorCatalog';
 import { buildMapSnapshot, type MapSnapshot } from './cityMap';
 import { makeIslandImpostor, type StreamChunk } from './cityStreamer';
 import { makeKitNpc, tickNpcAnim, type NpcMeshParts, type NpcVisualRole } from './npcKit';
-import { buildEnterableShell, offsetColliders } from './enterableBuilding';
+import {
+  buildEnterableShell,
+  offsetColliders,
+  rotateOffsetColliders,
+  type EnterableKind,
+} from './enterableBuilding';
 import { buildPlazaCircuit, type PlazaCircuit } from './plazaCircuit';
 import { RobotUnit } from './robot';
 import { makeSignSprite, setSignWorldWidth } from './signLabel';
@@ -264,10 +260,8 @@ export interface SkyCityBuilt {
       isEdge?: boolean;
     }[],
   ) => void;
-  /** Live colliders for platforms + bridges (spatial grid chunk) */
+  /** Live colliders for platforms + plot buildings (spatial grid chunk) */
   getPlotDynamicsColliders: () => Collider[];
-  /** Grind rails along bridge rope long-sides (surfboard) */
-  getPlotBridgeRails: () => RaceRail[];
 }
 
 function hashDistrictFlower(districtId: string, flowerId: string, index: number): number {
@@ -2405,10 +2399,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     col: Collider;
   };
   const plotPlatforms = new Map<string, PlotPlatformHandle>();
-  /** Dynamic bridge colliders (platforms keep stable collider objects) */
-  let plotBridgeCols: Collider[] = [];
-  /** Grind rails along bridge rope long-sides */
-  let plotBridgeRails: RaceRail[] = [];
+  /** Dynamic building colliders (platforms keep stable collider objects) */
+  let plotBuildingCols: Collider[] = [];
 
   const makePlotPlatform = (
     plotKey: string,
@@ -2572,11 +2564,9 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     }) as import('./plazaPlots').PlotState;
 
   const syncPlotOwnership = (plots: PlotSyncInput[]) => {
-    const byId = new Map(plots.map((p) => [p.id, p]));
-    plotBridgeCols = [];
-    plotBridgeRails = [];
+    plotBuildingCols = [];
 
-    // Move / tint solid platforms to live free positions
+    // Tint / keep platforms at grid/live positions (pads are not player-movable)
     for (const p of plots) {
       if (p.districtId == null || p.cellX == null || p.cellY == null) continue;
       const d = CITY_DISTRICTS.find((x) => x.id === p.districtId);
@@ -2585,18 +2575,17 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       const h = ensurePlotPlatform(p.districtId, p.cellX, p.cellY, p.id);
       if (!h) continue;
       h.root.position.set(live.x, 0, live.z);
-      h.root.rotation.y = ((p.rotation ?? 0) * Math.PI) / 180;
+      h.root.rotation.y = 0;
       setPlatformCol(h, live.x, live.z);
       tintPlatform(h, p.owner, p.forSale, d.color);
     }
 
-    // Rebuild buildings + bridges only (platforms stay put)
+    // Rebuild buildings only
     while (plotBuildRoot.children.length) {
       const c = plotBuildRoot.children[0]!;
       plotBuildRoot.remove(c);
       c.traverse((obj) => {
         if (!(obj instanceof THREE.Mesh)) return;
-        // Skip shared bridge geo/mats (city-wide pool)
         if (obj.userData?.sharedAssets) return;
         obj.geometry?.dispose?.();
         const m = obj.material;
@@ -2605,7 +2594,17 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       });
     }
 
-    // Player-owned buildings on pads
+    const walkY = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+
+    const shellKind = (kind: string): EnterableKind | null => {
+      if (kind === 'home') return 'home';
+      if (kind === 'apartment') return 'office';
+      if (kind === 'retail') return 'shop';
+      if (kind === 'factory') return 'office';
+      return null;
+    };
+
+    // Player-owned buildings — enterable shells + colliders
     for (const p of plots) {
       if (p.owner !== 'player' || !p.districtId || p.cellX == null || p.cellY == null) {
         continue;
@@ -2616,109 +2615,60 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       const { cellSize } = live;
       const px = live.x;
       const pz = live.z;
-      const yaw = ((p.rotation ?? 0) * Math.PI) / 180;
       const buildings = p.buildings ?? [];
-      const g = new THREE.Group();
-      g.position.set(px, DECK_Y + FLOOR_THICK / 2, pz);
-      g.rotation.y = yaw;
-      const addBox = (
-        w: number,
-        h: number,
-        dpth: number,
-        y: number,
-        color: number,
-        lx = 0,
-        lz = 0,
-        localYaw = 0,
-      ) => {
-        const m = new THREE.Mesh(
-          new THREE.BoxGeometry(w, h, dpth),
-          new THREE.MeshStandardMaterial({
-            color,
-            roughness: 0.75,
-            metalness: 0.15,
-          }),
-        );
-        m.position.set(lx, y, lz);
-        m.rotation.y = localYaw;
-        g.add(m);
-      };
       for (const b of buildings) {
+        if (b.kind === 'empty' || b.kind === 'bridge') continue;
         const lx = b.lx ?? 0;
         const lz = b.lz ?? 0;
         const lyaw = ((b.yaw ?? 0) * Math.PI) / 180;
-        if (b.kind === 'apartment' || b.kind === 'home') {
-          addBox(cellSize * 0.55, 2.4, cellSize * 0.4, 1.2, 0x8a7060, lx, lz, lyaw);
-        } else if (b.kind === 'factory') {
-          addBox(cellSize * 0.5, 1.8, cellSize * 0.45, 0.9, 0x5a5850, lx, lz, lyaw);
-          addBox(0.35, 2.2, 0.35, 2.2, 0x444440, lx + cellSize * 0.12, lz, lyaw);
-        } else if (b.kind === 'retail') {
-          addBox(cellSize * 0.5, 1.6, cellSize * 0.35, 0.8, 0x6a7a88, lx, lz, lyaw);
+        // World position of building origin on pad
+        const wx = px + lx;
+        const wz = pz + lz;
+        const sk = shellKind(b.kind);
+        if (sk) {
+          const shell = buildEnterableShell(sk, mats, {
+            floors: b.kind === 'home' ? 1 : b.kind === 'apartment' ? 2 : 1,
+            color:
+              b.kind === 'home'
+                ? 0x8a7060
+                : b.kind === 'retail'
+                  ? 0x6a7a88
+                  : b.kind === 'factory'
+                    ? 0x5a5850
+                    : 0x7a6a58,
+            label: b.kind === 'retail' ? 'SHOP' : b.kind === 'factory' ? 'WORKS' : undefined,
+          });
+          shell.group.position.set(wx, walkY, wz);
+          shell.group.rotation.y = lyaw;
+          plotBuildRoot.add(shell.group);
+          plotBuildingCols.push(...rotateOffsetColliders(shell.colliders, wx, walkY, wz, lyaw));
         } else if (b.kind === 'garden') {
           const soil = new THREE.Mesh(
             new THREE.CylinderGeometry(cellSize * 0.28, cellSize * 0.3, 0.25, 8),
             new THREE.MeshStandardMaterial({ color: 0x3a4830 }),
           );
-          soil.position.set(lx, 0.15, lz);
-          g.add(soil);
+          soil.position.set(wx, walkY + 0.12, wz);
+          plotBuildRoot.add(soil);
+          const r = cellSize * 0.3;
+          plotBuildingCols.push({
+            min: new THREE.Vector3(wx - r, walkY - 0.05, wz - r),
+            max: new THREE.Vector3(wx + r, walkY + 0.35, wz + r),
+            kind: 'floor',
+          });
         } else if (b.kind === 'decor') {
-          addBox(0.25, 1.4, 0.25, 0.7, 0xc4a35a, lx, lz, lyaw);
-        } else if (b.kind === 'bridge' && b.bridgeToPlotId) {
-          const other = byId.get(b.bridgeToPlotId);
-          if (other && other.districtId) {
-            const od = CITY_DISTRICTS.find((x) => x.id === other.districtId);
-            if (od) {
-              const pa = toPlotLite(p);
-              const pb = toPlotLite(other);
-              // Only spawn when pads are separated — bridge sits in open space
-              if (platformsSeparatedForBridge(pa, pb, d)) {
-                const edges = bridgeEdgePoints(pa, pb, d);
-                // Match platform walk surface so floors hold the player
-                const walkY = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
-                const span = buildWorldSpanRopeBridge(
-                  edges.ax,
-                  edges.az,
-                  edges.bx,
-                  edges.bz,
-                  BRIDGE_WIDTH_MUL,
-                  bridgeDeckYForWalkSurface(walkY),
-                  false,
-                );
-                if (span.group.children.length) {
-                  plotBuildRoot.add(span.group);
-                  plotBridgeCols.push(...span.colliders);
-                  plotBridgeRails.push(...span.rails);
-                }
-              }
-            }
-          }
+          const post = new THREE.Mesh(
+            new THREE.BoxGeometry(0.28, 1.5, 0.28),
+            new THREE.MeshStandardMaterial({ color: 0xc4a35a, metalness: 0.3, roughness: 0.5 }),
+          );
+          post.position.set(wx, walkY + 0.75, wz);
+          post.rotation.y = lyaw;
+          plotBuildRoot.add(post);
+          plotBuildingCols.push({
+            min: new THREE.Vector3(wx - 0.2, walkY, wz - 0.2),
+            max: new THREE.Vector3(wx + 0.2, walkY + 1.5, wz + 0.2),
+            kind: 'solid',
+          });
         }
-      }
-      if (g.children.length) plotBuildRoot.add(g);
-    }
-
-    // Auto bridges only across open voids between separated platforms (any owner)
-    for (const d of CITY_DISTRICTS) {
-      const pseudo = {
-        plots: plots.filter((p) => p.districtId === d.id).map(toPlotLite),
-      };
-      const links = computeAutoBridges(pseudo, d);
-      const walkY = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
-      const bridgeDeckY = bridgeDeckYForWalkSurface(walkY);
-      for (const link of links) {
-        const span = buildWorldSpanRopeBridge(
-          link.ax,
-          link.az,
-          link.bx,
-          link.bz,
-          BRIDGE_WIDTH_MUL,
-          bridgeDeckY,
-          false,
-        );
-        if (!span.group.children.length) continue;
-        plotBuildRoot.add(span.group);
-        plotBridgeCols.push(...span.colliders);
-        plotBridgeRails.push(...span.rails);
       }
     }
   };
@@ -2726,11 +2676,9 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
   const getPlotDynamicsColliders = (): Collider[] => {
     const out: Collider[] = [];
     for (const h of plotPlatforms.values()) out.push(h.col);
-    out.push(...plotBridgeCols);
+    out.push(...plotBuildingCols);
     return out;
   };
-
-  const getPlotBridgeRails = (): RaceRail[] => plotBridgeRails;
 
   const animate = (cityTime: number, dt: number) => {
     // Skyway distance LOD — hide far ribbon groups
@@ -2934,7 +2882,6 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     brokerDisplays,
     syncPlotOwnership,
     getPlotDynamicsColliders,
-    getPlotBridgeRails,
   };
   built.mapSnapshot = buildMapSnapshot(built);
   return built;

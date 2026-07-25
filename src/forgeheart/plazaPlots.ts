@@ -24,6 +24,7 @@ export type PlotBuildKind =
   | 'garden'
   | 'factory'
   | 'retail'
+  /** @deprecated stripped on load — bridges removed */
   | 'bridge';
 
 export interface PlotBuildingStub {
@@ -32,11 +33,11 @@ export interface PlotBuildingStub {
   /** Local offset on platform (free placement) */
   lx?: number;
   lz?: number;
-  /** Local yaw degrees for the building */
+  /** Local yaw degrees — door/entry faces local +Z after this yaw */
   yaw?: number;
-  /** Bridge facing: 0=+X 1=+Z 2=-X 3=-Z (legacy) */
+  /** @deprecated */
   facing?: number;
-  /** Player bridge: linked neighbor plot */
+  /** @deprecated */
   bridgeToPlotId?: string | null;
   paid?: number;
 }
@@ -126,14 +127,101 @@ export const PLOT_BUILD_CATALOG: PlotBuildDef[] = [
     preferredZoning: ['retail', 'mixed'],
     primary: true,
   },
-  {
-    kind: 'bridge',
-    name: 'Bridge segment',
-    cost: 3_500,
-    blurb: 'Connect to an adjacent owned plot',
-    preferredZoning: ['residential', 'retail', 'industrial', 'mixed', 'garden'],
-  },
 ];
+
+/** Half-extents (local X / Z) of a building footprint for overlap & pad tests. */
+export function buildingFootprintHalf(
+  kind: PlotBuildKind,
+  cellSize: number,
+): { hw: number; hd: number } {
+  switch (kind) {
+    case 'home':
+      return { hw: 3.5, hd: 3.1 };
+    case 'apartment':
+      return { hw: 4.5, hd: 4.0 };
+    case 'retail':
+      return { hw: 4.25, hd: 3.75 };
+    case 'factory':
+      return { hw: 4.5, hd: 4.0 };
+    case 'garden': {
+      const r = cellSize * 0.3;
+      return { hw: r, hd: r };
+    }
+    case 'decor':
+      return { hw: 0.45, hd: 0.45 };
+    default:
+      return { hw: 2, hd: 2 };
+  }
+}
+
+function rotYaw(x: number, z: number, yawDeg: number): { x: number; z: number } {
+  const r = (yawDeg * Math.PI) / 180;
+  const c = Math.cos(r);
+  const s = Math.sin(r);
+  return { x: x * c + z * s, z: -x * s + z * c };
+}
+
+/** Axis-aligned bounds of a rotated footprint in plot-local XZ. */
+export function footprintAabb(
+  lx: number,
+  lz: number,
+  yawDeg: number,
+  hw: number,
+  hd: number,
+): { minX: number; maxX: number; minZ: number; maxZ: number } {
+  const corners = [
+    rotYaw(-hw, -hd, yawDeg),
+    rotYaw(hw, -hd, yawDeg),
+    rotYaw(hw, hd, yawDeg),
+    rotYaw(-hw, hd, yawDeg),
+  ];
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const p of corners) {
+    const x = lx + p.x;
+    const z = lz + p.z;
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minZ = Math.min(minZ, z);
+    maxZ = Math.max(maxZ, z);
+  }
+  return { minX, maxX, minZ, maxZ };
+}
+
+/** True if footprint still touches the pad (may hang off edges, not float free). */
+export function footprintIntersectsPad(
+  lx: number,
+  lz: number,
+  yawDeg: number,
+  hw: number,
+  hd: number,
+  padHalf: number,
+): boolean {
+  const a = footprintAabb(lx, lz, yawDeg, hw, hd);
+  const H = padHalf;
+  return a.maxX >= -H && a.minX <= H && a.maxZ >= -H && a.minZ <= H;
+}
+
+/** True if two building footprints overlap (with small margin). */
+export function footprintsOverlap(
+  lx0: number,
+  lz0: number,
+  yaw0: number,
+  hw0: number,
+  hd0: number,
+  lx1: number,
+  lz1: number,
+  yaw1: number,
+  hw1: number,
+  hd1: number,
+  margin = 0.35,
+): boolean {
+  const a = footprintAabb(lx0, lz0, yaw0, hw0 + margin * 0.5, hd0 + margin * 0.5);
+  const b = footprintAabb(lx1, lz1, yaw1, hw1 + margin * 0.5, hd1 + margin * 0.5);
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minZ <= b.maxZ && a.maxZ >= b.minZ;
+}
 
 const PRIMARY_KINDS = new Set<PlotBuildKind>([
   'apartment',
@@ -437,9 +525,9 @@ export function clampPlotWorld(
   };
 }
 
-/** Half-extent for free building placement on the platform pad */
+/** Soft aim radius for building centers (footprint may hang past pad rim). */
 export function plotBuildPlaceRadius(cellSize: number): number {
-  return cellSize * 0.38;
+  return cellSize * 0.52;
 }
 
 export function clampLocalOnPlot(
@@ -591,11 +679,9 @@ export function ensurePlazaPlots(
   for (const p of fresh.plots) {
     if (!have.has(p.id)) state.plots.push(p);
   }
-  // One-time: remove all previously placed bridges from save/live state
-  if (!state.bridgesClearedV1) {
-    clearAllPlacedBridges(state);
-    state.bridgesClearedV1 = true;
-  }
+  // Always strip bridges (feature removed)
+  clearAllPlacedBridges(state);
+  state.bridgesClearedV1 = true;
   return state;
 }
 
@@ -825,6 +911,9 @@ export function quotePlotBuild(
   plot: PlotState,
   kind: PlotBuildKind,
 ): { ok: boolean; cost: number; offZone: boolean; msg?: string; def?: PlotBuildDef } {
+  if (kind === 'bridge') {
+    return { ok: false, cost: 0, offZone: false, msg: 'Bridges are no longer available.' };
+  }
   const def = PLOT_BUILD_CATALOG.find((c) => c.kind === kind);
   if (!def) return { ok: false, cost: 0, offZone: false, msg: 'Unknown build.' };
   if (plot.owner !== 'player') {
@@ -833,9 +922,7 @@ export function quotePlotBuild(
   if (kind === 'decor' && plotHasBuild(plot, 'decor')) {
     return { ok: false, cost: 0, offZone: false, msg: 'Décor already placed.' };
   }
-  if (kind === 'bridge') {
-    // validated at apply time against adjacency
-  } else if (def.primary && plotPrimaryBuilding(plot)?.kind === kind) {
+  if (def.primary && plotPrimaryBuilding(plot)?.kind === kind) {
     return { ok: false, cost: 0, offZone: false, msg: `${def.name} already on this plot.` };
   }
   const { mul, offZone } = zoningMultiplier(plot, def);
@@ -843,49 +930,79 @@ export function quotePlotBuild(
   return { ok: true, cost, offZone, def };
 }
 
+/** Placement rules: touch pad, no overlap with existing buildings. */
+export function validatePlotBuildingPlace(
+  plot: PlotState,
+  kind: PlotBuildKind,
+  cellSize: number,
+  lx: number,
+  lz: number,
+  yaw: number,
+): { ok: boolean; msg?: string } {
+  if (kind === 'bridge' || kind === 'empty') {
+    return { ok: false, msg: 'Cannot place that here.' };
+  }
+  const padH = plotPlatformHalf(cellSize);
+  const fp = buildingFootprintHalf(kind, cellSize);
+  if (!footprintIntersectsPad(lx, lz, yaw, fp.hw, fp.hd, padH)) {
+    return {
+      ok: false,
+      msg: 'Building must stay on the pad (may hang off edges, not float free).',
+    };
+  }
+  for (const other of plot.buildings) {
+    if (other.kind === 'empty' || other.kind === 'bridge') continue;
+    const ofp = buildingFootprintHalf(other.kind, cellSize);
+    if (
+      footprintsOverlap(
+        lx,
+        lz,
+        yaw,
+        fp.hw,
+        fp.hd,
+        other.lx ?? 0,
+        other.lz ?? 0,
+        other.yaw ?? 0,
+        ofp.hw,
+        ofp.hd,
+      )
+    ) {
+      return { ok: false, msg: 'Overlaps another building on this pad.' };
+    }
+  }
+  return { ok: true };
+}
+
 export function applyPlotBuild(
   plot: PlotState,
   kind: PlotBuildKind,
   opts?: {
-    bridgeFacing?: number;
-    bridgeToPlotId?: string | null;
     lx?: number;
     lz?: number;
     yaw?: number;
-    /** Nearby owned plot exists (distance-based) */
-    nearbyOwned?: boolean;
+    cellSize?: number;
   },
 ): { ok: boolean; msg: string; cost: number; offZone: boolean } {
   const q = quotePlotBuild(plot, kind);
   if (!q.ok || !q.def) return { ok: false, msg: q.msg ?? 'Cannot build.', cost: 0, offZone: false };
 
-  if (kind === 'bridge') {
-    if (!opts?.nearbyOwned && !opts?.bridgeToPlotId) {
-      return {
-        ok: false,
-        msg: 'No nearby owned platform to bridge to — own another plot in range.',
-        cost: 0,
-        offZone: false,
-      };
-    }
+  const lx = opts?.lx ?? 0;
+  const lz = opts?.lz ?? 0;
+  const yaw = opts?.yaw ?? 0;
+  const cellSize = opts?.cellSize ?? 20;
+  const place = validatePlotBuildingPlace(plot, kind, cellSize, lx, lz, yaw);
+  if (!place.ok) {
+    return { ok: false, msg: place.msg ?? 'Invalid placement.', cost: 0, offZone: false };
   }
 
-  // Multiple buildings allowed; primary replaces only same-kind primary, not free multi
-  if (q.def.primary && kind !== 'bridge') {
-    // Allow multiple apartments etc. — only strip empty stubs
-    plot.buildings = plot.buildings.filter((b) => b.kind !== 'empty');
-  } else {
-    plot.buildings = plot.buildings.filter((b) => b.kind !== 'empty');
-  }
+  plot.buildings = plot.buildings.filter((b) => b.kind !== 'empty' && b.kind !== 'bridge');
 
   const b: PlotBuildingStub = {
     kind,
     tenantSlots: q.def.tenantSlots,
-    lx: opts?.lx ?? 0,
-    lz: opts?.lz ?? 0,
-    yaw: opts?.yaw ?? 0,
-    facing: kind === 'bridge' ? opts?.bridgeFacing ?? 0 : undefined,
-    bridgeToPlotId: kind === 'bridge' ? opts?.bridgeToPlotId ?? null : undefined,
+    lx,
+    lz,
+    yaw,
     paid: q.cost,
   };
   plot.buildings.push(b);
@@ -896,17 +1013,11 @@ export function applyPlotBuild(
   if (kind === 'retail') plot.retailBound = true;
 
   const zoneBit = q.offZone ? ' · off-zone surcharge' : '';
-  const posBit =
-    kind !== 'bridge'
-      ? ` @ (${(b.lx ?? 0).toFixed(1)}, ${(b.lz ?? 0).toFixed(1)})`
-      : opts?.bridgeToPlotId
-        ? ' · linked platform'
-        : '';
   return {
     ok: true,
     cost: q.cost,
     offZone: q.offZone,
-    msg: `Built ${q.def.name}${posBit} (−${q.cost.toLocaleString()}b)${zoneBit}`,
+    msg: `Built ${q.def.name} @ (${lx.toFixed(1)}, ${lz.toFixed(1)}) yaw ${Math.round(yaw)}° (−${q.cost.toLocaleString()}b)${zoneBit}`,
   };
 }
 

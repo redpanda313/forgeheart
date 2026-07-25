@@ -7209,14 +7209,12 @@ export function setPlotRentPolicy(
   };
 }
 
-/** Task 7: develop an owned plot (free local placement + bridges) */
+/** Task 7: develop an owned plot (free local placement + yaw) */
 export function developPlot(
   inv: InventoryState,
   plotKey: string,
   kind: PlotBuildKind,
   opts?: {
-    bridgeFacing?: number;
-    bridgeToPlotId?: string | null;
     lx?: number;
     lz?: number;
     yaw?: number;
@@ -7226,25 +7224,8 @@ export function developPlot(
   ensureStandingState(inv);
   const plot = getPlot(inv.plazaPlots, plotKey);
   if (!plot) return { ok: false, msg: 'Unknown plot.' };
+  if (kind === 'bridge') return { ok: false, msg: 'Bridges are no longer available.' };
   const dist = districtById(plot.districtId);
-  const nearby = dist
-    ? hasNearbyOwned(inv.plazaPlots, plot, dist)
-    : hasAdjacentOwned(inv.plazaPlots, plot);
-  let bridgeTo = opts?.bridgeToPlotId ?? null;
-  if (kind === 'bridge' && !bridgeTo && dist) {
-    const n = nearestOwnedPlot(inv.plazaPlots, plot, dist);
-    bridgeTo = n?.id ?? null;
-  }
-  // Bridges only span open space — refuse when pads still touch
-  if (kind === 'bridge' && dist && bridgeTo) {
-    const other = getPlot(inv.plazaPlots, bridgeTo);
-    if (!other || !platformsSeparatedForBridge(plot, other, dist)) {
-      return {
-        ok: false,
-        msg: 'Platforms are still touching — move one apart so the bridge can span the gap.',
-      };
-    }
-  }
   const q = quotePlotBuild(plot, kind);
   if (!q.ok) return { ok: false, msg: q.msg ?? 'Cannot build.' };
   if (inv.brass < q.cost) {
@@ -7254,17 +7235,12 @@ export function developPlot(
     };
   }
   const live = dist ? plotLivePos(plot, dist) : { cellSize: 20 };
-  const clamped =
-    kind === 'bridge'
-      ? { lx: 0, lz: 0 }
-      : clampLocalOnPlot(live.cellSize, opts?.lx ?? 0, opts?.lz ?? 0);
+  const clamped = clampLocalOnPlot(live.cellSize, opts?.lx ?? 0, opts?.lz ?? 0);
   const r = applyPlotBuild(plot, kind, {
-    nearbyOwned: nearby || !!bridgeTo,
-    bridgeFacing: opts?.bridgeFacing,
-    bridgeToPlotId: bridgeTo,
     lx: clamped.lx,
     lz: clamped.lz,
     yaw: opts?.yaw ?? 0,
+    cellSize: live.cellSize,
   });
   if (!r.ok) return { ok: false, msg: r.msg };
   inv.brass -= r.cost;

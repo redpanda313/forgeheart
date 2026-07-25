@@ -228,7 +228,6 @@ import {
   plotsInDistrict,
   playerOwnedPlotCount,
   developPlot,
-  movePlot,
   buyEdgePlot,
   PLOT_BUILD_CATALOG,
   quotePlotBuild,
@@ -236,14 +235,7 @@ import {
   plotPrimaryBuilding,
   plotRentIncome,
   plotLivePos,
-  clampPlotWorld,
   clampLocalOnPlot,
-  nearestOwnedPlot,
-  bridgeEdgePoints,
-  platformsSeparatedForBridge,
-  plotPlatformHalf,
-  platformFacingEdgeMid,
-  BRIDGE_WIDTH_MUL,
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
@@ -356,9 +348,8 @@ import {
   makePlotBuildSession,
   makePlotBuildGhost,
   makePlotCurrentGhost,
-  makePlotContentPreview,
   plotBuildCatalogLabel,
-  buildWorldSpanRopeBridge,
+  validateBuildingPlacement,
 } from './plotBuild';
 
 /** Game Maker interaction mode */
@@ -1557,10 +1548,9 @@ export class ForgeHeartGame {
         return true;
       }
       if (code === 'Escape') {
-        if (this.plotBuild.step === 'place' || this.plotBuild.step === 'transform') {
+        if (this.plotBuild.step === 'place') {
           this.plotBuild.step = 'choose';
           this.plotBuild.buildKind = null;
-          this.plotBuild.transform = null;
           this.buildDockPinned = false;
           this.setBuildDockExpanded(true, false);
           this.rebuildPlotBuildGhosts();
@@ -2103,13 +2093,10 @@ export class ForgeHeartGame {
       if (this.locEl) {
         this.locEl.textContent =
           pb.step === 'place'
-            ? `Plot place · ${pb.buildKind ?? '…'} · look/arrows aim`
-            : pb.step === 'transform'
-              ? `Plot ${pb.transform} · free move`
-              : 'Plot develop · pick tool';
+            ? `Plot place · ${pb.buildKind ?? '…'} · aim · [/] rotate entry`
+            : 'Plot develop · pick building';
       }
-      this.weaponEl.textContent =
-        pb.step === 'choose' ? 'PLOT' : pb.step === 'place' ? 'PLACE' : 'MOVE';
+      this.weaponEl.textContent = pb.step === 'choose' ? 'PLOT' : 'PLACE';
       return;
     }
 
@@ -5237,7 +5224,6 @@ export class ForgeHeartGame {
       else {
         this.plotBuild.step = 'choose';
         this.plotBuild.buildKind = null;
-        this.plotBuild.transform = null;
         this.rebuildPlotBuildGhosts();
         this.refreshPlotBuildUi();
       }
@@ -7178,8 +7164,7 @@ export class ForgeHeartGame {
   /** Auto dock state from builder step (respects user pin while aiming). */
   private syncBuildDockToStep() {
     if (this.plotBuild) {
-      const aiming =
-        this.plotBuild.step === 'place' || this.plotBuild.step === 'transform';
+      const aiming = this.plotBuild.step === 'place';
       if (aiming) {
         if (!this.buildDockPinned) this.setBuildDockExpanded(false, false);
         else this.applyBuildDockDom();
@@ -7234,8 +7219,6 @@ export class ForgeHeartGame {
     const live = plotLivePos(plot, d);
     this.plotBuild.centerX = live.x;
     this.plotBuild.centerZ = live.z;
-    this.plotBuild.previewWorldX = live.x;
-    this.plotBuild.previewWorldZ = live.z;
     this.plotBuild.cellSize = live.cellSize;
     this.camera.position.set(
       live.x,
@@ -7290,37 +7273,19 @@ export class ForgeHeartGame {
   private nudgePlotBuildYaw(dir: 1 | -1) {
     const s = this.plotBuild;
     if (!s) return;
-    if (s.step === 'transform' && s.transform === 'rotate') {
-      s.previewYaw = (s.previewYaw + dir * 90 + 360) % 360;
-    } else if (s.step === 'place' && s.buildKind && s.buildKind !== 'bridge') {
+    if (s.step === 'place' && s.buildKind) {
       s.previewYaw = (s.previewYaw + dir * 15 + 360) % 360;
-    } else if (s.step === 'place' && s.buildKind === 'bridge') {
-      s.bridgeFacing = ((((s.bridgeFacing + dir) % 4) + 4) % 4) as 0 | 1 | 2 | 3;
     }
     this.rebuildPlotBuildGhosts();
     this.refreshPlotBuildUi();
   }
 
-  /** Free nudge: platform move, building on pad, or bridge endpoint */
+  /** Free nudge building on pad */
   private nudgePlotBuildFree(dx: number, dz: number) {
     const s = this.plotBuild;
     if (!s) return;
-    const d = districtById(s.districtId);
-    if (!d) return;
     const unit = Math.max(0.6, s.cellSize * 0.04);
-
-    if (s.step === 'transform' && s.transform === 'move') {
-      const c = clampPlotWorld(
-        d,
-        s.previewWorldX + dx * unit,
-        s.previewWorldZ + dz * unit,
-      );
-      s.previewWorldX = c.x;
-      s.previewWorldZ = c.z;
-    } else if (s.step === 'place' && s.buildKind === 'bridge') {
-      s.bridgeEndX += dx * unit;
-      s.bridgeEndZ += dz * unit;
-    } else if (s.step === 'place' && s.buildKind) {
+    if (s.step === 'place' && s.buildKind) {
       const cl = clampLocalOnPlot(
         s.cellSize,
         s.placeLx + dx * unit,
@@ -7348,35 +7313,15 @@ export class ForgeHeartGame {
   private tickPlotBuildAim(_dt: number) {
     const s = this.plotBuild;
     if (!s || this.buildDockExpanded) return;
-    if (s.step !== 'place' && !(s.step === 'transform' && s.transform === 'move')) {
-      return;
-    }
+    if (s.step !== 'place') return;
     const hit = this.plotBuildLookOnDeck();
     if (!hit) return;
-    const d = districtById(s.districtId);
-    if (!d) return;
-
-    if (s.step === 'transform' && s.transform === 'move') {
-      const c = clampPlotWorld(d, hit.x, hit.z);
-      s.previewWorldX = c.x;
-      s.previewWorldZ = c.z;
-      this.rebuildPlotBuildGhosts();
-      return;
-    }
-    if (s.step === 'place' && s.buildKind === 'bridge') {
-      s.bridgeEndX = hit.x;
-      s.bridgeEndZ = hit.z;
-      this.rebuildPlotBuildGhosts();
-      return;
-    }
     if (s.step === 'place' && s.buildKind) {
-      // Local coords relative to platform center + platform rotation
-      const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
-      const platYaw = ((plot?.rotation ?? 0) * Math.PI) / 180;
+      // Local coords relative to platform center
       const dx = hit.x - s.centerX;
       const dz = hit.z - s.centerZ;
-      const lx = dx * Math.cos(-platYaw) - dz * Math.sin(-platYaw);
-      const lz = dx * Math.sin(-platYaw) + dz * Math.cos(-platYaw);
+      const lx = dx;
+      const lz = dz;
       const cl = clampLocalOnPlot(s.cellSize, lx, lz);
       s.placeLx = cl.lx;
       s.placeLz = cl.lz;
@@ -7438,70 +7383,7 @@ export class ForgeHeartGame {
       this.plotBuildCurrent = cur;
     }
 
-    // ——— PREVIEW (brighter): free place / rotate / move ———
-    if (s.step === 'place' && s.buildKind === 'bridge' && plot && d) {
-      const q = quotePlotBuild(plot, 'bridge');
-      s.quotedCost = q.cost;
-      s.offZone = q.offZone;
-      // Aim endpoint — snap preview to nearest owned if close
-      let endX = s.bridgeEndX;
-      let endZ = s.bridgeEndZ;
-      let targetId: string | null = null;
-      let targetPlot = null as typeof plot | null;
-      const near = nearestOwnedPlot(this.inv.plazaPlots, plot, d);
-      if (near) {
-        const np = plotLivePos(near, d);
-        const dist = Math.hypot(endX - np.x, endZ - np.z);
-        if (dist < s.cellSize * 1.2) {
-          endX = np.x;
-          endZ = np.z;
-          targetId = near.id;
-          targetPlot = near;
-        }
-      }
-      const start = plotLivePos(plot, d);
-      // Valid only when there is open space between separated pads
-      const separated = targetPlot
-        ? platformsSeparatedForBridge(plot, targetPlot, d)
-        : false;
-      const valid = !!targetId && separated && this.inv.brass >= q.cost;
-      // Rim-to-rim: bridge hangs only in the empty gap (island style)
-      let ax: number;
-      let az: number;
-      let bx: number;
-      let bz: number;
-      if (targetPlot) {
-        const edges = bridgeEdgePoints(plot, targetPlot, d);
-        ax = edges.ax;
-        az = edges.az;
-        bx = edges.bx;
-        bz = edges.bz;
-      } else {
-        const dx = endX - start.x;
-        const dz = endZ - start.z;
-        const half = plotPlatformHalf(s.cellSize);
-        const mid = platformFacingEdgeMid(start.x, start.z, half, dx, dz);
-        ax = mid.x;
-        az = mid.z;
-        bx = endX;
-        bz = endZ;
-      }
-      const built = buildWorldSpanRopeBridge(ax, az, bx, bz, BRIDGE_WIDTH_MUL, 0.28, true);
-      const ghost = built.group;
-      liftGhost(ghost);
-      if (!valid) {
-        ghost.traverse((o) => {
-          if (o instanceof THREE.Mesh && o.material && 'color' in o.material) {
-            (o.material as THREE.MeshStandardMaterial).color?.setHex?.(0xaa6666);
-          }
-        });
-      }
-      this.scene.add(ghost);
-      this.plotBuildGhost = ghost;
-      (s as { _bridgeTarget?: string | null })._bridgeTarget = targetId;
-      return;
-    }
-
+    // ——— PREVIEW: free place + rotate building (door faces entry cue) ———
     if (s.step === 'place' && s.buildKind && plot) {
       const q = quotePlotBuild(plot, s.buildKind);
       if (!q.ok) {
@@ -7510,48 +7392,25 @@ export class ForgeHeartGame {
         s.quotedCost = q.cost;
         s.offZone = q.offZone;
       }
-      const afford = q.ok && this.inv.brass >= q.cost;
+      const placeOk = validateBuildingPlacement(
+        plot,
+        s.buildKind,
+        s.cellSize,
+        s.placeLx,
+        s.placeLz,
+        s.previewYaw,
+      );
+      s.placeValid = placeOk.ok;
+      const afford = q.ok && this.inv.brass >= q.cost && placeOk.ok;
       const ghost = makePlotBuildGhost(s.buildKind, s.cellSize, {
         valid: afford,
         yawDeg: s.previewYaw,
-        platformYaw: plot.rotation ?? 0,
         lx: s.placeLx,
         lz: s.placeLz,
         role: 'preview',
         opacity: 0.9,
       });
       ghost.position.set(curX, 0, curZ);
-      liftGhost(ghost);
-      this.scene.add(ghost);
-      this.plotBuildGhost = ghost;
-      return;
-    }
-
-    if (s.step === 'transform' && s.transform === 'rotate' && plot) {
-      const ghost = makePlotContentPreview(plot.buildings ?? [], s.cellSize, {
-        role: 'preview',
-        valid: true,
-        yawDeg: s.previewYaw,
-        opacity: 0.88,
-      });
-      ghost.position.set(curX, 0, curZ);
-      liftGhost(ghost);
-      this.scene.add(ghost);
-      this.plotBuildGhost = ghost;
-      return;
-    }
-
-    if (s.step === 'transform' && s.transform === 'move' && plot && d) {
-      const c = clampPlotWorld(d, s.previewWorldX, s.previewWorldZ);
-      s.previewWorldX = c.x;
-      s.previewWorldZ = c.z;
-      const ghost = makePlotContentPreview(plot.buildings ?? [], s.cellSize, {
-        role: 'preview',
-        valid: true,
-        yawDeg: plot.rotation ?? 0,
-        opacity: 0.9,
-      });
-      ghost.position.set(c.x, 0, c.z);
       liftGhost(ghost);
       this.scene.add(ghost);
       this.plotBuildGhost = ghost;
@@ -7580,9 +7439,9 @@ export class ForgeHeartGame {
     const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
 
     if (s.step === 'choose') {
-      if (stepEl) stepEl.textContent = 'Step 1 · Choose build or transform';
+      if (stepEl) stepEl.textContent = 'Step 1 · Choose a building';
       if (quoteEl) {
-        quoteEl.textContent = `Brass ${this.inv.brass.toLocaleString()} · pick a structure to preview on the plot`;
+        quoteEl.textContent = `Brass ${this.inv.brass.toLocaleString()} · place on pad · [/] rotate entry`;
       }
       if (nextBtn) {
         nextBtn.textContent = 'Close';
@@ -7593,7 +7452,7 @@ export class ForgeHeartGame {
       const hint = document.createElement('p');
       hint.className = 'stall-wizard-hint';
       hint.textContent =
-        'CURRENT pad is shown dim with front arrow. Pick a build or transform — bright NEW preview appears for placement.';
+        'Place buildings on this pad. ENTRY arrow shows the door. Buildings need colliders, cannot overlap, and must touch the pad (can hang off edges).';
       body.appendChild(hint);
       for (const def of PLOT_BUILD_CATALOG) {
         const q = plot ? quotePlotBuild(plot, def.kind) : { ok: false, cost: 0, offZone: false, msg: '' };
@@ -7611,43 +7470,13 @@ export class ForgeHeartGame {
         btn.addEventListener('click', () => {
           if (!q.ok) return;
           s.buildKind = def.kind;
-          s.transform = null;
           s.step = 'place';
           s.quotedCost = q.cost;
           s.offZone = q.offZone;
           s.placeLx = 0;
           s.placeLz = 0;
           s.previewYaw = 0;
-          s.bridgeEndX = s.centerX + s.cellSize * 0.9;
-          s.bridgeEndZ = s.centerZ;
-          this.buildDockPinned = false;
-          this.rebuildPlotBuildGhosts();
-          this.refreshPlotBuildUi();
-        });
-        body.appendChild(btn);
-      }
-      const tr = document.createElement('p');
-      tr.className = 'stall-wizard-hint';
-      tr.style.marginTop = '0.75rem';
-      tr.textContent = 'Transform';
-      body.appendChild(tr);
-      for (const [tool, label] of [
-        ['rotate', 'Rotate plot 90°'],
-        ['move', 'Move platform freely'],
-      ] as const) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'stall-wizard-btn';
-        btn.style.display = 'block';
-        btn.style.width = '100%';
-        btn.style.marginBottom = '0.35rem';
-        btn.textContent = label;
-        btn.addEventListener('click', () => {
-          s.transform = tool;
-          s.buildKind = null;
-          s.step = 'transform';
-          s.previewWorldX = s.centerX;
-          s.previewWorldZ = s.centerZ;
+          s.placeValid = true;
           this.buildDockPinned = false;
           this.rebuildPlotBuildGhosts();
           this.refreshPlotBuildUi();
@@ -7663,51 +7492,19 @@ export class ForgeHeartGame {
       if (stepEl) stepEl.textContent = `Placing · ${name}`;
       if (title) title.textContent = name;
       if (quoteEl) {
-        quoteEl.textContent = `${s.quotedCost.toLocaleString()}b${s.offZone ? ' · off-zone' : ''} · you ${this.inv.brass.toLocaleString()}b`;
+        const placeNote = s.placeValid ? '' : ' · INVALID place';
+        quoteEl.textContent = `${s.quotedCost.toLocaleString()}b${s.offZone ? ' · off-zone' : ''} · yaw ${Math.round(s.previewYaw)}°${placeNote}`;
       }
       if (nextBtn) {
         nextBtn.textContent = 'Confirm';
-        nextBtn.disabled = this.inv.brass < s.quotedCost;
+        nextBtn.disabled = this.inv.brass < s.quotedCost || !s.placeValid;
       }
       if (backBtn) backBtn.textContent = 'Catalog';
       body.innerHTML = '';
       const p = document.createElement('p');
       p.className = 'stall-wizard-hint';
       p.textContent =
-        s.buildKind === 'bridge'
-          ? `Aim bridge end (look/arrows) · snaps to nearest owned platform · 3× wide rope · Confirm.`
-          : `Aim on platform (look/arrows) · free place · [/] rotates · Confirm pays.`;
-      body.appendChild(p);
-      this.syncBuildDockToStep();
-      return;
-    }
-
-    if (s.step === 'transform' && s.transform) {
-      if (stepEl) {
-        stepEl.textContent =
-          s.transform === 'rotate' ? 'Transform · Rotate' : 'Transform · Free move';
-      }
-      if (title) {
-        title.textContent = s.transform === 'rotate' ? 'Rotate plot' : 'Move platform';
-      }
-      if (quoteEl) {
-        quoteEl.textContent =
-          s.transform === 'rotate'
-            ? `NEW ${Math.round(s.previewYaw)}° · CURRENT dimmed`
-            : `NEW (${s.previewWorldX.toFixed(0)}, ${s.previewWorldZ.toFixed(0)}) free`;
-      }
-      if (nextBtn) {
-        nextBtn.textContent = 'Confirm';
-        nextBtn.disabled = false;
-      }
-      if (backBtn) backBtn.textContent = 'Catalog';
-      body.innerHTML = '';
-      const p = document.createElement('p');
-      p.className = 'stall-wizard-hint';
-      p.textContent =
-        s.transform === 'rotate'
-          ? `Dim CURRENT · bright NEW rotation · [/] 90° · Confirm.`
-          : `Dim CURRENT · bright NEW free position · look/arrows move · district limits · Confirm.`;
+        'Aim on pad (look/arrows) · [/] rotate entry face · cannot overlap · must touch pad · Confirm.';
       body.appendChild(p);
       this.syncBuildDockToStep();
     }
@@ -7724,30 +7521,22 @@ export class ForgeHeartGame {
     const d = districtById(s.districtId);
 
     if (s.step === 'place' && s.buildKind) {
-      let bridgeTo: string | null = null;
-      if (s.buildKind === 'bridge' && d) {
-        const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
-        if (plot) {
-          // Prefer aim-near target, else nearest owned
-          let best = nearestOwnedPlot(this.inv.plazaPlots, plot, d);
-          if (best) {
-            // Prefer aim-closest owned platform
-            for (const p of this.inv.plazaPlots.plots) {
-              if (p.owner !== 'player' || p.id === plot.id) continue;
-              if (p.districtId !== plot.districtId) continue;
-              const pos = plotLivePos(p, d);
-              const dist = Math.hypot(s.bridgeEndX - pos.x, s.bridgeEndZ - pos.z);
-              const bestPos = plotLivePos(best, d);
-              const bestD = Math.hypot(s.bridgeEndX - bestPos.x, s.bridgeEndZ - bestPos.z);
-              if (dist < bestD) best = p;
-            }
-            bridgeTo = best.id;
-          }
+      const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
+      if (plot) {
+        const place = validateBuildingPlacement(
+          plot,
+          s.buildKind,
+          s.cellSize,
+          s.placeLx,
+          s.placeLz,
+          s.previewYaw,
+        );
+        if (!place.ok) {
+          this.toast(place.msg ?? 'Invalid placement.', 3);
+          return;
         }
       }
       const r = developPlot(this.inv, s.plotId, s.buildKind, {
-        bridgeFacing: s.bridgeFacing,
-        bridgeToPlotId: bridgeTo,
         lx: s.placeLx,
         lz: s.placeLz,
         yaw: s.previewYaw,
@@ -7764,58 +7553,16 @@ export class ForgeHeartGame {
         s.buildKind = null;
         s.placeLx = 0;
         s.placeLz = 0;
-        const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
+        s.previewYaw = 0;
         if (plot && d) {
           const live = plotLivePos(plot, d);
           s.centerX = live.x;
           s.centerZ = live.z;
-          s.previewWorldX = live.x;
-          s.previewWorldZ = live.z;
-          s.previewYaw = plot.rotation;
         }
         this.buildDockPinned = false;
         this.rebuildPlotBuildGhosts();
         this.refreshPlotBuildUi();
       }
-      return;
-    }
-
-    if (s.step === 'transform' && s.transform === 'rotate') {
-      const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
-      if (plot) {
-        plot.rotation = ((s.previewYaw % 360) + 360) % 360;
-        this.toast(`Plot rotated to ${Math.round(plot.rotation)}°.`, 3);
-        this.syncPlotOwnershipVisuals();
-        writeSlot(this.activeSlot, this.buildSaveData());
-      }
-      s.step = 'choose';
-      s.transform = null;
-      this.buildDockPinned = false;
-      this.rebuildPlotBuildGhosts();
-      this.refreshPlotBuildUi();
-      return;
-    }
-
-    if (s.step === 'transform' && s.transform === 'move') {
-      const r = movePlot(this.inv, s.plotId, s.previewWorldX, s.previewWorldZ);
-      this.toast(r.msg, 3);
-      if (r.ok) {
-        const plot = this.inv.plazaPlots.plots.find((p) => p.id === s.plotId);
-        if (plot && d) {
-          const live = plotLivePos(plot, d);
-          s.centerX = live.x;
-          s.centerZ = live.z;
-          s.previewWorldX = live.x;
-          s.previewWorldZ = live.z;
-        }
-        this.syncPlotOwnershipVisuals();
-        writeSlot(this.activeSlot, this.buildSaveData());
-      }
-      s.step = 'choose';
-      s.transform = null;
-      this.buildDockPinned = false;
-      this.rebuildPlotBuildGhosts();
-      this.refreshPlotBuildUi();
     }
   }
 
@@ -8786,11 +8533,6 @@ export class ForgeHeartGame {
         rails = best.rails;
       }
     }
-    // Rope long-sides on plot bridges are grindable
-    if (this.skyCity?.getPlotBridgeRails) {
-      rails = [...rails, ...this.skyCity.getPlotBridgeRails()];
-    }
-
     // Free-roam: island decks + board-only skyways (no solid roads between islands)
     const floorY = this.sampleBoardFloorY(this.board.position.x, this.board.position.z);
     this.board.tick(

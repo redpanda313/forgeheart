@@ -140,3 +140,51 @@ export function offsetColliders(cols: Collider[], wx: number, wy: number, wz: nu
     kind: c.kind,
   }));
 }
+
+/**
+ * Rotate local-space colliders about Y then translate into world.
+ * AABB is rebuilt from the eight corners so yaw is respected.
+ */
+export function rotateOffsetColliders(
+  cols: Collider[],
+  wx: number,
+  wy: number,
+  wz: number,
+  yawRad: number,
+): Collider[] {
+  const c = Math.cos(yawRad);
+  const s = Math.sin(yawRad);
+  const rot = (x: number, z: number) => ({ x: x * c + z * s, z: -x * s + z * c });
+  return cols.map((col) => {
+    const xs = [col.min.x, col.max.x];
+    const ys = [col.min.y, col.max.y];
+    const zs = [col.min.z, col.max.z];
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxZ = -Infinity;
+    for (const x of xs) {
+      for (const y of ys) {
+        for (const z of zs) {
+          const p = rot(x, z);
+          const wxp = p.x + wx;
+          const wyp = y + wy;
+          const wzp = p.z + wz;
+          minX = Math.min(minX, wxp);
+          maxX = Math.max(maxX, wxp);
+          minY = Math.min(minY, wyp);
+          maxY = Math.max(maxY, wyp);
+          minZ = Math.min(minZ, wzp);
+          maxZ = Math.max(maxZ, wzp);
+        }
+      }
+    }
+    return {
+      min: new THREE.Vector3(minX, minY, minZ),
+      max: new THREE.Vector3(maxX, maxY, maxZ),
+      kind: col.kind,
+    };
+  });
+}
