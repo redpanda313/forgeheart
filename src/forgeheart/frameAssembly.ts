@@ -385,23 +385,108 @@ export function assembleFrame(
   return { ok: true, msg: `Assembled ${frame.name} · sell ~${frame.sellValue}b · Q${frame.quality.toFixed(2)}`, frame };
 }
 
-/** Worker-program helper: assemble a serviceable frame from whatever is available. */
+/** Inventions in stock that fit a slot, best quality / sell value first. */
+export function listInventionPartsForSlot(
+  inv: InventoryState,
+  slot: FrameSlotId,
+): FramePartRef[] {
+  return inv.customRecipes
+    .filter(
+      (r) => (inv.customStock[r.id] ?? 0) >= 1 && inventionFitsSlot(r, slot),
+    )
+    .sort((a, b) => {
+      const qa = partQuality(inv, `custom:${a.id}`);
+      const qb = partQuality(inv, `custom:${b.id}`);
+      if (qb !== qa) return qb - qa;
+      return (b.sellValue ?? 0) - (a.sellValue ?? 0);
+    })
+    .map((r) => `custom:${r.id}` as FramePartRef);
+}
+
+/**
+ * Worker-program helper: auto-fill five slots.
+ * Prefers crafted inventions when available (especially Fine mode) so frames
+ * upgrade past commodity-only builds.
+ */
 export function tryAutoAssembleFrame(
   inv: InventoryState,
   preferFine: boolean,
 ): { ok: boolean; msg: string; frame?: AssembledFrame } {
-  const pick = (slot: FrameSlotId, prefer: FramePartRef[]): FramePartRef | null => {
-    for (const ref of prefer) {
-      if (slotAccepts(inv, slot, ref)) return ref;
+  /** Track multi-slot use of the same stock unit within this assemble. */
+  const reserved = new Map<string, number>();
+
+  const available = (ref: FramePartRef): boolean => {
+    const used = reserved.get(ref) ?? 0;
+    if (isCustomPartRef(ref)) {
+      const rid = customRecipeIdFromRef(ref);
+      return (inv.customStock[rid] ?? 0) - used >= 1;
     }
-    const any = listPartsForSlot(inv, slot);
-    return any[0] ?? null;
+    return getQty(inv, ref) - used >= 1;
   };
+
+  const take = (ref: FramePartRef): FramePartRef => {
+    reserved.set(ref, (reserved.get(ref) ?? 0) + 1);
+    return ref;
+  };
+
+  const pick = (
+    slot: FrameSlotId,
+    commodityPrefer: FramePartRef[],
+  ): FramePartRef | null => {
+    const inventions = listInventionPartsForSlot(inv, slot).filter((ref) =>
+      available(ref),
+    );
+
+    // Fine / upgraded: inventions first → premium commodities
+    // Serviceable: use inventions when they beat commodity quality
+    if (preferFine) {
+      for (const ref of inventions) {
+        if (slotAccepts(inv, slot, ref)) return take(ref);
+      }
+      for (const ref of commodityPrefer) {
+        if (slotAccepts(inv, slot, ref) && available(ref)) return take(ref);
+      }
+    } else {
+      let bestCommodity: FramePartRef | null = null;
+      for (const ref of commodityPrefer) {
+        if (slotAccepts(inv, slot, ref) && available(ref)) {
+          bestCommodity = ref;
+          break;
+        }
+      }
+      const bestInvent = inventions[0] ?? null;
+      if (bestInvent) {
+        const inventQ = partQuality(inv, bestInvent);
+        const commodityQ = bestCommodity ? partQuality(inv, bestCommodity) : 0;
+        if (!bestCommodity || inventQ > commodityQ + 0.05) {
+          return take(bestInvent);
+        }
+      }
+      if (bestCommodity) return take(bestCommodity);
+      for (const ref of inventions) return take(ref);
+    }
+
+    // Fallback: any remaining part for the slot, best quality first
+    const any = listPartsForSlot(inv, slot)
+      .filter((ref) => available(ref))
+      .sort((a, b) => partQuality(inv, b) - partQuality(inv, a));
+    if (any[0]) return take(any[0]!);
+    return null;
+  };
+
   const fill: FrameSlotFill = {
-    chassis: pick('chassis', preferFine ? ['spore_silk', 'cloud_iron', 'scrap_brass'] : ['cloud_iron', 'scrap_brass']),
+    chassis: pick(
+      'chassis',
+      preferFine
+        ? ['spore_silk', 'cloud_iron', 'scrap_brass', 'glass_pane', 'sky_salt']
+        : ['cloud_iron', 'scrap_brass', 'spore_silk', 'glass_pane', 'sky_salt'],
+    ),
     mechanisms: pick('mechanisms', ['gear_blank']),
     power: pick('power', ['fuel_cell']),
-    wiring: pick('wiring', preferFine ? ['polished_wire', 'wire'] : ['wire', 'polished_wire']),
+    wiring: pick(
+      'wiring',
+      preferFine ? ['polished_wire', 'wire'] : ['wire', 'polished_wire'],
+    ),
     personality: pick('personality', [
       'bloom_aether',
       'bloom_harbor',

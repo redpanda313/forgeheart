@@ -11,6 +11,7 @@ import {
   convertLegacyFrames,
   makeLegacyAssembledFrame,
   inventionFrameSlots,
+  inventionFitsSlot,
   FLOWER_IDS,
 } from './frameAssembly';
 import {
@@ -87,6 +88,14 @@ import {
   quotePlotAirwayLink,
   plotShapeLabel,
   PLOT_SHAPES,
+  MAX_PLOT_LAYER,
+  hasPlotAirway,
+  ensureGardenSpots,
+  GARDEN_SPOT_COUNT,
+  gardenSpotLocalOffsets,
+  plotEmptyTax,
+  plotStructureUpkeep,
+  plotIsEmptyHolding,
   type PlazaPlotsState,
   type PlotState,
   type DistrictLite,
@@ -364,6 +373,8 @@ export type ProgramNodeKind =
   | 'craft_polished_wire'
   | 'craft_fine_frame'
   | 'craft_custom'
+  /** Create a brand-new invention (needs Apprentice Inventor = pay grade 5) */
+  | 'invent_recipe'
   // Stall price policies
   | 'price_deal_shelf'
   | 'price_fair_shelf'
@@ -403,7 +414,11 @@ export type ProgramNodeKind =
   // Stock player stall from inventory
   | 'stock_stall_frame'
   | 'stock_stall_wire'
-  | 'stock_stall_scrap';
+  | 'stock_stall_scrap'
+  /** Stock chosen invention (program.inventionId) */
+  | 'stock_stall_invention'
+  /** Stock chosen commodity (program.stallCommodityId + stallStockQty) */
+  | 'stock_stall_goods';
 
 export type ProgramNodeCategory =
   | 'haul'
@@ -455,7 +470,13 @@ export const PROGRAM_NODE_DEFS: {
   {
     id: 'craft_custom',
     name: 'Craft Invention',
-    blurb: 'First invention in book (needs L3 invent)',
+    blurb: 'Craft chosen invention from your book (set target in program)',
+    category: 'craft',
+  },
+  {
+    id: 'invent_recipe',
+    name: 'Invent New Recipe',
+    blurb: 'Prototype a new invention · needs Apprentice Inventor (pay G5)',
     category: 'craft',
   },
   // Market sell
@@ -563,6 +584,18 @@ export const PROGRAM_NODE_DEFS: {
     category: 'stall',
   },
   {
+    id: 'stock_stall_invention',
+    name: 'Stock Stall · Invention',
+    blurb: 'Shelf your chosen invention (set target in program)',
+    category: 'stall',
+  },
+  {
+    id: 'stock_stall_goods',
+    name: 'Stock Stall · Goods',
+    blurb: 'Shelf chosen commodity qty (set target in program)',
+    category: 'stall',
+  },
+  {
     id: 'price_deal_shelf',
     name: 'Price Shelf · Deals (−15%)',
     blurb: 'Stall · undercut fair for volume',
@@ -647,6 +680,21 @@ export interface WorkerProgram {
   nodes: ProgramNodeKind[];
   /** Preference for Make Frame nodes — serviceable stock vs fine parts */
   framePref?: 'service' | 'fine';
+  /**
+   * Invention recipe id for craft_custom / stock_stall_invention / sell_invention.
+   * null = first recipe in the book.
+   */
+  inventionId?: string | null;
+  /**
+   * Commodity for stock_stall_goods (player-chosen stall restock).
+   * null = wire default.
+   */
+  stallCommodityId?: CommodityId | null;
+  /** Units moved onto stall per stock_stall_goods step (1–20). */
+  stallStockQty?: number;
+  /** Invent node: preferred material pair (null = auto-pick held invent mats). */
+  inventMatA?: CommodityId | null;
+  inventMatB?: CommodityId | null;
 }
 
 /** One-click program starters — balanced length, clear purpose. */
@@ -1657,6 +1705,22 @@ export function describeWorkerAssignment(inv: InventoryState, w: WorkerState): s
     if (p?.nodes.includes('pick_flowers')) {
       bits.push(`flowers: ${harvestSiteLabel(w.harvestSiteId)}${flowerBit}`);
     }
+    if (
+      p &&
+      (p.nodes.includes('craft_custom') ||
+        p.nodes.includes('stock_stall_invention') ||
+        p.nodes.includes('sell_invention'))
+    ) {
+      const rid = resolveProgramInventionId(inv, p);
+      const recipe = rid ? inv.customRecipes.find((r) => r.id === rid) : null;
+      bits.push(recipe ? `inv: ${recipe.name}` : 'inv: none');
+    }
+    if (p?.nodes.includes('stock_stall_goods')) {
+      const cid = p.stallCommodityId ?? 'wire';
+      bits.push(
+        `stall: ${COMMODITIES[cid]?.name ?? cid} ×${p.stallStockQty ?? 3}`,
+      );
+    }
     const site = bits.length ? ` · ${bits.join(' · ')}` : '';
     return `Program “${p?.name ?? '?'}”${site}`;
   }
@@ -1883,7 +1947,7 @@ export function emptyInventory(starterBrass = 40): InventoryState {
           'harvest',
           'return_bay',
           'craft_custom',
-          'stock_stall_frame',
+          'stock_stall_invention',
           'price_fair_shelf',
         ],
       },
@@ -2234,6 +2298,12 @@ export interface SoftGoalFlags {
   hiredNeighbor?: boolean;
   /** Owned at least one plaza plot (Task 4+) */
   ownedPlot?: boolean;
+  /** Built a garden on any owned plot (optional onboarding) */
+  plantedGarden?: boolean;
+  /** Bound retail front on a plot (optional onboarding) */
+  boundRetail?: boolean;
+  /** Last soft-goal id announced (toasts / compass surface) */
+  lastAnnouncedGoalId?: string;
 }
 
 export type StandingTierId =
@@ -2379,6 +2449,28 @@ export const SOFT_GOALS: SoftGoalDef[] = [
     isDone: (inv) => !!inv.softGoalFlags?.hiredNeighbor,
   },
   {
+    id: 'plot_garden',
+    title: 'Plant a plot garden',
+    hint: 'Lease office · Develop · Flower garden on an owned pad',
+    empireOnly: true,
+    isDone: (inv) =>
+      !!inv.softGoalFlags?.plantedGarden ||
+      !!inv.plazaPlots?.plots?.some(
+        (p) => p.owner === 'player' && p.buildings.some((b) => b.kind === 'garden'),
+      ),
+  },
+  {
+    id: 'plot_retail',
+    title: 'Bind a retail front',
+    hint: 'Lease office · Develop · Retail front (or bind district stall)',
+    empireOnly: true,
+    isDone: (inv) =>
+      !!inv.softGoalFlags?.boundRetail ||
+      !!inv.plazaPlots?.plots?.some(
+        (p) => p.owner === 'player' && (p.retailBound || p.buildings.some((b) => b.kind === 'retail')),
+      ),
+  },
+  {
     id: 'plot_shape',
     title: 'Remodel a pad shape',
     hint: 'Lease office · own a plot · octagon / circle / triangle',
@@ -2513,13 +2605,28 @@ export interface SoftGoalView {
 export function listSoftGoalViews(inv: InventoryState): SoftGoalView[] {
   ensureStandingState(inv);
   const empire = inv.apartmentOwned;
+  const ownsLand =
+    !!inv.softGoalFlags?.ownedPlot || playerOwnedPlotCount(inv) > 0;
+  const metNeighbor = !!inv.softGoalFlags?.metNeighbor;
+  const shops = ownedCityStallCount(inv);
   const filtered = SOFT_GOALS.filter((g) => {
     if (g.empireOnly && !empire) return false;
     // RE/debt goals appear after first neighbor contact (or any stall)
     if (
       (g.id === 'clear_debt' || g.id === 'own_plot' || g.id === 'hire_neighbor') &&
-      ownedCityStallCount(inv) < 1 &&
-      !inv.softGoalFlags?.metNeighbor
+      shops < 1 &&
+      !metNeighbor
+    ) {
+      return false;
+    }
+    // Optional pad builds + RE expression only after first land deed
+    if (
+      (g.id === 'plot_garden' ||
+        g.id === 'plot_retail' ||
+        g.id === 'plot_shape' ||
+        g.id === 'plot_layer' ||
+        g.id === 'plot_airway') &&
+      !ownsLand
     ) {
       return false;
     }
@@ -2538,6 +2645,95 @@ export function listSoftGoalViews(inv: InventoryState): SoftGoalView[] {
       active,
     };
   });
+}
+
+/**
+ * Task 14: detect soft-goal advance and return toast copy.
+ * Updates softGoalFlags.lastAnnouncedGoalId when the active goal changes.
+ */
+export function pollSoftGoalAnnouncement(inv: InventoryState): {
+  toast: string | null;
+  goal: SoftGoalView | null;
+  changed: boolean;
+} {
+  ensureStandingState(inv);
+  // Keep optional flags in sync with world state
+  if (
+    inv.plazaPlots?.plots?.some(
+      (p) => p.owner === 'player' && p.buildings.some((b) => b.kind === 'garden'),
+    )
+  ) {
+    inv.softGoalFlags.plantedGarden = true;
+  }
+  if (
+    inv.plazaPlots?.plots?.some(
+      (p) =>
+        p.owner === 'player' &&
+        (p.retailBound || p.buildings.some((b) => b.kind === 'retail')),
+    )
+  ) {
+    inv.softGoalFlags.boundRetail = true;
+  }
+
+  const active = getActiveSoftGoal(inv);
+  const prev = inv.softGoalFlags.lastAnnouncedGoalId ?? null;
+  const nextId = active?.id ?? (inv.apartmentOwned ? '_empire_done' : null);
+  if (!nextId || nextId === prev) {
+    return { toast: null, goal: active, changed: false };
+  }
+  inv.softGoalFlags.lastAnnouncedGoalId = nextId;
+  if (!active) {
+    return {
+      toast: 'Soft goals clear · grow standing, shops, and skyline at your pace.',
+      goal: null,
+      changed: true,
+    };
+  }
+  const wasProgress = prev && prev !== '_empire_done';
+  const toast = wasProgress
+    ? `Next soft goal: ${active.title} — ${active.hint}`
+    : `Soft goal: ${active.title} — ${active.hint}`;
+  return { toast, goal: active, changed: true };
+}
+
+/** Longer coach line for first-time goal context (city enter / map). */
+export function softGoalCoachLine(inv: InventoryState): string | null {
+  const g = getActiveSoftGoal(inv);
+  if (!g) return null;
+  switch (g.id) {
+    case 'workshop':
+      return 'Industrial slips west · lease the empire workshop (craft · hire · invent).';
+    case 'neighbor':
+      return 'Residential ring · walk to a named home · E talk. Drama and debt come next.';
+    case 'hire':
+      return 'Bay hire board (or workshop hire) · free a pad slot if full.';
+    case 'stall':
+      return 'Lease a district stall · stock shelf · stay open for sales.';
+    case 'invent':
+      return 'Bay L3 or workshop invent desk · spend mats for a custom recipe.';
+    case 'network':
+      return 'Open 3 plazas · premium districts pay invent bonuses.';
+    case 'standing_friendly':
+      return 'Standing 25 · hire fairly, clear debts, open shops, repair rogues.';
+    case 'clear_debt':
+      return 'Talk to Pip/Bolt (or any debt drama) · Clear debt or gift brass/goods.';
+    case 'own_plot':
+      return 'M map · LEASE pin at Market or Residential · buy a city pad (or a neighbor home).';
+    case 'hire_neighbor':
+      return 'Neighbor panel · Hire · needs free bay crew slot.';
+    case 'plot_garden':
+      return 'Lease office · select your gold pad · Develop · Flower garden.';
+    case 'plot_retail':
+      return 'Lease office · Develop · Retail front binds your district stall lease.';
+    case 'plot_shape':
+      return 'Lease office · Shape · try octagon / circle / triangle (costs brass).';
+    case 'plot_layer':
+      return 'Lease office · Add deck · stack L1+ for another full building set.';
+    case 'plot_airway':
+      return 'Own 2 pads in one district · lease office · Airway between them.';
+    default:
+      return `${g.title} · ${g.hint}`;
+  }
 }
 
 export function getActiveSoftGoal(inv: InventoryState): SoftGoalView | null {
@@ -3813,8 +4009,70 @@ export function upgradeStorage(
 /** Nodes free on base wage; each extra node needs pay grade / costs more wages */
 export const PROGRAM_FREE_NODES = 3;
 
+/**
+ * Pay-raise rank ladder (grade = number of raises from hire).
+ * Grade 5 = Apprentice Inventor — may run invent_recipe nodes.
+ */
+export const APPRENTICE_INVENTOR_GRADE = 5;
+
+export interface PayGradeRank {
+  grade: number;
+  title: string;
+  blurb: string;
+}
+
+export const PAY_GRADE_RANKS: PayGradeRank[] = [
+  { grade: 0, title: 'Dock Hand', blurb: 'Entry crew · short programs only' },
+  { grade: 1, title: 'Bay Runner', blurb: 'First raise · longer hauls' },
+  { grade: 2, title: 'Floor Hand', blurb: 'Steady craft work' },
+  { grade: 3, title: 'Journeyman', blurb: 'Multi-step programs' },
+  { grade: 4, title: 'Specialist', blurb: 'Complex automation routes' },
+  {
+    grade: 5,
+    title: 'Apprentice Inventor',
+    blurb: 'May invent new recipes on programs',
+  },
+  { grade: 6, title: 'Workshop Lead', blurb: 'Senior automation authority' },
+  { grade: 7, title: 'Master Artisan', blurb: 'Peak craft & program length' },
+  { grade: 8, title: 'Chief Inventor', blurb: 'Empire R&D rank' },
+];
+
+export function payGradeTitle(grade: number): string {
+  const g = Math.max(0, Math.floor(grade));
+  const exact = PAY_GRADE_RANKS.find((r) => r.grade === g);
+  if (exact) return exact.title;
+  const top = PAY_GRADE_RANKS[PAY_GRADE_RANKS.length - 1]!;
+  if (g > top.grade) return `${top.title} ${g - top.grade + 1}`;
+  // Between defined ranks — use nearest lower
+  let best = PAY_GRADE_RANKS[0]!;
+  for (const r of PAY_GRADE_RANKS) {
+    if (r.grade <= g) best = r;
+  }
+  return best.title;
+}
+
+export function payGradeBlurb(grade: number): string {
+  const g = Math.max(0, Math.floor(grade));
+  const exact = PAY_GRADE_RANKS.find((r) => r.grade === g);
+  if (exact) return exact.blurb;
+  if (g >= APPRENTICE_INVENTOR_GRADE) return 'Invent rights · long programs';
+  return 'Raise pay for longer programs';
+}
+
+/** True when crew may run invent_recipe (new inventions). */
+export function canWorkerInvent(w: WorkerState): boolean {
+  return (w.payGrade ?? 0) >= APPRENTICE_INVENTOR_GRADE;
+}
+
 export function minPayGradeForNodes(nodeCount: number): number {
   return Math.max(0, Math.ceil((nodeCount - PROGRAM_FREE_NODES) / 2));
+}
+
+/** Programs with invent_recipe need at least Apprentice Inventor. */
+export function minPayGradeForProgram(p: WorkerProgram): number {
+  const byLen = minPayGradeForNodes(p.nodes.length);
+  const needsInvent = p.nodes.includes('invent_recipe');
+  return needsInvent ? Math.max(byLen, APPRENTICE_INVENTOR_GRADE) : byLen;
 }
 
 export function programNodeWage(nodeCount: number): number {
@@ -4385,22 +4643,36 @@ export function hireLaborer(inv: InventoryState): { ok: boolean; msg: string; wo
 /** Spend brass to raise a worker’s pay grade (unlocks longer task lists). */
 export const PAY_RAISE_COST = 40;
 
+export function raiseWorkerPayCost(payGrade: number): number {
+  return PAY_RAISE_COST + Math.max(0, payGrade) * 25;
+}
+
 export function raiseWorkerPay(
   inv: InventoryState,
   workerId: string,
 ): { ok: boolean; msg: string } {
   const w = inv.workers.find((x) => x.id === workerId);
   if (!w) return { ok: false, msg: 'Worker not found.' };
-  const cost = PAY_RAISE_COST + w.payGrade * 25;
+  const cost = raiseWorkerPayCost(w.payGrade ?? 0);
   if (inv.brass < cost) {
-    return { ok: false, msg: `Need ${cost} brass to raise ${w.name}’s pay grade.` };
+    return {
+      ok: false,
+      msg: `Need ${cost} brass to raise ${w.name} to ${payGradeTitle((w.payGrade ?? 0) + 1)}.`,
+    };
   }
   inv.brass -= cost;
-  w.payGrade += 1;
+  w.payGrade = (w.payGrade ?? 0) + 1;
+  const title = payGradeTitle(w.payGrade);
   const nodes = PROGRAM_FREE_NODES + w.payGrade * 2;
+  const inventBit =
+    w.payGrade === APPRENTICE_INVENTOR_GRADE
+      ? ' · can invent new recipes on programs!'
+      : w.payGrade > APPRENTICE_INVENTOR_GRADE
+        ? ' · invent rights kept'
+        : ` · invent at G${APPRENTICE_INVENTOR_GRADE} (${payGradeTitle(APPRENTICE_INVENTOR_GRADE)})`;
   return {
     ok: true,
-    msg: `${w.name} pay grade ${w.payGrade} (−${cost}). Can run programs up to ~${nodes} steps.`,
+    msg: `${w.name} → ${title} (G${w.payGrade}, −${cost}b). Programs up to ~${nodes} steps${inventBit}`,
   };
 }
 
@@ -4446,11 +4718,15 @@ export function assignWorkerProgram(
   const p = inv.programs.find((x) => x.id === programId);
   if (!p) return { ok: false, msg: 'Program not found.' };
   if (p.nodes.length < 1) return { ok: false, msg: 'Program has no nodes.' };
-  const need = minPayGradeForNodes(p.nodes.length);
-  if (w.payGrade < need) {
+  const need = minPayGradeForProgram(p);
+  if ((w.payGrade ?? 0) < need) {
+    const inventNeed =
+      p.nodes.includes('invent_recipe') && (w.payGrade ?? 0) < APPRENTICE_INVENTOR_GRADE
+        ? ` · invent steps need ${payGradeTitle(APPRENTICE_INVENTOR_GRADE)} (G${APPRENTICE_INVENTOR_GRADE})`
+        : '';
     return {
       ok: false,
-      msg: `${w.name} refuses “${p.name}” (${p.nodes.length} steps) — need pay grade ${need} (has ${w.payGrade}). Raise pay first.`,
+      msg: `${w.name} refuses “${p.name}” — need ${payGradeTitle(need)} (G${need}); is ${payGradeTitle(w.payGrade ?? 0)} (G${w.payGrade ?? 0})${inventNeed}. Raise pay first.`,
     };
   }
   const maxNodes = workerMaxProgramNodes(w);
@@ -4528,13 +4804,145 @@ export function setProgramFramePref(
   };
 }
 
+/** Which invention craft_custom / stock_stall_invention / sell_invention use. */
+export function setProgramInvention(
+  inv: InventoryState,
+  programId: string,
+  recipeId: string | null,
+): { ok: boolean; msg: string } {
+  const p = inv.programs.find((x) => x.id === programId);
+  if (!p) return { ok: false, msg: 'Program not found.' };
+  if (recipeId == null || recipeId === '') {
+    p.inventionId = null;
+    return { ok: true, msg: `“${p.name}” invention target: first in book` };
+  }
+  const recipe = inv.customRecipes.find((r) => r.id === recipeId);
+  if (!recipe) return { ok: false, msg: 'Unknown invention.' };
+  p.inventionId = recipeId;
+  return { ok: true, msg: `“${p.name}” invention target: ${recipe.name}` };
+}
+
+/** Commodity + qty for stock_stall_goods. */
+export function setProgramStallGoods(
+  inv: InventoryState,
+  programId: string,
+  commodityId: CommodityId | null,
+  qty = 3,
+): { ok: boolean; msg: string } {
+  const p = inv.programs.find((x) => x.id === programId);
+  if (!p) return { ok: false, msg: 'Program not found.' };
+  if (commodityId && !(commodityId in COMMODITIES)) {
+    return { ok: false, msg: 'Unknown commodity.' };
+  }
+  p.stallCommodityId = commodityId;
+  p.stallStockQty = Math.max(1, Math.min(20, Math.floor(qty) || 3));
+  if (!commodityId) {
+    return { ok: true, msg: `“${p.name}” stall goods: wire ×${p.stallStockQty} (default)` };
+  }
+  return {
+    ok: true,
+    msg: `“${p.name}” stall goods: ${COMMODITIES[commodityId].name} ×${p.stallStockQty}`,
+  };
+}
+
+/** Material pair for invent_recipe node. */
+export function setProgramInventMats(
+  inv: InventoryState,
+  programId: string,
+  a: CommodityId | null,
+  b: CommodityId | null,
+): { ok: boolean; msg: string } {
+  const p = inv.programs.find((x) => x.id === programId);
+  if (!p) return { ok: false, msg: 'Program not found.' };
+  if (a && !INVENT_MATERIAL_IDS.includes(a)) {
+    return { ok: false, msg: `${COMMODITIES[a]?.name ?? a} can’t invent.` };
+  }
+  if (b && !INVENT_MATERIAL_IDS.includes(b)) {
+    return { ok: false, msg: `${COMMODITIES[b]?.name ?? b} can’t invent.` };
+  }
+  if (a && b && a === b) {
+    return { ok: false, msg: 'Pick two different invent materials.' };
+  }
+  p.inventMatA = a;
+  p.inventMatB = b;
+  if (!a || !b) {
+    return { ok: true, msg: `“${p.name}” invent mats: auto from pack` };
+  }
+  return {
+    ok: true,
+    msg: `“${p.name}” invent mats: ${COMMODITIES[a].name} + ${COMMODITIES[b].name}`,
+  };
+}
+
+/** Resolve which invention a program should craft/stock/sell. */
+export function resolveProgramInventionId(
+  inv: InventoryState,
+  prog: WorkerProgram | undefined,
+): string | null {
+  if (prog?.inventionId) {
+    if (inv.customRecipes.some((r) => r.id === prog.inventionId)) return prog.inventionId;
+  }
+  return inv.customRecipes[0]?.id ?? null;
+}
+
 /**
- * Worker Make Frame: craft missing wire/gear from stock, soft-buy a bloom if
- * needed, then auto-fill five slots. Prefer fine parts when requested.
+ * Craft invented goods that can fill frame slots (up to a few per assemble).
+ * Prefers program-selected invention, then highest quality recipes.
+ */
+export function craftInventionsForFrameAssemble(
+  inv: InventoryState,
+  preferFine: boolean,
+  preferredInventionId?: string | null,
+): string[] {
+  const notes: string[] = [];
+  if (!canCraftAtHomeOrBay(inv) || inv.customRecipes.length < 1) return notes;
+
+  const sorted = [...inv.customRecipes].sort((a, b) => {
+    if (preferredInventionId) {
+      if (a.id === preferredInventionId) return -1;
+      if (b.id === preferredInventionId) return 1;
+    }
+    const qa = a.quality ?? 1;
+    const qb = b.quality ?? 1;
+    if (qb !== qa) return qb - qa;
+    return (b.sellValue ?? 0) - (a.sellValue ?? 0);
+  });
+
+  let crafted = 0;
+  const maxCraft = preferFine ? 3 : 2;
+  for (const recipe of sorted) {
+    if (crafted >= maxCraft) break;
+    const stock = inv.customStock[recipe.id] ?? 0;
+    // Always try to have at least 1 of preferred / high-quality inventions on hand
+    if (stock >= 1 && recipe.id !== preferredInventionId) continue;
+    if (stock >= 2) continue; // already stocked enough for multi-slot
+    // Serviceable lines only auto-craft inventions that are a real upgrade (Q2+)
+    // or the program-locked invention target
+    if (
+      !preferFine &&
+      recipe.id !== preferredInventionId &&
+      (recipe.quality ?? 1) < 2
+    ) {
+      continue;
+    }
+    if (maxCraftCustomTimes(inv, recipe.id) < 1) continue;
+    const r = craftCustom(inv, recipe.id);
+    if (r.ok) {
+      notes.push(`crafted ${recipe.name}`);
+      crafted += 1;
+    }
+  }
+  return notes;
+}
+
+/**
+ * Worker Make Frame: craft missing wire/gear, craft inventions when useful,
+ * soft-buy a bloom if needed, then auto-fill five slots (inventions preferred).
  */
 export function buildFrameForWorker(
   inv: InventoryState,
   preferFine: boolean,
+  opts?: { preferredInventionId?: string | null },
 ): { ok: boolean; msg: string } {
   if (inv.bayLevel < 1) {
     return { ok: false, msg: 'Lease a bay before assembling frames.' };
@@ -4566,7 +4974,11 @@ export function buildFrameForWorker(
     getQty(inv, 'bloom_sky') > 0 ||
     getQty(inv, 'bloom_spore') > 0 ||
     getQty(inv, 'bloom_harbor') > 0 ||
-    getQty(inv, 'bloom_aether') > 0;
+    getQty(inv, 'bloom_aether') > 0 ||
+    inv.customRecipes.some(
+      (r) =>
+        (inv.customStock[r.id] ?? 0) > 0 && inventionFitsSlot(r, 'personality'),
+    );
   if (!hasPersonality) {
     const vendor = findVendorForTrade('flower_gift', 'buy');
     if (vendor) {
@@ -4574,6 +4986,15 @@ export function buildFrameForWorker(
       if (buy.ok) notes.push('bought bloom');
     }
   }
+
+  // Craft invented parts so they can fill frame slots for upgraded builds
+  notes.push(
+    ...craftInventionsForFrameAssemble(
+      inv,
+      preferFine,
+      opts?.preferredInventionId ?? null,
+    ),
+  );
 
   const r = tryAutoAssembleFrame(inv, preferFine);
   if (!r.ok) {
@@ -4718,7 +5139,10 @@ export function applyProgramNodeResult(
   if (node === 'craft_frame' || node === 'craft_fine_frame') {
     const prog = w?.programId ? inv.programs.find((p) => p.id === w.programId) : undefined;
     const preferFine = node === 'craft_fine_frame' || prog?.framePref === 'fine';
-    const r = buildFrameForWorker(inv, preferFine);
+    // Prefer program invention target for frame parts when it fits a slot
+    const r = buildFrameForWorker(inv, preferFine, {
+      preferredInventionId: prog?.inventionId ?? null,
+    });
     return finish({ ok: r.ok, msg: `${name}: ${r.msg}` });
   }
 
@@ -4735,11 +5159,24 @@ export function applyProgramNodeResult(
   }
 
   if (node === 'craft_custom') {
-    const first = inv.customRecipes[0];
-    if (!first) {
-      return { ok: false, msg: `${name}: no inventions (invent at L3 desk first)` };
+    const prog = w?.programId ? inv.programs.find((p) => p.id === w.programId) : undefined;
+    const rid = resolveProgramInventionId(inv, prog);
+    if (!rid) {
+      return { ok: false, msg: `${name}: no inventions (invent at desk or run Invent New Recipe)` };
     }
-    const r = craftCustom(inv, first.id);
+    const r = craftCustom(inv, rid);
+    return finish({ ok: r.ok, msg: `${name}: ${r.msg}` });
+  }
+
+  if (node === 'invent_recipe') {
+    if (!w || !canWorkerInvent(w)) {
+      return {
+        ok: false,
+        msg: `${name}: invent needs ${payGradeTitle(APPRENTICE_INVENTOR_GRADE)} (G${APPRENTICE_INVENTOR_GRADE}) — raise pay ${APPRENTICE_INVENTOR_GRADE - (w?.payGrade ?? 0)} more time(s)`,
+      };
+    }
+    const prog = w.programId ? inv.programs.find((p) => p.id === w.programId) : undefined;
+    const r = inventRecipeForWorker(inv, prog);
     return finish({ ok: r.ok, msg: `${name}: ${r.msg}` });
   }
 
@@ -4777,7 +5214,12 @@ export function applyProgramNodeResult(
 
   // ——— Sell invention ———
   if (node === 'sell_invention') {
-    const rid = Object.keys(inv.customStock).find((k) => (inv.customStock[k] ?? 0) > 0);
+    const prog = w?.programId ? inv.programs.find((p) => p.id === w.programId) : undefined;
+    const preferred = resolveProgramInventionId(inv, prog);
+    const rid =
+      preferred && (inv.customStock[preferred] ?? 0) > 0
+        ? preferred
+        : Object.keys(inv.customStock).find((k) => (inv.customStock[k] ?? 0) > 0);
     if (!rid) return { ok: false, msg: `${name}: no inventions in stock` };
     const r = sellCustomToVendor(inv, rid);
     return finish({ ok: r.ok, msg: `${name}: ${r.msg}`, brassDelta: r.gained });
@@ -4845,6 +5287,22 @@ export function applyProgramNodeResult(
   }
   if (node === 'stock_stall_scrap') {
     return finish(stockStallFromInv(inv, 'scrap_brass', 5, name));
+  }
+  if (node === 'stock_stall_invention') {
+    const prog = w?.programId ? inv.programs.find((p) => p.id === w.programId) : undefined;
+    const rid = resolveProgramInventionId(inv, prog);
+    if (!rid) return { ok: false, msg: `${name}: no invention to stock` };
+    const r = stockInventionOnStall(inv, rid, 1, undefined, 1);
+    return finish({ ok: r.ok, msg: `${name}: ${r.msg}` });
+  }
+  if (node === 'stock_stall_goods') {
+    const prog = w?.programId ? inv.programs.find((p) => p.id === w.programId) : undefined;
+    const id = (prog?.stallCommodityId ?? 'wire') as CommodityId;
+    const qty = Math.max(1, Math.min(20, prog?.stallStockQty ?? 3));
+    if (!(id in COMMODITIES)) {
+      return { ok: false, msg: `${name}: bad stall commodity` };
+    }
+    return finish(stockStallFromInv(inv, id, qty, name));
   }
 
   // ——— Stall price policies ———
@@ -6295,6 +6753,29 @@ export function inventSlotBlurb(a: CommodityId, b: CommodityId): string {
   return slots.map((s) => labels[s] ?? s).join(' · ');
 }
 
+/**
+ * Worker invent step: use program mat pair, or auto-pick two invent mats held ×2+.
+ */
+export function inventRecipeForWorker(
+  inv: InventoryState,
+  prog?: WorkerProgram,
+): { ok: boolean; msg: string; recipe?: CustomRecipe } {
+  let a = prog?.inventMatA ?? null;
+  let b = prog?.inventMatB ?? null;
+  if (!a || !b || a === b) {
+    const held = INVENT_MATERIAL_IDS.filter((id) => getQty(inv, id) >= 2);
+    if (held.length < 2) {
+      return {
+        ok: false,
+        msg: 'Need 2× of two different invent mats (set pair in program or stock pack).',
+      };
+    }
+    a = held[0]!;
+    b = held[1]!;
+  }
+  return inventCustomRecipe(inv, a, b);
+}
+
 export function inventCustomRecipe(
   inv: InventoryState,
   a: CommodityId,
@@ -6791,6 +7272,11 @@ export function invToSave(inv: InventoryState) {
       name: p.name,
       nodes: [...p.nodes],
       framePref: p.framePref === 'fine' ? 'fine' : 'service',
+      inventionId: p.inventionId ?? null,
+      stallCommodityId: p.stallCommodityId ?? null,
+      stallStockQty: p.stallStockQty ?? 3,
+      inventMatA: p.inventMatA ?? null,
+      inventMatB: p.inventMatB ?? null,
     })),
     stall: stallToSave(inv.stall),
     cityStalls,
@@ -6996,12 +7482,34 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
     inv.bayLevel = TRAINING_MAX_BAY_LEVEL;
   }
   if (Array.isArray(o.programs) && (o.programs as WorkerProgram[]).length) {
-    inv.programs = (o.programs as WorkerProgram[]).map((p) => ({
-      id: String(p.id),
-      name: String(p.name ?? 'Program'),
-      nodes: Array.isArray(p.nodes) ? [...p.nodes] : ['harvest', 'return_bay'],
-      framePref: p.framePref === 'fine' ? 'fine' : 'service',
-    }));
+    inv.programs = (o.programs as WorkerProgram[]).map((p) => {
+      const raw = p as WorkerProgram & Record<string, unknown>;
+      const stallQty = Number(raw.stallStockQty);
+      return {
+        id: String(p.id),
+        name: String(p.name ?? 'Program'),
+        nodes: Array.isArray(p.nodes) ? [...(p.nodes as ProgramNodeKind[])] : ['harvest', 'return_bay'],
+        framePref: p.framePref === 'fine' ? 'fine' : 'service',
+        inventionId: typeof raw.inventionId === 'string' ? raw.inventionId : null,
+        stallCommodityId:
+          typeof raw.stallCommodityId === 'string' && raw.stallCommodityId in COMMODITIES
+            ? (raw.stallCommodityId as CommodityId)
+            : null,
+        stallStockQty: Number.isFinite(stallQty)
+          ? Math.max(1, Math.min(20, Math.floor(stallQty)))
+          : 3,
+        inventMatA:
+          typeof raw.inventMatA === 'string' &&
+          INVENT_MATERIAL_IDS.includes(raw.inventMatA as CommodityId)
+            ? (raw.inventMatA as CommodityId)
+            : null,
+        inventMatB:
+          typeof raw.inventMatB === 'string' &&
+          INVENT_MATERIAL_IDS.includes(raw.inventMatB as CommodityId)
+            ? (raw.inventMatB as CommodityId)
+            : null,
+      };
+    });
   }
   inv.brokerFrameStock = typeof o.brokerFrameStock === 'number' ? o.brokerFrameStock : 0;
   inv.medallionLoose = !!o.medallionLoose;
@@ -7068,6 +7576,11 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
     if (f.clearedNeighborDebt) inv.softGoalFlags.clearedNeighborDebt = true;
     if (f.hiredNeighbor) inv.softGoalFlags.hiredNeighbor = true;
     if (f.ownedPlot) inv.softGoalFlags.ownedPlot = true;
+    if (f.plantedGarden) inv.softGoalFlags.plantedGarden = true;
+    if (f.boundRetail) inv.softGoalFlags.boundRetail = true;
+    if (typeof f.lastAnnouncedGoalId === 'string') {
+      inv.softGoalFlags.lastAnnouncedGoalId = f.lastAnnouncedGoalId;
+    }
   }
   ensureStandingState(inv);
   bootstrapStandingFromProgress(inv);
@@ -7081,6 +7594,14 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
   }
   inv.plazaPlots = plazaPlotsFromSave(o.plazaPlots, districtsLite());
   if (playerOwnedPlotCount(inv) > 0) inv.softGoalFlags.ownedPlot = true;
+  // Sync optional RE soft flags from world (old saves)
+  for (const p of inv.plazaPlots.plots) {
+    if (p.owner !== 'player') continue;
+    if (p.buildings.some((b) => b.kind === 'garden')) inv.softGoalFlags.plantedGarden = true;
+    if (p.retailBound || p.buildings.some((b) => b.kind === 'retail')) {
+      inv.softGoalFlags.boundRetail = true;
+    }
+  }
   return inv;
 }
 
@@ -7127,6 +7648,13 @@ export {
   listAirwayTargets,
   listPlotAirways,
   movePlotFree,
+  plotIsEmptyHolding,
+  plotEmptyTax,
+  plotStructureUpkeep,
+  GARDEN_SPOT_COUNT,
+  gardenSpotLocalOffsets,
+  ensureGardenSpots,
+  MAX_PLOT_LAYER,
 };
 
 /**
@@ -7305,6 +7833,10 @@ export function developPlot(
       stall.open = true;
     }
     plot.retailBound = true;
+    inv.softGoalFlags.boundRetail = true;
+  }
+  if (kind === 'garden') {
+    inv.softGoalFlags.plantedGarden = true;
   }
   return { ok: true, msg: r.msg };
 }
@@ -7342,17 +7874,29 @@ export function changePlotShape(
 ): { ok: boolean; msg: string } {
   ensureInvPlots(inv);
   ensureStandingState(inv);
-  const r = setPlotShape(inv.plazaPlots, plotKey, shape);
-  if (!r.ok) return { ok: false, msg: r.msg };
-  if (inv.brass < r.cost) {
+  const plot = getPlot(inv.plazaPlots, plotKey);
+  if (!plot || plot.owner !== 'player') {
+    return { ok: false, msg: 'Own the plot to change its shape.' };
+  }
+  if (plot.shape === shape) {
+    return { ok: false, msg: `Already ${plotShapeLabel(shape)}.` };
+  }
+  const cost = quotePlotShapeChange(plot, shape);
+  if (cost <= 0) return { ok: false, msg: 'Nothing to remodel.' };
+  if (inv.brass < cost) {
     return {
       ok: false,
-      msg: `Need ${r.cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
+      msg: `Need ${cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
     };
   }
-  inv.brass -= r.cost;
+  inv.brass -= cost;
+  const r = setPlotShape(inv.plazaPlots, plotKey, shape);
+  if (!r.ok) {
+    inv.brass += cost; // refund if apply failed after charge
+    return { ok: false, msg: r.msg };
+  }
   applyStanding(inv, 1, {
-    districtId: getPlot(inv.plazaPlots, plotKey)?.districtId,
+    districtId: plot.districtId,
     districtDelta: 1,
   });
   return { ok: true, msg: r.msg };
@@ -7365,17 +7909,28 @@ export function upgradePlotLayer(
 ): { ok: boolean; msg: string } {
   ensureInvPlots(inv);
   ensureStandingState(inv);
-  const r = unlockPlotUpperDeck(inv.plazaPlots, plotKey);
-  if (!r.ok) return { ok: false, msg: r.msg };
-  if (inv.brass < r.cost) {
+  const plot = getPlot(inv.plazaPlots, plotKey);
+  if (!plot || plot.owner !== 'player') {
+    return { ok: false, msg: 'Own the plot to add a deck.' };
+  }
+  const cost = quotePlotLayerUpgrade(plot);
+  if (cost <= 0) {
+    return { ok: false, msg: `Already at max deck L${MAX_PLOT_LAYER}.` };
+  }
+  if (inv.brass < cost) {
     return {
       ok: false,
-      msg: `Need ${r.cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
+      msg: `Need ${cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
     };
   }
-  inv.brass -= r.cost;
+  inv.brass -= cost;
+  const r = unlockPlotUpperDeck(inv.plazaPlots, plotKey);
+  if (!r.ok) {
+    inv.brass += cost;
+    return { ok: false, msg: r.msg };
+  }
   applyStanding(inv, 2, {
-    districtId: getPlot(inv.plazaPlots, plotKey)?.districtId,
+    districtId: plot.districtId,
     districtDelta: 2,
   });
   return { ok: true, msg: r.msg };
@@ -7389,18 +7944,91 @@ export function createPlotAirway(
 ): { ok: boolean; msg: string } {
   ensureInvPlots(inv);
   ensureStandingState(inv);
-  const r = linkPlotAirway(inv.plazaPlots, fromId, toId);
-  if (!r.ok) return { ok: false, msg: r.msg };
-  if (inv.brass < r.cost) {
+  const a = getPlot(inv.plazaPlots, fromId);
+  const b = getPlot(inv.plazaPlots, toId);
+  if (!a || !b || a.owner !== 'player' || b.owner !== 'player') {
+    return { ok: false, msg: 'Both plots must be yours.' };
+  }
+  if (a.districtId !== b.districtId) {
+    return { ok: false, msg: 'Airways link plots in the same district only (v1).' };
+  }
+  if (hasPlotAirway(inv.plazaPlots, fromId, toId)) {
+    return { ok: false, msg: 'Airway already links these pads.' };
+  }
+  const cost = quotePlotAirwayLink(a, b);
+  if (inv.brass < cost) {
     return {
       ok: false,
-      msg: `Need ${r.cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
+      msg: `Need ${cost.toLocaleString()} brass (you have ${inv.brass.toLocaleString()}).`,
     };
   }
-  inv.brass -= r.cost;
-  const a = getPlot(inv.plazaPlots, fromId);
-  applyStanding(inv, 1, { districtId: a?.districtId, districtDelta: 2 });
+  inv.brass -= cost;
+  const r = linkPlotAirway(inv.plazaPlots, fromId, toId);
+  if (!r.ok) {
+    inv.brass += cost;
+    return { ok: false, msg: r.msg };
+  }
+  applyStanding(inv, 1, { districtId: a.districtId, districtDelta: 2 });
   return { ok: true, msg: r.msg };
+}
+
+/**
+ * Plant a held flower into an empty garden bed on an owned plot.
+ * Consumes 1 flower; that bed becomes a harvest source of that type.
+ */
+export function plantPlotGardenSpot(
+  inv: InventoryState,
+  plotKey: string,
+  buildingIndex: number,
+  spotIndex: number,
+  flowerId: CommodityId,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  ensureStandingState(inv);
+  if (!isFlowerCommodity(flowerId)) {
+    return { ok: false, msg: 'Only blooms and cloudblooms can be planted here.' };
+  }
+  const plot = getPlot(inv.plazaPlots, plotKey);
+  if (!plot || plot.owner !== 'player') {
+    return { ok: false, msg: 'You need to own this pad.' };
+  }
+  const b = plot.buildings[buildingIndex];
+  if (!b || b.kind !== 'garden') {
+    return { ok: false, msg: 'No flower garden at that slot.' };
+  }
+  const spots = ensureGardenSpots(b);
+  if (spotIndex < 0 || spotIndex >= spots.length) {
+    return { ok: false, msg: 'Invalid garden bed.' };
+  }
+  if (spots[spotIndex]) {
+    return {
+      ok: false,
+      msg: `Bed already grows ${COMMODITIES[spots[spotIndex] as CommodityId]?.name ?? spots[spotIndex]}. Harvest it first.`,
+    };
+  }
+  if (getQty(inv, flowerId) < 1) {
+    return {
+      ok: false,
+      msg: `Need 1 ${COMMODITIES[flowerId]?.name ?? flowerId} in pack to plant.`,
+    };
+  }
+  removeItem(inv, flowerId, 1);
+  spots[spotIndex] = flowerId;
+  inv.softGoalFlags.plantedGarden = true;
+  applyStanding(inv, 0.5, { districtId: plot.districtId, districtDelta: 1 });
+  return {
+    ok: true,
+    msg: `Planted ${COMMODITIES[flowerId]?.name ?? flowerId} · bed ${spotIndex + 1}/5 · E to harvest later.`,
+  };
+}
+
+/** List flower commodities the player currently holds (for garden plant UI). */
+export function listHeldFlowers(inv: InventoryState): CommodityId[] {
+  return FLOWER_IDS.filter((id) => getQty(inv, id) > 0) as CommodityId[];
+}
+
+function isFlowerCommodity(id: string): id is CommodityId {
+  return (FLOWER_IDS as readonly string[]).includes(id);
 }
 
 /** Task 9: buy edge attachment cell then optionally take ownership immediately */
@@ -7475,4 +8103,123 @@ export function tickAllLandlordRents(inv: InventoryState): {
     ...pr.left.map((x) => x.tenantId),
   ];
   return { collected, msgs, left };
+}
+
+// ——— Task 13: plot ownership costs (empty tax, bureaucracy, structure/layer/airway) ———
+
+/** First owned plot is free of multi-plot paperwork; extras scale. */
+export function multiPlotBureaucracyFee(ownedCount: number): number {
+  if (ownedCount <= 1) return 0;
+  // Soft-infinite land: each extra plot costs more paperwork
+  let fee = 0;
+  for (let i = 2; i <= ownedCount; i++) {
+    fee += 12 + (i - 2) * 10;
+  }
+  return fee;
+}
+
+export interface PlotOwnershipCostBreakdown {
+  emptyTax: number;
+  bureaucracy: number;
+  structure: number;
+  layer: number;
+  shape: number;
+  airway: number;
+  total: number;
+  owned: number;
+  emptyPlots: number;
+  /** Short HUD line */
+  line: string;
+}
+
+/** Recurring land costs each upkeep tick (empire RE sink). */
+export function plotOwnershipCostsDue(inv: InventoryState): PlotOwnershipCostBreakdown {
+  ensureInvPlots(inv);
+  ensureStandingState(inv);
+  const owned = inv.plazaPlots.plots.filter((p) => p.owner === 'player');
+  let emptyTax = 0;
+  let structure = 0;
+  let layer = 0;
+  let shape = 0;
+  let emptyPlots = 0;
+  for (const p of owned) {
+    const e = plotEmptyTax(p);
+    if (e > 0) {
+      emptyTax += e;
+      emptyPlots += 1;
+    }
+    const s = plotStructureUpkeep(p);
+    structure += s.building;
+    layer += s.layer;
+    shape += s.shape;
+  }
+  const bureaucracy = multiPlotBureaucracyFee(owned.length);
+  const airway = listPlotAirways(inv.plazaPlots).length * 6;
+  const total = emptyTax + bureaucracy + structure + layer + shape + airway;
+  const parts: string[] = [];
+  if (emptyTax) parts.push(`empty ${emptyTax}`);
+  if (bureaucracy) parts.push(`paper ${bureaucracy}`);
+  if (structure + layer + shape) parts.push(`struct ${structure + layer + shape}`);
+  if (airway) parts.push(`skyway ${airway}`);
+  const line =
+    total > 0
+      ? `Land −${total}b` + (parts.length ? ` (${parts.join(' · ')})` : '')
+      : 'Land upkeep 0';
+  return {
+    emptyTax,
+    bureaucracy,
+    structure,
+    layer,
+    shape,
+    airway,
+    total,
+    owned: owned.length,
+    emptyPlots,
+    line,
+  };
+}
+
+export interface PlotOwnershipTickResult {
+  ok: boolean;
+  paid: number;
+  need: number;
+  shortfall: number;
+  msg?: string;
+  breakdown: PlotOwnershipCostBreakdown;
+}
+
+/**
+ * Charge plot ownership sinks. Partial pay allowed (takes all remaining brass);
+ * unpaid land tax hurts standing slightly so empty land-banks still hurt.
+ */
+export function tickPlotOwnershipCosts(inv: InventoryState): PlotOwnershipTickResult {
+  const breakdown = plotOwnershipCostsDue(inv);
+  const need = breakdown.total;
+  if (need <= 0) {
+    return { ok: true, paid: 0, need: 0, shortfall: 0, breakdown };
+  }
+  if (inv.brass >= need) {
+    inv.brass -= need;
+    return {
+      ok: true,
+      paid: need,
+      need,
+      shortfall: 0,
+      breakdown,
+      msg: `${breakdown.line} · ${breakdown.owned} plot(s)`,
+    };
+  }
+  const paid = inv.brass;
+  inv.brass = 0;
+  const shortfall = need - paid;
+  // Light brand hit for tax delinquency (not as harsh as stiffing crew)
+  applyStanding(inv, -1);
+  return {
+    ok: false,
+    paid,
+    need,
+    shortfall,
+    breakdown,
+    msg: `Land tax short ${shortfall}b (paid ${paid}/${need}) — empty lots & multi-plot paper still due.`,
+  };
 }

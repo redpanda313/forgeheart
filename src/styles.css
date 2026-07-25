@@ -2470,26 +2470,124 @@ h1 {
   border-color: #68a8c8;
   background: #143848;
 }
+.program-targets-title {
+  margin: 0.75rem 0 0.35rem;
+  font-size: 0.85rem;
+  color: #e8c878;
+  letter-spacing: 0.04em;
+}
+.program-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-bottom: 0.5rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid rgba(100, 140, 170, 0.35);
+  border-radius: 8px;
+  background: rgba(12, 28, 42, 0.75);
+}
+.program-targets.hidden,
+.program-targets-title.hidden {
+  display: none !important;
+}
+.program-target-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.program-target-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #c8e0f0;
+}
+.program-target-warn {
+  color: #e8c878 !important;
+}
 .program-frame-pref {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.15rem;
 }
 .program-frame-pref button {
   appearance: none;
   border: 1px solid #3a5568;
   background: #142838;
   color: #c8d8e8;
-  padding: 0.2rem 0.55rem;
-  font-size: 0.72rem;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.75rem;
   cursor: pointer;
+  border-radius: 6px;
 }
 .program-frame-pref button.active {
   border-color: #88d0f0;
   background: #1a4058;
   color: #e8f4ff;
+}
+.program-invention-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 11rem;
+  overflow: auto;
+}
+.program-invention-btn {
+  appearance: none;
+  text-align: left;
+  border: 1px solid #3a5568;
+  background: #142838;
+  color: #d8e8f0;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.program-invention-btn strong {
+  font-size: 0.82rem;
+  color: #f0e8d0;
+}
+.program-invention-btn span {
+  font-size: 0.7rem;
+  color: #8aabc0;
+}
+.program-invention-btn:hover {
+  border-color: #68a8c8;
+}
+.program-invention-btn.active,
+.program-invention-btn.active-default {
+  border-color: #e8c878;
+  background: #2a2410;
+  box-shadow: inset 0 0 0 1px rgba(232, 200, 120, 0.25);
+}
+.program-invention-btn.active strong {
+  color: #ffe8a0;
+}
+.program-target-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.program-select {
+  appearance: none;
+  border: 1px solid #3a5568;
+  background: #0e2030;
+  color: #d8e8f0;
+  padding: 0.25rem 0.45rem;
+  font-size: 0.72rem;
+  border-radius: 6px;
+  max-width: 100%;
+  min-width: 8rem;
+}
+.program-select:focus {
+  outline: 1px solid #68a8c8;
+}
+.program-node .pn-label {
+  flex: 1;
+  min-width: 0;
 }
 .program-grade-hint {
   margin: 0.35rem 0 0.55rem;

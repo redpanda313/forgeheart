@@ -24,8 +24,12 @@ import {
 import {
   plotLivePos,
   plotPlatformHalf,
+  ensureGardenSpots,
+  gardenSpotLocalOffsets,
+  GARDEN_SPOT_COUNT,
   type PlotShape,
 } from './plazaPlots';
+import { isFlowerId, type FlowerId } from './flowers';
 import { buildPrefab } from './cityEditor';
 import { CATALOG, type CatalogEntry } from './editorCatalog';
 import { buildMapSnapshot, type MapSnapshot } from './cityMap';
@@ -76,7 +80,11 @@ export type CityInteractKind =
   | 'home_invent'
   | 'home_decorate'
   | 'lease_office'
-  | 'plot_marker';
+  | 'plot_marker'
+  /** Empty garden bed on player plot — plant a held flower */
+  | 'plot_garden_plant'
+  /** Planted garden bed — harvest that bloom type */
+  | 'plot_garden_harvest';
 
 /** Plaza work a city chassis is assigned to while owned. */
 export type CityRobotJobId =
@@ -121,6 +129,10 @@ export interface CityInteract {
   harvestName?: string;
   /** Bonded storage office track */
   storageTrack?: 'resources' | 'crafted' | 'inventions';
+  /** Plot garden plant/harvest targeting */
+  plotId?: string;
+  gardenBuildingIndex?: number;
+  gardenSpotIndex?: number;
 }
 
 export interface DistrictBuilt {
@@ -265,11 +277,17 @@ export interface SkyCityBuilt {
         yaw?: number;
         layer?: number;
         bridgeToPlotId?: string | null;
+        gardenSpots?: (string | null)[];
       }[];
       isEdge?: boolean;
     }[],
     airways?: { fromId: string; toId: string }[],
   ) => void;
+  /**
+   * Plot garden plant/harvest spots (kept on the main interactables list;
+   * also exposed so callers can re-merge if the list was ever reassigned).
+   */
+  getPlotGardenInteracts: () => CityInteract[];
   /** Live colliders for platforms + plot buildings (spatial grid chunk) */
   getPlotDynamicsColliders: () => Collider[];
 }
@@ -2433,8 +2451,16 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
   plotBuildRoot.name = 'PlotStructures';
   group.add(plotBuildRoot);
 
-  /** Vertical spacing between stacked decks (Task 11). */
-  const LAYER_SPACING = 4.15;
+  /**
+   * Vertical spacing between stacked decks (Task 11).
+   * 2× prior height so multi-layer pads feel like real sky stacks.
+   */
+  const LAYER_SPACING = 8.3;
+  /**
+   * Plot pad slab thickness (2× city FLOOR_THICK) — ground + upper decks.
+   * City plaza floors keep FLOOR_THICK; only player plot pads use this.
+   */
+  const PLOT_FLOOR_THICK = FLOOR_THICK * 2;
   /** Highest unlockable layer index (ground = 0 → up to L7 = 8 decks). */
   const MAX_PLOT_LAYER = 7;
 
@@ -2482,14 +2508,15 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       emissiveIntensity: 0.05,
     });
 
-  /** Task 10 — pad floor geometry by shape. */
+  /** Task 10 — pad floor geometry by shape (uses thick plot slabs). */
   const makeShapeFloorGeo = (shape: PlotShape, half: number): THREE.BufferGeometry => {
     const s = half * 2;
+    const thick = PLOT_FLOOR_THICK;
     if (shape === 'circle') {
-      return new THREE.CylinderGeometry(half, half, FLOOR_THICK, 24);
+      return new THREE.CylinderGeometry(half, half, thick, 24);
     }
     if (shape === 'octagon') {
-      return new THREE.CylinderGeometry(half, half, FLOOR_THICK, 8);
+      return new THREE.CylinderGeometry(half, half, thick, 8);
     }
     if (shape === 'triangle') {
       const shape2 = new THREE.Shape();
@@ -2503,28 +2530,29 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       }
       shape2.closePath();
       const geo = new THREE.ExtrudeGeometry(shape2, {
-        depth: FLOOR_THICK,
+        depth: thick,
         bevelEnabled: false,
       });
       geo.rotateX(-Math.PI / 2);
-      geo.translate(0, FLOOR_THICK / 2, 0);
+      geo.translate(0, thick / 2, 0);
       return geo;
     }
-    return new THREE.BoxGeometry(s, FLOOR_THICK, s);
+    return new THREE.BoxGeometry(s, thick, s);
   };
 
   const makeShapeRimGeo = (shape: PlotShape, half: number): THREE.BufferGeometry => {
     const s = half * 2 + 0.15;
+    const rimH = 0.2;
     if (shape === 'circle') {
-      return new THREE.CylinderGeometry(half + 0.08, half + 0.08, 0.12, 24);
+      return new THREE.CylinderGeometry(half + 0.08, half + 0.08, rimH, 24);
     }
     if (shape === 'octagon') {
-      return new THREE.CylinderGeometry(half + 0.08, half + 0.08, 0.12, 8);
+      return new THREE.CylinderGeometry(half + 0.08, half + 0.08, rimH, 8);
     }
     if (shape === 'triangle') {
       return makeShapeFloorGeo('triangle', half + 0.08);
     }
-    return new THREE.BoxGeometry(s, 0.12, s);
+    return new THREE.BoxGeometry(s, rimH, s);
   };
 
   const makePlotPlatform = (
@@ -2547,12 +2575,12 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     floor.userData.plotId = plotKey;
     root.add(floor);
     const rim = new THREE.Mesh(makeShapeRimGeo(shape, half), rimMat());
-    rim.position.set(0, DECK_Y + FLOOR_THICK * 0.45, 0);
+    rim.position.set(0, DECK_Y + PLOT_FLOOR_THICK * 0.45, 0);
     rim.userData.plotRim = true;
     root.add(rim);
     plotPlatformRoot.add(root);
-    const top = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
-    const bot = DECK_Y - FLOOR_THICK / 2 - 0.08;
+    const top = DECK_Y + PLOT_FLOOR_THICK / 2 + FLOOR_COL_PAD;
+    const bot = DECK_Y - PLOT_FLOOR_THICK / 2 - 0.08;
     const col: Collider = {
       min: new THREE.Vector3(px - half - 0.1, bot, pz - half - 0.1),
       max: new THREE.Vector3(px + half + 0.1, top, pz + half + 0.1),
@@ -2627,7 +2655,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       floor.castShadow = true;
       deckRoot.add(floor);
       const rim = new THREE.Mesh(makeShapeRimGeo(shape, h.half * shrink), rimMat());
-      rim.position.set(0, deckY + FLOOR_THICK * 0.45, 0);
+      rim.position.set(0, deckY + PLOT_FLOOR_THICK * 0.45, 0);
       deckRoot.add(rim);
 
       // Ladder from previous deck to this one (+Z edge, rotated offset per layer)
@@ -2644,7 +2672,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         post.position.set(ex + ox, (deckY + prevY) / 2, ez + oz);
         deckRoot.add(post);
       }
-      const rungs = 6;
+      // More rungs for taller layer spacing
+      const rungs = 10;
       const railCols: Collider[] = [];
       for (let i = 0; i < rungs; i++) {
         const t = (i + 1) / (rungs + 1);
@@ -2669,8 +2698,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       }
 
       const uh = h.half * shrink;
-      const top = deckY + FLOOR_THICK / 2 + FLOOR_COL_PAD;
-      const bot = deckY - FLOOR_THICK / 2 - 0.08;
+      const top = deckY + PLOT_FLOOR_THICK / 2 + FLOOR_COL_PAD;
+      const bot = deckY - PLOT_FLOOR_THICK / 2 - 0.08;
       h.decks.push({
         root: deckRoot,
         col: {
@@ -2695,8 +2724,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
   }
 
   const setPlatformCol = (h: PlotPlatformHandle, x: number, z: number) => {
-    const top = DECK_Y + FLOOR_THICK / 2 + FLOOR_COL_PAD;
-    const bot = DECK_Y - FLOOR_THICK / 2 - 0.08;
+    const top = DECK_Y + PLOT_FLOOR_THICK / 2 + FLOOR_COL_PAD;
+    const bot = DECK_Y - PLOT_FLOOR_THICK / 2 - 0.08;
     h.col.min.set(x - h.half - 0.1, bot, z - h.half - 0.1);
     h.col.max.set(x + h.half + 0.1, top, z + h.half + 0.1);
   };
@@ -2764,6 +2793,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       yaw?: number;
       layer?: number;
       bridgeToPlotId?: string | null;
+      gardenSpots?: (string | null)[];
     }[];
     isEdge?: boolean;
   };
@@ -2781,6 +2811,10 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         kind: b.kind as import('./plazaPlots').PlotBuildKind,
         bridgeToPlotId: b.bridgeToPlotId,
         layer: b.layer,
+        lx: b.lx,
+        lz: b.lz,
+        yaw: b.yaw,
+        gardenSpots: b.gardenSpots,
       })),
       npcOwnerId: null,
       zoningHint: 'mixed' as const,
@@ -2796,12 +2830,28 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       vacant: false,
     }) as import('./plazaPlots').PlotState;
 
+  /** Live garden beds — always written into `interactables` AND this mirror list. */
+  let plotGardenInteracts: CityInteract[] = [];
+
   const syncPlotOwnership = (
     plots: PlotSyncInput[],
     airways?: { fromId: string; toId: string }[],
   ) => {
     plotBuildingCols = [];
     plotAirwayCols = [];
+    plotGardenInteracts = [];
+
+    // Drop prior dynamic garden bed interactables (rebuilt below)
+    for (let i = interactables.length - 1; i >= 0; i--) {
+      const it = interactables[i]!;
+      if (
+        it.kind === 'plot_garden_plant' ||
+        it.kind === 'plot_garden_harvest' ||
+        it.id.startsWith('plot_garden_')
+      ) {
+        interactables.splice(i, 1);
+      }
+    }
 
     // Platforms: shape + layer (upper deck)
     for (const p of plots) {
@@ -2844,7 +2894,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     }
 
     const walkYForLayer = (layer: number) =>
-      layerDeckY(layer) + FLOOR_THICK / 2 + FLOOR_COL_PAD;
+      layerDeckY(layer) + PLOT_FLOOR_THICK / 2 + FLOOR_COL_PAD;
 
     const shellKind = (kind: string): EnterableKind | null => {
       if (kind === 'home') return 'home';
@@ -2866,7 +2916,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       const px = live.x;
       const pz = live.z;
       const buildings = p.buildings ?? [];
-      for (const b of buildings) {
+      for (let bi = 0; bi < buildings.length; bi++) {
+        const b = buildings[bi]!;
         if (b.kind === 'empty' || b.kind === 'bridge') continue;
         const lx = b.lx ?? 0;
         const lz = b.lz ?? 0;
@@ -2894,6 +2945,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           plotBuildRoot.add(shell.group);
           plotBuildingCols.push(...rotateOffsetColliders(shell.colliders, wx, walkY, wz, lyaw));
         } else if (b.kind === 'garden') {
+          // Outer bed ring (plot garden footprint)
           const soil = new THREE.Mesh(
             new THREE.CylinderGeometry(cellSize * 0.28, cellSize * 0.3, 0.25, 8),
             new THREE.MeshStandardMaterial({ color: 0x3a4830 }),
@@ -2906,6 +2958,112 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
             max: new THREE.Vector3(wx + r, walkY + 0.35, wz + r),
             kind: 'floor',
           });
+
+          // 5 plant beds: empty soil mounds or planted flower patches
+          const stub: import('./plazaPlots').PlotBuildingStub = {
+            kind: 'garden',
+            gardenSpots: b.gardenSpots,
+          };
+          const spots = ensureGardenSpots(stub);
+          // Write-back normalized spots so save stays consistent if parent had short arrays
+          b.gardenSpots = spots;
+          const offsets = gardenSpotLocalOffsets(cellSize);
+          for (let si = 0; si < GARDEN_SPOT_COUNT; si++) {
+            const off = offsets[si] ?? { lx: 0, lz: 0 };
+            // Rotate offset by building yaw
+            const cos = Math.cos(lyaw);
+            const sin = Math.sin(lyaw);
+            const olx = off.lx * cos - off.lz * sin;
+            const olz = off.lx * sin + off.lz * cos;
+            const sx = wx + olx;
+            const sz = wz + olz;
+            const flowerRaw = spots[si];
+            const flowerId =
+              typeof flowerRaw === 'string' && isFlowerId(flowerRaw)
+                ? (flowerRaw as FlowerId)
+                : null;
+
+            if (flowerId) {
+              const patch = buildFlowerPatchMesh(flowerId, {
+                seed: hashDistrictFlower(p.id, flowerId, si),
+                count: 4,
+                scale: 0.72,
+              });
+              patch.position.set(sx, walkY, sz);
+              plotBuildRoot.add(patch);
+              const name = flowerDisplayName(flowerId);
+              const ring = new THREE.Mesh(
+                new THREE.TorusGeometry(0.55, 0.05, 6, 14),
+                new THREE.MeshStandardMaterial({
+                  color: 0xe8a0c8,
+                  emissive: 0x884466,
+                  emissiveIntensity: 0.55,
+                }),
+              );
+              ring.rotation.x = Math.PI / 2;
+              ring.position.set(sx, walkY + 0.1, sz);
+              plotBuildRoot.add(ring);
+              const harvestIt: CityInteract = {
+                id: `plot_garden_${p.id}_${bi}_${si}`,
+                kind: 'plot_garden_harvest',
+                position: new THREE.Vector3(sx, walkY + 0.55, sz),
+                radius: 3.4,
+                mesh: ring,
+                label: `Harvest ${name} · bed ${si + 1}/5`,
+                districtId: p.districtId,
+                harvestPool: [flowerId as CommodityId],
+                harvestName: name,
+                plotId: p.id,
+                gardenBuildingIndex: bi,
+                gardenSpotIndex: si,
+              };
+              interactables.push(harvestIt);
+              plotGardenInteracts.push(harvestIt);
+            } else {
+              // Empty plantable bed (no floating name tags — help text via E prompt)
+              const bed = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.42, 0.48, 0.16, 8),
+                new THREE.MeshStandardMaterial({
+                  color: 0x4a3a28,
+                  roughness: 0.95,
+                  metalness: 0.05,
+                }),
+              );
+              bed.position.set(sx, walkY + 0.1, sz);
+              plotBuildRoot.add(bed);
+              const stake = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.035, 0.035, 0.7, 5),
+                new THREE.MeshStandardMaterial({ color: 0xc4a35a, metalness: 0.25 }),
+              );
+              stake.position.set(sx, walkY + 0.5, sz);
+              plotBuildRoot.add(stake);
+              const ring = new THREE.Mesh(
+                new THREE.TorusGeometry(0.55, 0.05, 6, 14),
+                new THREE.MeshStandardMaterial({
+                  color: 0x9ccc66,
+                  emissive: 0x446622,
+                  emissiveIntensity: 0.55,
+                }),
+              );
+              ring.rotation.x = Math.PI / 2;
+              ring.position.set(sx, walkY + 0.12, sz);
+              plotBuildRoot.add(ring);
+              const plantIt: CityInteract = {
+                id: `plot_garden_${p.id}_${bi}_${si}`,
+                kind: 'plot_garden_plant',
+                position: new THREE.Vector3(sx, walkY + 0.55, sz),
+                radius: 3.4,
+                mesh: ring,
+                label: `Plant flower · bed ${si + 1}/5 (held blooms)`,
+                districtId: p.districtId,
+                plotId: p.id,
+                gardenBuildingIndex: bi,
+                gardenSpotIndex: si,
+              };
+              interactables.push(plantIt);
+              plotGardenInteracts.push(plantIt);
+            }
+          }
         } else if (b.kind === 'decor') {
           const post = new THREE.Mesh(
             new THREE.BoxGeometry(0.28, 1.5, 0.28),
@@ -3177,6 +3335,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     circuits,
     brokerDisplays,
     syncPlotOwnership,
+    getPlotGardenInteracts: () => plotGardenInteracts,
     getPlotDynamicsColliders,
   };
   built.mapSnapshot = buildMapSnapshot(built);

@@ -27,6 +27,9 @@ export type PlotBuildKind =
   /** @deprecated stripped on load — bridges removed */
   | 'bridge';
 
+/** Plantable beds on a plot flower garden (player chooses held bloom types). */
+export const GARDEN_SPOT_COUNT = 5;
+
 export interface PlotBuildingStub {
   kind: PlotBuildKind;
   tenantSlots?: number;
@@ -37,11 +40,43 @@ export interface PlotBuildingStub {
   yaw?: number;
   /** Deck layer (0 = ground pad, 1 = upper deck) */
   layer?: number;
+  /**
+   * Garden only: up to GARDEN_SPOT_COUNT flower commodity ids (or null = empty bed).
+   * Planting consumes 1 held flower; each bed harvests that type.
+   */
+  gardenSpots?: (string | null)[];
   /** @deprecated */
   facing?: number;
   /** @deprecated */
   bridgeToPlotId?: string | null;
   paid?: number;
+}
+
+/** Local XZ offsets for the 5 garden plant beds (relative to garden building center). */
+export function gardenSpotLocalOffsets(
+  cellSize: number,
+): { lx: number; lz: number }[] {
+  const r = cellSize * 0.16;
+  return [
+    { lx: 0, lz: 0 },
+    { lx: r, lz: r * 0.35 },
+    { lx: -r, lz: r * 0.35 },
+    { lx: r * 0.55, lz: -r * 0.7 },
+    { lx: -r * 0.55, lz: -r * 0.7 },
+  ];
+}
+
+/** Ensure a garden building has exactly GARDEN_SPOT_COUNT bed slots. */
+export function ensureGardenSpots(b: PlotBuildingStub): (string | null)[] {
+  if (b.kind !== 'garden') return [];
+  if (!Array.isArray(b.gardenSpots) || b.gardenSpots.length !== GARDEN_SPOT_COUNT) {
+    const prev = Array.isArray(b.gardenSpots) ? b.gardenSpots : [];
+    b.gardenSpots = Array.from({ length: GARDEN_SPOT_COUNT }, (_, i) => {
+      const v = prev[i];
+      return typeof v === 'string' && v.length ? v : null;
+    });
+  }
+  return b.gardenSpots;
 }
 
 /** Task 10 — pad floor plan (default square). */
@@ -598,13 +633,17 @@ export function quotePlotShapeChange(plot: PlotState, shape: PlotShape): number 
 /** Highest deck index players can unlock (0..MAX = 8 total decks). */
 export const MAX_PLOT_LAYER = 7;
 
-/** Cost to unlock the next deck layer (Task 11). */
+/**
+ * Cost to unlock the next deck layer (Task 11).
+ * Soft ladder so multi-deck skyline stays reachable mid-game.
+ */
 export function quotePlotLayerUpgrade(plot: PlotState): number {
   const cur = plot.layer ?? 0;
   if (cur >= MAX_PLOT_LAYER) return 0;
   const next = cur + 1;
-  const base = Math.max(14_000, Math.round(plot.listPrice * 0.18));
-  return Math.round(base * Math.pow(1.38, next - 1));
+  // Was ~14k+ and ×1.38/layer — now ~2.2k floor, mild list + gentle growth
+  const base = Math.max(2_200, Math.round(plot.listPrice * 0.04));
+  return Math.round(base * Math.pow(1.18, next - 1));
 }
 
 /** Cost to open a player airway between two owned plots (Task 12). */
@@ -612,6 +651,10 @@ export function quotePlotAirwayLink(_a: PlotState, _b: PlotState): number {
   return 9_500;
 }
 
+/**
+ * Apply pad shape change (caller must already charge brass).
+ * Does not deduct currency — economy layer owns the wallet.
+ */
 export function setPlotShape(
   state: PlazaPlotsState,
   plotKey: string,
@@ -636,6 +679,10 @@ export function setPlotShape(
   };
 }
 
+/**
+ * Unlock next deck (caller must already charge brass).
+ * Does not deduct currency — economy layer owns the wallet.
+ */
 export function unlockPlotUpperDeck(
   state: PlazaPlotsState,
   plotKey: string,
@@ -675,6 +722,7 @@ export function hasPlotAirway(
 
 /**
  * Link two player-owned plots with a skyway (same district preferred).
+ * Caller must already charge brass — does not deduct currency.
  */
 export function linkPlotAirway(
   state: PlazaPlotsState,
@@ -980,7 +1028,11 @@ export function plazaPlotsFromSave(
     const r = row as Record<string, unknown>;
     if (typeof r.id !== 'string') continue;
     let buildings: PlotBuildingStub[] = Array.isArray(r.buildings)
-      ? (r.buildings as PlotBuildingStub[])
+      ? (r.buildings as PlotBuildingStub[]).map((raw) => {
+          const b: PlotBuildingStub = { ...raw };
+          if (b.kind === 'garden') ensureGardenSpots(b);
+          return b;
+        })
       : [{ kind: 'empty' }];
     if (!alreadyCleared) {
       buildings = buildings.filter((b) => b.kind !== 'bridge');
@@ -1042,11 +1094,19 @@ export function plazaPlotsFromSave(
         p.worldZ = home.z;
       }
     }
+    // Clamp legacy layer / shape
+    p.layer = Math.max(0, Math.min(MAX_PLOT_LAYER, p.layer ?? 0));
+    if (!PLOT_SHAPES.includes(p.shape)) p.shape = 'square';
   }
+  // Drop airways that reference missing plots (save hygiene)
+  const plotIds = new Set(plots.map((p) => p.id));
+  const cleanAirways = airways.filter(
+    (a) => plotIds.has(a.fromId) && plotIds.has(a.toId) && a.fromId !== a.toId,
+  );
   return ensurePlazaPlots(
     {
       plots,
-      airways,
+      airways: cleanAirways,
       bridgesClearedV1: true,
       // Unset → ensurePlazaPlots runs pad snap once for legacy free-move saves
       padsResetV1: padsAlreadyReset ? true : undefined,
@@ -1287,6 +1347,9 @@ export function applyPlotBuild(
     layer,
     paid: q.cost,
   };
+  if (kind === 'garden') {
+    b.gardenSpots = Array.from({ length: GARDEN_SPOT_COUNT }, () => null);
+  }
   plot.buildings.push(b);
 
   if (kind === 'apartment' || kind === 'home') {
@@ -1741,4 +1804,54 @@ export function plotRentIncome(plot: PlotState): number {
   const slots = Math.max(1, plotTenantSlots(plot));
   // Base rent for 1 slot; +40% per extra slot
   return Math.round(base * (1 + (slots - 1) * 0.4));
+}
+
+// ——— Task 13: recurring plot ownership costs (vacancy / bureaucracy / structure) ———
+
+const BUILD_UPKEEP: Partial<Record<PlotBuildKind, number>> = {
+  apartment: 6,
+  home: 5,
+  garden: 4,
+  factory: 10,
+  retail: 8,
+  decor: 2,
+};
+
+const SHAPE_UPKEEP: Record<PlotShape, number> = {
+  square: 0,
+  octagon: 3,
+  circle: 5,
+  triangle: 4,
+};
+
+/** Empty holding: no primary structure and no paying tenant (land bank). */
+export function plotIsEmptyHolding(plot: PlotState): boolean {
+  if (plot.owner !== 'player') return false;
+  const hasTenant = !!plot.tenantNeighborId && !plot.vacant;
+  if (hasTenant) return false;
+  return !plotPrimaryBuilding(plot);
+}
+
+/** Per-plot structure + layer + shape upkeep (excludes empty tax). */
+export function plotStructureUpkeep(plot: PlotState): {
+  building: number;
+  layer: number;
+  shape: number;
+  total: number;
+} {
+  let building = 0;
+  for (const b of plot.buildings) {
+    if (b.kind === 'empty' || b.kind === 'bridge') continue;
+    building += BUILD_UPKEEP[b.kind] ?? 3;
+  }
+  const layer = Math.max(0, plot.layer ?? 0) * 8;
+  const shape = SHAPE_UPKEEP[plot.shape ?? 'square'] ?? 0;
+  return { building, layer, shape, total: building + layer + shape };
+}
+
+/** Vacancy tax for a single empty player plot (soft land-bank sink). */
+export function plotEmptyTax(plot: PlotState): number {
+  if (!plotIsEmptyHolding(plot)) return 0;
+  // ~0.12% of list / tick, floor so cheap pads still cost to sit idle
+  return Math.max(14, Math.round(plot.listPrice * 0.0012));
 }

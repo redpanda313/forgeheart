@@ -68,6 +68,7 @@ import {
   canAssembleFrame,
   evaluateFrameSlots,
   FRAME_SLOT_IDS,
+  FLOWER_IDS,
   inventionFrameSlots,
   listPartsForSlot,
   partRefLabel,
@@ -134,7 +135,6 @@ import {
   createProgramFromTemplate,
   setProgramFramePref,
   PROGRAM_TEMPLATES,
-  minPayGradeForNodes,
   workerMaxProgramNodes,
   PROGRAM_FREE_NODES,
   addProgramNode,
@@ -150,7 +150,6 @@ import {
   toolTierLabel,
   normalizeWorkerToolTiers,
   inventCustomRecipe,
-  INVENT_MATERIAL_IDS,
   inventSlotBlurb,
   buyPlayerBoard,
   upgradePlayerBoard,
@@ -173,6 +172,17 @@ import {
   stockAssembledFrameOnStall,
   ensureCityStall,
   raiseWorkerPay,
+  raiseWorkerPayCost,
+  payGradeTitle,
+  payGradeBlurb,
+  APPRENTICE_INVENTOR_GRADE,
+  canWorkerInvent,
+  minPayGradeForProgram,
+  setProgramInvention,
+  setProgramStallGoods,
+  setProgramInventMats,
+  resolveProgramInventionId,
+  INVENT_MATERIAL_IDS,
   hireCost,
   expandBayCost,
   canInvent,
@@ -203,6 +213,10 @@ import {
   formatDistrictStandingLine,
   softGoalObjectiveLine,
   getActiveSoftGoal,
+  pollSoftGoalAnnouncement,
+  softGoalCoachLine,
+  plotOwnershipCostsDue,
+  tickPlotOwnershipCosts,
   empireStandingTier,
   chatNeighbor,
   learnNeighbor,
@@ -232,6 +246,8 @@ import {
   changePlotShape,
   upgradePlotLayer,
   createPlotAirway,
+  plantPlotGardenSpot,
+  getQty,
   PLOT_BUILD_CATALOG,
   PLOT_SHAPES,
   quotePlotBuild,
@@ -283,7 +299,6 @@ import {
   APARTMENT_COST,
   STALL_LEASE_COST,
   STALL_INTERVAL,
-  PAY_RAISE_COST,
   playerWalkSpeedMul,
   playerBoardSpeedMul,
   bayLevelName,
@@ -595,12 +610,16 @@ export class ForgeHeartGame {
     lastV: number;
   } | null = null;
   private upkeepAcc = 0;
+  /** Soft-goal toast re-nudge timer (empire onboarding, Task 14) */
+  private softGoalNudgeAcc = 0;
   private workerAgents: WorkerAgent[] = [];
   private navGrid = new NavGrid(1.2, 0.5);
   private activeProgramId: string | null = null;
   private marketBoardPath: THREE.Vector3[] = [];
   private marketBoardPathDist: number[] = [];
   private bayTab: 'inv' | 'workers' | 'invent' | 'code' = 'inv';
+  /** Invent tab only when opened from invent desk / home lab (not global I inventory). */
+  private bayInventAllowed = false;
   private backstory: Backstory | null = null;
   private hubInteractPrompt: HubInteract | null = null;
   private raceFinished = false;
@@ -927,6 +946,11 @@ export class ForgeHeartGame {
       }
       if (this.plotBuild && e.code === 'Escape') {
         this.cancelPlotBuildMode();
+        return;
+      }
+      if (this.gardenPlantOpen && e.code === 'Escape') {
+        e.preventDefault();
+        this.closeGardenPlantPicker();
         return;
       }
       if (this.leaseOfficeOpen && e.code === 'Escape') {
@@ -2923,6 +2947,7 @@ export class ForgeHeartGame {
       'romance-panel',
       'neighbor-panel',
       'lease-office-panel',
+      'garden-plant-panel',
       'pause-menu',
     ];
     for (const id of ids) {
@@ -4308,6 +4333,13 @@ export class ForgeHeartGame {
       if (this.inv.cityWorkshopLeased) extras.push('Workshop');
       const shops = ownedCityStallCount(this.inv);
       if (shops > 0) extras.push(`${shops} shops`);
+      const plots = playerOwnedPlotCount(this.inv);
+      if (plots > 0) {
+        const land = plotOwnershipCostsDue(this.inv);
+        extras.push(
+          land.total > 0 ? `${plots} pads · land ${land.total}b` : `${plots} pads`,
+        );
+      }
       if ((this.inv.inventionsMade ?? 0) > 0) extras.push(`Inv ${this.inv.inventionsMade}`);
       extras.push(`Day ${Math.floor(this.cityTime * 100)}%`);
       const tier = empireStandingTier(this.inv);
@@ -4682,6 +4714,7 @@ export class ForgeHeartGame {
       this.romanceNpcId ||
       this.neighborPanelId ||
       this.leaseOfficeOpen ||
+      this.gardenPlantOpen ||
       this.plotBuild
     ) {
       return true;
@@ -4777,9 +4810,30 @@ export class ForgeHeartGame {
         }
         this.syncPlotOwnershipVisuals();
       }
+      // Task 13: empty-plot tax, multi-plot paper, structure/layer/airway fees
+      const land = tickPlotOwnershipCosts(this.inv);
+      if (land.need > 0) {
+        if (!land.ok) {
+          this.toast(land.msg ?? 'Land tax short', 6, {
+            critical: true,
+            sticky: true,
+            alertId: 'crisis-land-tax',
+          });
+        } else if (land.msg) {
+          this.clearAlert('crisis-land-tax');
+          this.toast(land.msg, land.breakdown.emptyPlots ? 3.2 : 2.2);
+        }
+      }
+      this.pollSoftGoalSurface();
       this.brass = this.inv.brass;
       this.syncEconomyHud();
       writeSlot(this.activeSlot, this.buildSaveData());
+    }
+    // Soft-goal coach re-nudge (~75s) so landlord loop stays visible
+    this.softGoalNudgeAcc += dt;
+    if (this.softGoalNudgeAcc >= 75) {
+      this.softGoalNudgeAcc = 0;
+      this.nudgeActiveSoftGoal();
     }
     // Multi-plaza retail + training stall
     this.stallAcc += dt;
@@ -4851,7 +4905,7 @@ export class ForgeHeartGame {
     }
 
     this.cityInteractPrompt = null;
-    let bestD = 3.5;
+    let bestD = 4.5;
     const cam = this.camera.position;
     for (const it of this.skyCity.interactables) {
       if (it.kind === 'workshop_chest' && !this.inv.cityWorkshopLeased) continue;
@@ -4865,10 +4919,15 @@ export class ForgeHeartGame {
       const useHoriz =
         it.kind === 'harvest' ||
         it.kind === 'flower_pick' ||
+        it.kind === 'plot_garden_plant' ||
+        it.kind === 'plot_garden_harvest' ||
         it.kind === 'romance_npc' ||
         it.kind === 'vendor';
       const d = useHoriz ? horiz : cam.distanceTo(it.position);
-      const reach = it.radius + (useHoriz ? 0.9 : 0.5);
+      // Garden beds: prefer over generic nearby prompts when in range
+      const gardenBoost =
+        it.kind === 'plot_garden_plant' || it.kind === 'plot_garden_harvest' ? 0.35 : 0;
+      const reach = it.radius + (useHoriz ? 0.9 : 0.5) + gardenBoost;
       if (d < bestD && d <= reach) {
         bestD = d;
         // Live neighbor labels: drama / debt / owner (ring + plaza homeowners)
@@ -4980,8 +5039,7 @@ export class ForgeHeartGame {
         this.toast('Add an Invention lab room when improving your home.', 3);
         return true;
       }
-      this.bayTab = 'invent';
-      this.openBay();
+      this.openBay({ tab: 'invent', allowInvent: true });
       return true;
     }
     if (it.kind === 'home_decorate') {
@@ -5011,8 +5069,7 @@ export class ForgeHeartGame {
           3,
         );
       }
-      this.bayTab = 'workers';
-      this.openBay();
+      this.openBay({ tab: 'workers' });
       this.syncEconomyHud();
       return true;
     }
@@ -5060,8 +5117,7 @@ export class ForgeHeartGame {
         this.toast('Invent needs bay L3+, city workshop, or a home Invention lab.', 3.5);
         return true;
       }
-      this.bayTab = 'invent';
-      this.openBay();
+      this.openBay({ tab: 'invent', allowInvent: true });
       return true;
     }
     if (it.kind === 'repair_job') {
@@ -5083,7 +5139,7 @@ export class ForgeHeartGame {
       });
       return true;
     }
-    if (it.kind === 'flower_pick') {
+    if (it.kind === 'flower_pick' || it.kind === 'plot_garden_harvest') {
       const pool = it.harvestPool?.length
         ? it.harvestPool
         : (['bloom_sky'] as CommodityId[]);
@@ -5092,6 +5148,10 @@ export class ForgeHeartGame {
         name: it.harvestName ?? 'Flower patch',
         mode: 'flower',
       });
+      return true;
+    }
+    if (it.kind === 'plot_garden_plant') {
+      this.openGardenPlantPicker(it);
       return true;
     }
     if (it.kind === 'broker') {
@@ -6537,6 +6597,13 @@ export class ForgeHeartGame {
   private neighborPanelId: string | null = null;
   private neighborView: 'menu' | 'gift' | 'buy' = 'menu';
   private leaseOfficeOpen = false;
+  /** Garden bed plant picker (plot flower garden) */
+  private gardenPlantOpen = false;
+  private gardenPlantTarget: {
+    plotId: string;
+    buildingIndex: number;
+    spotIndex: number;
+  } | null = null;
   private leaseDistrictFilter: string | null = null;
   /** Site builder: which existing factory building to replace (null = append new). */
   private siteReplaceIndex: number | null = null;
@@ -6886,6 +6953,7 @@ export class ForgeHeartGame {
     const after = (msg: string) => {
       this.neighborLog(msg);
       this.brass = this.inv.brass;
+      this.pollSoftGoalSurface();
       this.objective = this.megaCityObjective();
       this.syncEconomyHud();
       writeSlot(this.activeSlot, this.buildSaveData());
@@ -7061,6 +7129,28 @@ export class ForgeHeartGame {
 
   // ——— Lease office (Tasks 4–5) ———
 
+  /**
+   * Keep plot-garden plant/harvest spots present on skyCity.interactables.
+   * Defends against any code that reassigns the interactables array away from
+   * the buildSkyCity closure (which used to orphan garden beds forever).
+   */
+  private ensurePlotGardenInteractsOnList() {
+    if (!this.skyCity) return;
+    const gardens = this.skyCity.getPlotGardenInteracts();
+    const list = this.skyCity.interactables;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const it = list[i]!;
+      if (
+        it.kind === 'plot_garden_plant' ||
+        it.kind === 'plot_garden_harvest' ||
+        it.id.startsWith('plot_garden_')
+      ) {
+        list.splice(i, 1);
+      }
+    }
+    for (const g of gardens) list.push(g);
+  }
+
   private syncPlotOwnershipVisuals() {
     if (!this.skyCity) return;
     ensureInvPlots(this.inv);
@@ -7085,11 +7175,15 @@ export class ForgeHeartGame {
           yaw: b.yaw,
           layer: b.layer,
           bridgeToPlotId: b.bridgeToPlotId,
+          gardenSpots: b.gardenSpots ? [...b.gardenSpots] : undefined,
         })),
         isEdge: p.isEdge,
       })),
       this.inv.plazaPlots.airways ?? [],
     );
+    // Re-merge garden beds into the live interactables list (in case something
+    // once reassigned skyCity.interactables away from the build closure array).
+    this.ensurePlotGardenInteractsOnList();
     // Platforms + rope bridges are walkable / solid — refresh spatial chunk
     const dyn = this.skyCity.getPlotDynamicsColliders();
     this.spatialGrid?.setChunk('plot_dynamics', dyn);
@@ -7593,6 +7687,8 @@ export class ForgeHeartGame {
         this.brass = this.inv.brass;
         this.syncPlotOwnershipVisuals();
         this.syncCityStallVisuals();
+        this.pollSoftGoalSurface();
+        this.objective = this.megaCityObjective();
         writeSlot(this.activeSlot, this.buildSaveData());
         this.syncEconomyHud();
         s.step = 'choose';
@@ -7656,6 +7752,149 @@ export class ForgeHeartGame {
     this.toast('Leasing office · pick a plaza, then a plot. Gold pads are yours.', 4);
   }
 
+  /** Plant a held flower into an empty plot-garden bed. */
+  private openGardenPlantPicker(it: {
+    plotId?: string;
+    gardenBuildingIndex?: number;
+    gardenSpotIndex?: number;
+    label: string;
+  }) {
+    if (
+      !it.plotId ||
+      it.gardenBuildingIndex == null ||
+      it.gardenSpotIndex == null
+    ) {
+      this.toast('This garden bed is not ready.', 3);
+      return;
+    }
+    this.gardenPlantTarget = {
+      plotId: it.plotId,
+      buildingIndex: it.gardenBuildingIndex,
+      spotIndex: it.gardenSpotIndex,
+    };
+    this.gardenPlantOpen = true;
+    const el = this.ensureGardenPlantPanel();
+    el.classList.remove('hidden');
+    el.setAttribute('aria-hidden', 'false');
+    this.fillGardenPlantPanel();
+    this.syncMobileGameplay();
+    try {
+      this.controls.unlock();
+    } catch {
+      /* ignore */
+    }
+    // Ensure pointer can hit buttons (some browsers keep lock until next frame)
+    window.setTimeout(() => {
+      if (this.disposed || !this.gardenPlantOpen) return;
+      try {
+        this.controls.unlock();
+      } catch {
+        /* ignore */
+      }
+    }, 0);
+    this.toast('Garden bed · pick a bloom to plant (or close × / Esc).', 3.5);
+  }
+
+  private closeGardenPlantPicker() {
+    this.gardenPlantOpen = false;
+    this.gardenPlantTarget = null;
+    const el = document.getElementById('garden-plant-panel');
+    el?.classList.add('hidden');
+    el?.setAttribute('aria-hidden', 'true');
+    this.syncMobileGameplay();
+    if (!this.paused && !this.disposed) this.controls.lock();
+  }
+
+  private ensureGardenPlantPanel(): HTMLElement {
+    let el = document.getElementById('garden-plant-panel');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'garden-plant-panel';
+    el.className = 'market-panel romance-panel garden-plant-panel hidden';
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = `
+      <div class="market-card romance-card" style="max-width:min(440px,96vw)">
+        <header class="market-head">
+          <div>
+            <h3>Plant garden bed</h3>
+            <p class="market-sub" id="garden-plant-status">Pick a held flower — it becomes this bed’s harvest type.</p>
+          </div>
+          <button type="button" id="garden-plant-close" class="maker-close" title="Close">×</button>
+        </header>
+        <p class="romance-log" id="garden-plant-log"></p>
+        <div id="garden-plant-actions" class="romance-actions"></div>
+      </div>`;
+    document.getElementById('app')?.appendChild(el);
+    el.querySelector('#garden-plant-close')?.addEventListener('click', () =>
+      this.closeGardenPlantPicker(),
+    );
+    // Click backdrop (outside card) to close
+    el.addEventListener('click', (ev) => {
+      if (ev.target === el) this.closeGardenPlantPicker();
+    });
+    return el;
+  }
+
+  private fillGardenPlantPanel() {
+    const actions = document.getElementById('garden-plant-actions');
+    const status = document.getElementById('garden-plant-status');
+    const log = document.getElementById('garden-plant-log');
+    if (!actions || !this.gardenPlantTarget) return;
+    actions.innerHTML = '';
+    const heldCount = FLOWER_IDS.reduce((s, id) => s + getQty(this.inv, id), 0);
+    const bedN = this.gardenPlantTarget.spotIndex + 1;
+    if (status) {
+      status.textContent =
+        heldCount > 0
+          ? `Bed ${bedN}/5 · planting consumes 1 flower from pack.`
+          : `Bed ${bedN}/5 · no blooms in pack yet.`;
+    }
+    if (log) {
+      log.textContent =
+        heldCount > 0
+          ? 'Choose a bloom type for this bed. Later: E to harvest it.'
+          : 'Pick plaza flower patches (pink rings) first, then come back to plant.';
+    }
+    // List all bloom types: held ones enabled, others disabled so choice is obvious
+    for (const id of FLOWER_IDS) {
+      const n = getQty(this.inv, id);
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'romance-btn';
+      b.disabled = n < 1;
+      b.textContent =
+        n > 0
+          ? `Plant ${COMMODITIES[id]?.name ?? id} ×${n}`
+          : `${COMMODITIES[id]?.name ?? id} · none held`;
+      b.addEventListener('click', () => {
+        if (!this.gardenPlantTarget || n < 1) return;
+        const t = this.gardenPlantTarget;
+        const r = plantPlotGardenSpot(
+          this.inv,
+          t.plotId,
+          t.buildingIndex,
+          t.spotIndex,
+          id,
+        );
+        this.toast(r.msg, 4);
+        if (log) log.textContent = r.msg;
+        if (r.ok) {
+          this.audio.playPickup();
+          this.brass = this.inv.brass;
+          this.syncPlotOwnershipVisuals();
+          this.pollSoftGoalSurface();
+          this.objective = this.megaCityObjective();
+          writeSlot(this.activeSlot, this.buildSaveData());
+          this.syncEconomyHud();
+          this.closeGardenPlantPicker();
+        } else {
+          this.fillGardenPlantPanel();
+        }
+      });
+      actions.appendChild(b);
+    }
+  }
+
   private closeLeaseOffice() {
     this.leaseOfficeOpen = false;
     const el = document.getElementById('lease-office-panel');
@@ -7674,7 +7913,14 @@ export class ForgeHeartGame {
     if (!distEl || !plotsEl) return;
     const owned = playerOwnedPlotCount(this.inv);
     if (status) {
-      status.textContent = `You own ${owned} plot(s) · Brass ${this.inv.brass.toLocaleString()} · ${formatEmpireStandingLine(this.inv)}`;
+      const land = plotOwnershipCostsDue(this.inv);
+      const landBit =
+        owned > 0
+          ? land.total > 0
+            ? ` · land tax ~${land.total}b/tick${land.emptyPlots ? ` (${land.emptyPlots} empty)` : ''}`
+            : ' · land tax 0'
+          : '';
+      status.textContent = `You own ${owned} plot(s) · Brass ${this.inv.brass.toLocaleString()}${landBit} · ${formatEmpireStandingLine(this.inv)}`;
     }
 
     distEl.innerHTML = '';
@@ -7763,6 +8009,8 @@ export class ForgeHeartGame {
             if (r.ok) {
               this.brass = this.inv.brass;
               this.syncPlotOwnershipVisuals();
+              this.pollSoftGoalSurface();
+              this.objective = this.megaCityObjective();
               writeSlot(this.activeSlot, this.buildSaveData());
               this.syncEconomyHud();
             }
@@ -7788,6 +8036,8 @@ export class ForgeHeartGame {
               if (r.ok) {
                 this.brass = this.inv.brass;
                 this.syncPlotOwnershipVisuals();
+                this.pollSoftGoalSurface();
+                this.objective = this.megaCityObjective();
                 writeSlot(this.activeSlot, this.buildSaveData());
                 this.syncEconomyHud();
               }
@@ -7813,6 +8063,8 @@ export class ForgeHeartGame {
             if (r.ok) {
               this.brass = this.inv.brass;
               this.syncPlotOwnershipVisuals();
+              this.pollSoftGoalSurface();
+              this.objective = this.megaCityObjective();
               writeSlot(this.activeSlot, this.buildSaveData());
               this.syncEconomyHud();
             }
@@ -7866,6 +8118,7 @@ export class ForgeHeartGame {
             this.brass = this.inv.brass;
             this.objective = this.megaCityObjective();
             this.syncPlotOwnershipVisuals();
+            this.pollSoftGoalSurface();
             writeSlot(this.activeSlot, this.buildSaveData());
             this.syncEconomyHud();
           }
@@ -7885,6 +8138,8 @@ export class ForgeHeartGame {
               this.audio.playPickup();
               this.brass = this.inv.brass;
               this.syncPlotOwnershipVisuals();
+              this.pollSoftGoalSurface();
+              this.objective = this.megaCityObjective();
               writeSlot(this.activeSlot, this.buildSaveData());
               this.syncEconomyHud();
             }
@@ -7933,6 +8188,8 @@ export class ForgeHeartGame {
               this.audio.playPickup();
               this.brass = this.inv.brass;
               this.syncPlotOwnershipVisuals();
+              this.pollSoftGoalSurface();
+              this.objective = this.megaCityObjective();
               writeSlot(this.activeSlot, this.buildSaveData());
               this.syncEconomyHud();
             }
@@ -8897,6 +9154,10 @@ export class ForgeHeartGame {
 
   setBayTabPublic(tab: string) {
     if (tab === 'inv' || tab === 'workers' || tab === 'invent' || tab === 'code') {
+      if (tab === 'invent' && !this.bayInventAllowed) {
+        this.toast('Invent at the Invention desk / home Invention lab — not from Inventory.', 3.5);
+        return;
+      }
       this.bayTab = tab;
       this.syncBayTabs();
       this.fillBayPanel();
@@ -9555,7 +9816,11 @@ export class ForgeHeartGame {
     this.syncEconomyHud();
   }
 
-  private openBay() {
+  private openBay(opts?: {
+    tab?: 'inv' | 'workers' | 'invent' | 'code';
+    /** True only when player interacted with invent desk / home lab */
+    allowInvent?: boolean;
+  }) {
     if (this.disposed) return;
     // Only open when player has a bay / city workshop
     if (!this.inv.parcelLeased && !this.inv.cityWorkshopLeased) {
@@ -9563,7 +9828,10 @@ export class ForgeHeartGame {
       return;
     }
     this.bayOpen = true;
-    this.bayTab = 'inv';
+    this.bayInventAllowed = !!opts?.allowInvent;
+    let tab = opts?.tab ?? 'inv';
+    if (tab === 'invent' && !this.bayInventAllowed) tab = 'inv';
+    this.bayTab = tab;
     const panel = document.getElementById('bay-panel');
     panel?.classList.remove('hidden');
     panel?.setAttribute('aria-hidden', 'false');
@@ -9578,6 +9846,7 @@ export class ForgeHeartGame {
 
   private closeBay() {
     this.bayOpen = false;
+    this.bayInventAllowed = false;
     const panel = document.getElementById('bay-panel');
     panel?.classList.add('hidden');
     panel?.setAttribute('aria-hidden', 'true');
@@ -9588,14 +9857,22 @@ export class ForgeHeartGame {
     document.querySelectorAll('.bay-tab').forEach((el) => {
       const t = (el as HTMLElement).dataset.bayTab;
       el.classList.toggle('active', t === this.bayTab);
+      // Hide Invent tab unless bay was opened from an invent station
+      if (t === 'invent') {
+        el.classList.toggle('hidden', !this.bayInventAllowed);
+      }
     });
+    // If invent was hidden while selected, fall back
+    if (this.bayTab === 'invent' && !this.bayInventAllowed) {
+      this.bayTab = 'inv';
+    }
     const inv = document.getElementById('bay-tab-inv');
     const wr = document.getElementById('bay-tab-workers');
     const invn = document.getElementById('bay-tab-invent');
     const code = document.getElementById('bay-tab-code');
     inv?.classList.toggle('hidden', this.bayTab !== 'inv');
     wr?.classList.toggle('hidden', this.bayTab !== 'workers');
-    invn?.classList.toggle('hidden', this.bayTab !== 'invent');
+    invn?.classList.toggle('hidden', this.bayTab !== 'invent' || !this.bayInventAllowed);
     code?.classList.toggle('hidden', this.bayTab !== 'code');
   }
 
@@ -9610,8 +9887,12 @@ export class ForgeHeartGame {
       sub.textContent =
         this.inv.parcelLeased || this.inv.cityWorkshopLeased
           ? empire
-            ? `Empire HQ · ${bayLevelName(this.inv.bayLevel)} · ${ownedCityStallCount(this.inv)} shops · invent cycle`
-            : 'Inventory · assign jobs · invent (L3+)'
+            ? this.bayInventAllowed
+              ? `Invention lab · pick two mats · prototype`
+              : `Empire HQ · ${bayLevelName(this.inv.bayLevel)} · ${ownedCityStallCount(this.inv)} shops · I = pack`
+            : this.bayInventAllowed
+              ? 'Invention lab · pick two mats · prototype'
+              : 'Inventory · workers · programs (invent only at invent desk)'
           : 'Lease a bay (training) or city workshop (industrial).';
     }
     const invEl = document.getElementById('bay-tab-inv');
@@ -9718,9 +9999,13 @@ export class ForgeHeartGame {
               : ' · ⚙ robot'
             : '';
         const frameTag = w.frameName ? ` · ${w.frameName} (Q${(w.frameQuality ?? 1).toFixed(2)})` : '';
-        card.innerHTML = `<strong>${w.name}</strong>${kindTag}${frameTag} · pay grade ${pg}
+        const rank = payGradeTitle(pg);
+        const inventTag = canWorkerInvent(w)
+          ? ' · ★ can invent'
+          : ` · invent at G${APPRENTICE_INVENTOR_GRADE}`;
+        card.innerHTML = `<strong>${w.name}</strong>${kindTag}${frameTag} · ${rank} (G${pg})${inventTag}
           <span class="bay-worker-status">Doing: ${assignment}</span>
-          <span class="bay-worker-meta">Gear: ${gear || 'none'} · jobs done ${w.jobsDone ?? 0}</span>`;
+          <span class="bay-worker-meta">Gear: ${gear || 'none'} · jobs done ${w.jobsDone ?? 0} · ${payGradeBlurb(pg)}</span>`;
         const actions = document.createElement('div');
         actions.className = 'bay-worker-actions';
         if (w.kind === 'robot') {
@@ -9744,13 +10029,17 @@ export class ForgeHeartGame {
         }
         const raise = document.createElement('button');
         raise.type = 'button';
-        raise.textContent = `Raise pay (${PAY_RAISE_COST + pg * 25}b)`;
+        const nextRank = payGradeTitle(pg + 1);
+        const raiseCost = raiseWorkerPayCost(pg);
+        raise.textContent = `Raise → ${nextRank} (${raiseCost}b)`;
+        raise.title = `Promote ${w.name} to ${nextRank} (G${pg + 1})`;
         raise.addEventListener('click', () => {
           const r = raiseWorkerPay(this.inv, w.id);
           this.bayLog(r.msg);
           if (r.ok) {
             this.brass = this.inv.brass;
             this.audio.playPickup();
+            this.toast(r.msg, 4);
             writeSlot(this.activeSlot, this.buildSaveData());
           }
           this.fillBayPanel();
@@ -10195,6 +10484,247 @@ export class ForgeHeartGame {
     if (log) log.textContent = msg;
   }
 
+  /** Frame / invention / stall / invent-mat targets for the active program. */
+  private fillProgramTargetPrefs(
+    prefEl: HTMLElement | null,
+    prog: import('./economy').WorkerProgram | undefined,
+  ) {
+    const titleEl = document.getElementById('program-targets-title');
+    if (!prefEl) return;
+    if (!prog) {
+      prefEl.classList.add('hidden');
+      prefEl.innerHTML = '';
+      titleEl?.classList.add('hidden');
+      return;
+    }
+    const hasFrame = prog.nodes.some(
+      (n) => n === 'craft_frame' || n === 'craft_fine_frame',
+    );
+    const hasInventCraft =
+      prog.nodes.includes('craft_custom') ||
+      prog.nodes.includes('stock_stall_invention') ||
+      prog.nodes.includes('sell_invention');
+    const hasStallGoods = prog.nodes.includes('stock_stall_goods');
+    const hasInventNew = prog.nodes.includes('invent_recipe');
+    if (!hasFrame && !hasInventCraft && !hasStallGoods && !hasInventNew) {
+      prefEl.classList.add('hidden');
+      prefEl.innerHTML = '';
+      titleEl?.classList.add('hidden');
+      return;
+    }
+    prefEl.classList.remove('hidden');
+    titleEl?.classList.remove('hidden');
+    prefEl.innerHTML = '';
+
+    if (hasFrame) {
+      const block = document.createElement('div');
+      block.className = 'program-target-block';
+      const lab = document.createElement('div');
+      lab.className = 'program-target-label';
+      lab.textContent = 'Make Frame · ingredient quality';
+      block.appendChild(lab);
+      const row = document.createElement('div');
+      row.className = 'program-frame-pref';
+      for (const pref of ['service', 'fine'] as const) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = pref === 'fine' ? 'Fine (upgraded)' : 'Serviceable';
+        b.title =
+          pref === 'fine'
+            ? 'Prefers silk chassis, polished wire, premium blooms when available'
+            : 'Uses iron/scrap chassis, basic wire, any bloom in pack';
+        if ((prog.framePref ?? 'service') === pref) b.classList.add('active');
+        b.addEventListener('click', () => {
+          const r = setProgramFramePref(this.inv, prog.id, pref);
+          this.programLog(r.msg);
+          writeSlot(this.activeSlot, this.buildSaveData());
+          this.fillProgramPanel();
+        });
+        row.appendChild(b);
+      }
+      block.appendChild(row);
+      const hint = document.createElement('p');
+      hint.className = 'craft-hint';
+      hint.textContent =
+        (prog.framePref ?? 'service') === 'fine'
+          ? 'Fine: crafted inventions first (auto-crafts from your book when mats allow) · silk · polished wire · best blooms.'
+          : 'Serviceable: iron/scrap · wire · blooms. Uses inventions when they upgrade the frame; crafts wire/gear if empty.';
+      block.appendChild(hint);
+      prefEl.appendChild(block);
+    }
+
+    if (hasInventCraft) {
+      const block = document.createElement('div');
+      block.className = 'program-target-block';
+      const lab = document.createElement('div');
+      lab.className = 'program-target-label';
+      lab.textContent = 'Invention workers craft / stock / sell';
+      block.appendChild(lab);
+
+      if (this.inv.customRecipes.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'craft-hint';
+        empty.textContent =
+          'No inventions in your book yet. Invent at the L3 desk (or Invent New Recipe with Apprentice Inventor crew), then pick one here.';
+        block.appendChild(empty);
+      } else {
+        const row = document.createElement('div');
+        row.className = 'program-invention-picks';
+        const selectedId = resolveProgramInventionId(this.inv, prog);
+        for (const recipe of this.inv.customRecipes) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className =
+            'program-invention-btn' +
+            (selectedId === recipe.id && prog.inventionId === recipe.id ? ' active' : '') +
+            (selectedId === recipe.id && !prog.inventionId ? ' active-default' : '');
+          const stock = this.inv.customStock[recipe.id] ?? 0;
+          b.innerHTML = `<strong>${recipe.name}</strong><span>stock ${stock} · sell ~${recipe.sellValue}b · Q${recipe.quality ?? 1}</span>`;
+          b.title = `Workers will craft / stock / sell ${recipe.name}`;
+          b.addEventListener('click', () => {
+            const r = setProgramInvention(this.inv, prog.id, recipe.id);
+            this.programLog(r.msg);
+            this.toast(r.msg, 3);
+            writeSlot(this.activeSlot, this.buildSaveData());
+            this.fillProgramPanel();
+          });
+          row.appendChild(b);
+        }
+        block.appendChild(row);
+        if (!prog.inventionId) {
+          const warn = document.createElement('p');
+          warn.className = 'craft-hint program-target-warn';
+          const fallback = this.inv.customRecipes[0];
+          warn.textContent = fallback
+            ? `No pick yet — currently defaults to “${fallback.name}”. Tap a card to lock the target.`
+            : 'Pick an invention above.';
+          block.appendChild(warn);
+        } else {
+          const ok = document.createElement('p');
+          ok.className = 'craft-hint';
+          const recipe = this.inv.customRecipes.find((r) => r.id === prog.inventionId);
+          ok.textContent = recipe
+            ? `Locked: workers craft “${recipe.name}” on Craft Invention steps.`
+            : 'Pick an invention above.';
+          block.appendChild(ok);
+        }
+      }
+      prefEl.appendChild(block);
+    }
+
+    if (hasStallGoods) {
+      const block = document.createElement('div');
+      block.className = 'program-target-block';
+      const lab = document.createElement('div');
+      lab.className = 'program-target-label';
+      lab.textContent = 'Stall goods to stock';
+      block.appendChild(lab);
+      const row = document.createElement('div');
+      row.className = 'program-target-row';
+      const sel = document.createElement('select');
+      sel.className = 'program-select';
+      const goods: CommodityId[] = [
+        'wire',
+        'scrap_brass',
+        'cloud_iron',
+        'spore_silk',
+        'sky_salt',
+        'gear_blank',
+        'repair_kit',
+        'fuel_cell',
+        'glass_pane',
+        'polished_wire',
+        'flower_gift',
+        'bloom_sky',
+        'bloom_brass',
+        'bloom_spore',
+        'bloom_harbor',
+        'bloom_aether',
+      ];
+      for (const id of goods) {
+        if (!(id in COMMODITIES)) continue;
+        const o = document.createElement('option');
+        o.value = id;
+        o.textContent = `${COMMODITIES[id].name} · pack ${getQty(this.inv, id)}`;
+        sel.appendChild(o);
+      }
+      sel.value = prog.stallCommodityId ?? 'wire';
+      const qty = document.createElement('select');
+      qty.className = 'program-select';
+      for (const n of [1, 2, 3, 5, 10]) {
+        const o = document.createElement('option');
+        o.value = String(n);
+        o.textContent = `×${n}`;
+        qty.appendChild(o);
+      }
+      qty.value = String(prog.stallStockQty ?? 3);
+      const apply = () => {
+        const r = setProgramStallGoods(
+          this.inv,
+          prog.id,
+          (sel.value as CommodityId) || 'wire',
+          Number(qty.value) || 3,
+        );
+        this.programLog(r.msg);
+        writeSlot(this.activeSlot, this.buildSaveData());
+        this.fillProgramPanel();
+      };
+      sel.addEventListener('change', apply);
+      qty.addEventListener('change', apply);
+      row.appendChild(sel);
+      row.appendChild(qty);
+      block.appendChild(row);
+      prefEl.appendChild(block);
+    }
+
+    if (hasInventNew) {
+      const block = document.createElement('div');
+      block.className = 'program-target-block';
+      const lab = document.createElement('div');
+      lab.className = 'program-target-label';
+      lab.textContent = `Invent new recipe mats (crew needs ${payGradeTitle(APPRENTICE_INVENTOR_GRADE)})`;
+      block.appendChild(lab);
+      const row = document.createElement('div');
+      row.className = 'program-target-row';
+      const mkMatSel = (value: string | null | undefined, label: string) => {
+        const s = document.createElement('select');
+        s.className = 'program-select';
+        s.title = label;
+        const auto = document.createElement('option');
+        auto.value = '';
+        auto.textContent = `${label}: auto`;
+        s.appendChild(auto);
+        for (const id of INVENT_MATERIAL_IDS) {
+          const o = document.createElement('option');
+          o.value = id;
+          o.textContent = `${COMMODITIES[id].name} · ${getQty(this.inv, id)}`;
+          s.appendChild(o);
+        }
+        s.value = value ?? '';
+        return s;
+      };
+      const aSel = mkMatSel(prog.inventMatA, 'Mat A');
+      const bSel = mkMatSel(prog.inventMatB, 'Mat B');
+      const apply = () => {
+        const r = setProgramInventMats(
+          this.inv,
+          prog.id,
+          (aSel.value as CommodityId) || null,
+          (bSel.value as CommodityId) || null,
+        );
+        this.programLog(r.msg);
+        writeSlot(this.activeSlot, this.buildSaveData());
+        this.fillProgramPanel();
+      };
+      aSel.addEventListener('change', apply);
+      bSel.addEventListener('change', apply);
+      row.appendChild(aSel);
+      row.appendChild(bSel);
+      block.appendChild(row);
+      prefEl.appendChild(block);
+    }
+  }
+
   private fillProgramPanel() {
     const list = document.getElementById('program-list');
     const nodesEl = document.getElementById('program-nodes');
@@ -10223,8 +10753,8 @@ export class ForgeHeartGame {
     for (const p of this.inv.programs) {
       const b = document.createElement('button');
       b.type = 'button';
-      const grade = minPayGradeForNodes(p.nodes.length);
-      b.textContent = `${p.name} · ${p.nodes.length} steps${grade > 0 ? ` · G${grade}` : ''}`;
+      const grade = minPayGradeForProgram(p);
+      b.textContent = `${p.name} · ${p.nodes.length} steps${grade > 0 ? ` · ${payGradeTitle(grade)}+` : ''}`;
       if (p.id === this.activeProgramId) b.style.borderColor = '#88e0ff';
       b.addEventListener('click', () => {
         this.activeProgramId = p.id;
@@ -10243,7 +10773,20 @@ export class ForgeHeartGame {
         const row = document.createElement('div');
         row.className = 'program-node';
         const def = PROGRAM_NODE_DEFS.find((d) => d.id === n);
-        row.innerHTML = `<span class="pn-idx">${i + 1}</span><span>${def?.name ?? n}</span>`;
+        let label = def?.name ?? n;
+        if (n === 'craft_custom' || n === 'stock_stall_invention' || n === 'sell_invention') {
+          const rid = resolveProgramInventionId(this.inv, prog);
+          const recipe = rid ? this.inv.customRecipes.find((r) => r.id === rid) : null;
+          label += recipe
+            ? ` · ${recipe.name}${prog.inventionId ? '' : ' (default)'}`
+            : ' · (pick below)';
+        } else if (n === 'craft_frame' || n === 'craft_fine_frame') {
+          label += (prog.framePref ?? 'service') === 'fine' ? ' · Fine parts' : ' · Serviceable';
+        } else if (n === 'stock_stall_goods') {
+          const cid = prog.stallCommodityId ?? 'wire';
+          label += ` · ${COMMODITIES[cid]?.name ?? cid} ×${prog.stallStockQty ?? 3}`;
+        }
+        row.innerHTML = `<span class="pn-idx">${i + 1}</span><span class="pn-label">${label}</span>`;
         const acts = document.createElement('div');
         acts.className = 'pn-actions';
         const up = document.createElement('button');
@@ -10279,46 +10822,22 @@ export class ForgeHeartGame {
       });
     }
 
-    const hasFrameNode =
-      !!prog &&
-      prog.nodes.some((n) => n === 'craft_frame' || n === 'craft_fine_frame');
-    if (prefEl) {
-      if (!prog || !hasFrameNode) {
-        prefEl.classList.add('hidden');
-        prefEl.innerHTML = '';
-      } else {
-        prefEl.classList.remove('hidden');
-        prefEl.innerHTML = '';
-        const lab = document.createElement('span');
-        lab.className = 'craft-hint';
-        lab.textContent = 'Frame parts';
-        prefEl.appendChild(lab);
-        for (const pref of ['service', 'fine'] as const) {
-          const b = document.createElement('button');
-          b.type = 'button';
-          b.textContent = pref === 'fine' ? 'Fine' : 'Serviceable';
-          if ((prog.framePref ?? 'service') === pref) b.classList.add('active');
-          b.addEventListener('click', () => {
-            const r = setProgramFramePref(this.inv, prog.id, pref);
-            this.programLog(r.msg);
-            writeSlot(this.activeSlot, this.buildSaveData());
-            this.fillProgramPanel();
-          });
-          prefEl.appendChild(b);
-        }
-      }
-    }
+    // Program targets: frame parts, invention, stall goods, invent mats
+    this.fillProgramTargetPrefs(prefEl, prog);
 
     if (gradeHint) {
       if (!prog) {
         gradeHint.textContent = '';
       } else {
-        const need = minPayGradeForNodes(prog.nodes.length);
+        const need = minPayGradeForProgram(prog);
         const free = PROGRAM_FREE_NODES;
+        const inventBit = prog.nodes.includes('invent_recipe')
+          ? ` · invent needs ${payGradeTitle(APPRENTICE_INVENTOR_GRADE)} (G${APPRENTICE_INVENTOR_GRADE})`
+          : '';
         gradeHint.textContent =
           need <= 0
-            ? `${prog.nodes.length} steps · grade 0 OK (first ${free} steps free)`
-            : `${prog.nodes.length} steps · needs pay grade ${need}+ (raise pay in Bay → Workers)`;
+            ? `${prog.nodes.length} steps · Dock Hand OK (first ${free} steps free)`
+            : `${prog.nodes.length} steps · needs ${payGradeTitle(need)} (G${need}+) — raise pay in Bay → Workers${inventBit}`;
       }
     }
 
@@ -10430,8 +10949,11 @@ export class ForgeHeartGame {
       const status = describeWorkerAssignment(this.inv, w);
       const maxN = workerMaxProgramNodes(w);
       const grade = w.payGrade ?? 0;
+      const inventBit = canWorkerInvent(w)
+        ? ' · invent OK'
+        : ` · invent @ G${APPRENTICE_INVENTOR_GRADE}`;
       card.innerHTML = `<strong>${w.name}</strong><div class="pa-status">${status}</div>
-        <div class="pa-meta">Pay G${grade} · up to ${maxN} steps</div>`;
+        <div class="pa-meta">${payGradeTitle(grade)} (G${grade}) · up to ${maxN} steps${inventBit}</div>`;
 
       // Plaza + ore mat + flower bloom (harvest + pick_flowers program nodes)
       if (w.harvestMatId === undefined) w.harvestMatId = null;
@@ -10895,8 +11417,7 @@ export class ForgeHeartGame {
           this.audio.playPickup();
         }
       }
-      this.bayTab = 'workers';
-      this.openBay();
+      this.openBay({ tab: 'workers' });
       this.syncEconomyHud();
       return true;
     }
@@ -10950,8 +11471,7 @@ export class ForgeHeartGame {
         );
         return true;
       }
-      this.bayTab = 'invent';
-      this.openBay();
+      this.openBay({ tab: 'invent', allowInvent: true });
       return true;
     }
     if (it.kind === 'retail_stall') {
@@ -11137,6 +11657,7 @@ export class ForgeHeartGame {
     ensureInvPlots(this.inv);
     this.syncPlotOwnershipVisuals();
     this.objective = this.megaCityObjective();
+    this.softGoalNudgeAcc = 0;
     this.setHelp(
       this.boardOwned || this.inv.playerBoard.owned
         ? 'Home · E · Q board · M map · lease office · wind skyways · I · Esc'
@@ -11147,20 +11668,31 @@ export class ForgeHeartGame {
       'Every robot has an owner and a job. Any may go rogue — rare. Wrench scramble · Hand fix · E harvest.',
       6.5,
     );
+    // Task 14: sequenced soft-goal / landlord onboarding (not a wiki)
     window.setTimeout(() => {
       if (this.disposed || !this.megaCityActive) return;
+      // Force announce current goal even if lastAnnouncedGoalId matches (fresh city enter)
       const goal = getActiveSoftGoal(this.inv);
-      this.toast(
-        goal
-          ? `Soft goal: ${goal.title} — ${goal.hint}`
-          : 'Workshop: craft · hire · invent. Expand yards: board west to Sky Foundry. Q wind skyways.',
-        7,
-      );
+      if (goal) {
+        this.inv.softGoalFlags.lastAnnouncedGoalId = goal.id;
+        this.toast(`Soft goal: ${goal.title} — ${goal.hint}`, 7.5);
+      } else {
+        this.toast(
+          'Empire open · grow standing, shops, and skyline. M map · lease office for land.',
+          7,
+        );
+      }
     }, 6500);
     window.setTimeout(() => {
       if (this.disposed || !this.megaCityActive) return;
-      this.toast(formatEmpireStandingLine(this.inv) + ' · M map shows district standing.', 6);
+      const coach = softGoalCoachLine(this.inv);
+      if (coach) this.toast(coach, 7);
+      else this.toast(formatEmpireStandingLine(this.inv) + ' · M map shows district standing.', 6);
     }, 14000);
+    window.setTimeout(() => {
+      if (this.disposed || !this.megaCityActive) return;
+      this.toastOnboardingHint();
+    }, 22000);
 
     this.audio.setWind(0.35);
     this.syncEconomyHud();
@@ -11171,22 +11703,12 @@ export class ForgeHeartGame {
 
   private megaCityObjective(): string {
     ensureStandingState(this.inv);
-    // Soft-goal chain drives empire objectives (Task 1)
+    // Soft-goal chain drives empire objectives (Tasks 1 + 14)
     const soft = softGoalObjectiveLine(this.inv);
-    // Keep board/harvest nudges only when soft goal is workshop/neighbor early
     const active = getActiveSoftGoal(this.inv);
-    if (active?.id === 'workshop' || active?.id === 'neighbor' || active?.id === 'hire') {
-      return soft;
-    }
-    if (
-      active &&
-      active.id !== 'standing_friendly' &&
-      active.id !== 'clear_debt' &&
-      active.id !== 'own_plot'
-    ) {
-      return soft;
-    }
-    // Late game: soft goal + empire summary
+    // Always prefer an unfinished soft goal (landlord / RE chain included)
+    if (active) return soft;
+    // Soft goals clear — light empire nudges
     const shops = ownedCityStallCount(this.inv);
     if (!this.inv.playerBoard.owned && !this.boardOwned && this.inv.cityWorkshopLeased) {
       return 'Board shop · Q wind skyways · harvest reefs have different mats';
@@ -11195,6 +11717,47 @@ export class ForgeHeartGame {
       return `Sky Foundry expand yards · bay L${this.inv.bayLevel} → more crew · ${soft}`;
     }
     return soft;
+  }
+
+  /** Task 14: toast when soft goal advances mid-session. */
+  private pollSoftGoalSurface() {
+    if (!this.megaCityActive) return;
+    const r = pollSoftGoalAnnouncement(this.inv);
+    if (r.changed && r.toast) {
+      this.toast(r.toast, 6.5);
+      this.objective = this.megaCityObjective();
+    }
+  }
+
+  private nudgeActiveSoftGoal() {
+    if (!this.megaCityActive || this.disposed) return;
+    const coach = softGoalCoachLine(this.inv);
+    if (coach) this.toast(coach, 5);
+  }
+
+  /** One-shot contextual tips after city enter (debt / hire / lease / garden). */
+  private toastOnboardingHint() {
+    if (!this.megaCityActive || this.disposed) return;
+    const g = getActiveSoftGoal(this.inv);
+    if (!g) return;
+    if (g.id === 'clear_debt') {
+      this.toast('Debt drama: neighbor E · Clear debt (pays landlord) or gift brass/goods.', 7);
+    } else if (g.id === 'hire' || g.id === 'hire_neighbor') {
+      this.toast('Hire: workshop/bay hire board · neighbors can join if a crew slot is free.', 7);
+    } else if (g.id === 'own_plot') {
+      this.toast('Land: M map · gold PLOT pins · Market or Residential lease office.', 7);
+      // Auto-route compass to nearest leasing office pin when map has them
+      const pin = this.skyCity?.mapSnapshot.landmarks.find((l) => l.kind === 'lease');
+      if (pin && !this.cityMapSelectedId) {
+        this.cityMapSelectedId = pin.id;
+      }
+    } else if (g.id === 'plot_garden') {
+      this.toast('Garden: lease office · your pad · Develop · Flower garden (harvest blooms).', 7);
+    } else if (g.id === 'plot_retail') {
+      this.toast('Retail: lease office · Develop · Retail front to bind a district stall.', 7);
+    } else if (g.id === 'neighbor') {
+      this.toast('Neighbors live on plaza homes · look for named doors · E talk.', 6.5);
+    }
   }
 
   private openStall() {
@@ -11416,11 +11979,15 @@ export class ForgeHeartGame {
     if (!this.skyCity) return;
     const drop = (k: string) =>
       k === 'home_workshop' || k === 'home_invent' || k === 'home_decorate';
-    for (const it of this.skyCity.interactables) {
+    // Mutate in place — never reassign interactables. skyCity.syncPlotOwnership
+    // closes over the original array; replacing it drops plot-garden beds forever.
+    const arr = this.skyCity.interactables;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const it = arr[i]!;
       if (!drop(it.kind)) continue;
       it.mesh.parent?.remove(it.mesh);
+      arr.splice(i, 1);
     }
-    this.skyCity.interactables = this.skyCity.interactables.filter((x) => !drop(x.kind));
   }
 
   private installHomeChildInteracts(

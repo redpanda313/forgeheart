@@ -27,7 +27,8 @@ export type MapLandmarkKind =
   | 'rogue'
   | 'district'
   | 'expand'
-  | 'storage';
+  | 'storage'
+  | 'lease';
 
 export interface MapPad {
   id: string;
@@ -130,6 +131,7 @@ const KIND_COLOR: Record<MapLandmarkKind, string> = {
   district: '#c4a35a',
   expand: '#88aaff',
   storage: '#f0d080',
+  lease: '#d4a017',
 };
 
 /** District skyway graph — keep in sync with skyCity skywayPairs. */
@@ -353,6 +355,20 @@ function landmarkFromInteract(it: CityInteract): MapLandmark | null {
         districtId: 'industrial',
         tag: 'LEASE',
         blurb: 'Lease empire HQ · craft · hire · invent',
+      };
+    case 'lease_office':
+      return {
+        id: it.id,
+        kind: 'lease',
+        label:
+          it.districtId === 'grand_market'
+            ? 'Leasing office · Empire'
+            : 'Leasing office · Ring',
+        x,
+        z,
+        districtId: it.districtId,
+        tag: 'PLOT',
+        blurb: 'Buy plaza plots · develop · shape · decks · airways',
       };
     case 'bay_expand':
       return {
@@ -900,7 +916,8 @@ function isServiceLandmark(kind: MapLandmarkKind): boolean {
     kind === 'home' ||
     kind === 'vendor' ||
     kind === 'expand' ||
-    kind === 'storage'
+    kind === 'storage' ||
+    kind === 'lease'
   );
 }
 
@@ -1164,7 +1181,11 @@ export function renderCityMap(
                         ? '!'
                         : lm.kind === 'expand'
                           ? 'EXPAND'
-                          : '');
+                          : lm.kind === 'lease'
+                            ? 'PLOT'
+                            : lm.kind === 'storage'
+                              ? 'STORE'
+                              : '');
     if (tag) {
       const t = document.createElementNS(ns, 'text');
       t.setAttribute('x', String(u));
