@@ -145,6 +145,11 @@ const PRIMARY_KINDS = new Set<PlotBuildKind>([
 
 export interface PlazaPlotsState {
   plots: PlotState[];
+  /**
+   * One-time migration: strip legacy/player bridge buildings once so
+   * wrongly placed bridges disappear; new bridges can still be built later.
+   */
+  bridgesClearedV1?: boolean;
 }
 
 export interface DistrictLite {
@@ -410,6 +415,18 @@ export function emptyPlazaPlots(districts: DistrictLite[]): PlazaPlotsState {
   return { plots };
 }
 
+/** Strip every placed bridge building from plots (empty stubs if needed). */
+export function clearAllPlacedBridges(state: PlazaPlotsState): number {
+  let removed = 0;
+  for (const p of state.plots) {
+    const before = p.buildings.length;
+    p.buildings = p.buildings.filter((b) => b.kind !== 'bridge');
+    removed += before - p.buildings.length;
+    if (!p.buildings.length) p.buildings = [{ kind: 'empty' }];
+  }
+  return removed;
+}
+
 export function ensurePlazaPlots(
   state: PlazaPlotsState | null | undefined,
   districts: DistrictLite[],
@@ -419,6 +436,11 @@ export function ensurePlazaPlots(
   const fresh = emptyPlazaPlots(districts);
   for (const p of fresh.plots) {
     if (!have.has(p.id)) state.plots.push(p);
+  }
+  // One-time: remove all previously placed bridges from save/live state
+  if (!state.bridgesClearedV1) {
+    clearAllPlacedBridges(state);
+    state.bridgesClearedV1 = true;
   }
   return state;
 }
@@ -460,6 +482,7 @@ export function quotePlotBuyPrice(
 
 export function plazaPlotsToSave(state: PlazaPlotsState) {
   return {
+    bridgesClearedV1: !!state.bridgesClearedV1,
     plots: state.plots.map((p) => ({
       id: p.id,
       districtId: p.districtId,
@@ -490,13 +513,22 @@ export function plazaPlotsFromSave(
   districts: DistrictLite[],
 ): PlazaPlotsState {
   if (!raw || typeof raw !== 'object') return emptyPlazaPlots(districts);
-  const o = raw as { plots?: unknown[] };
+  const o = raw as { plots?: unknown[]; bridgesClearedV1?: boolean };
   if (!Array.isArray(o.plots) || !o.plots.length) return emptyPlazaPlots(districts);
+  // One-time: legacy saves without this flag still hold bad bridge placements
+  const alreadyCleared = !!o.bridgesClearedV1;
   const plots: PlotState[] = [];
   for (const row of o.plots) {
     if (!row || typeof row !== 'object') continue;
     const r = row as Record<string, unknown>;
     if (typeof r.id !== 'string') continue;
+    let buildings: PlotBuildingStub[] = Array.isArray(r.buildings)
+      ? (r.buildings as PlotBuildingStub[])
+      : [{ kind: 'empty' }];
+    if (!alreadyCleared) {
+      buildings = buildings.filter((b) => b.kind !== 'bridge');
+      if (!buildings.length) buildings = [{ kind: 'empty' }];
+    }
     plots.push({
       id: r.id,
       districtId: String(r.districtId ?? ''),
@@ -508,9 +540,7 @@ export function plazaPlotsFromSave(
           : 'city',
       npcOwnerId: typeof r.npcOwnerId === 'string' ? r.npcOwnerId : null,
       zoningHint: (r.zoningHint as ZoningHint) || 'mixed',
-      buildings: Array.isArray(r.buildings)
-        ? (r.buildings as PlotBuildingStub[])
-        : [{ kind: 'empty' }],
+      buildings,
       rentPolicy:
         r.rentPolicy === 'cheap' ||
         r.rentPolicy === 'fair' ||
@@ -542,7 +572,10 @@ export function plazaPlotsFromSave(
       }
     }
   }
-  return ensurePlazaPlots({ plots }, districts);
+  return ensurePlazaPlots(
+    { plots, bridgesClearedV1: true },
+    districts,
+  );
 }
 
 export function plotOwnerLabel(plot: PlotState): string {
