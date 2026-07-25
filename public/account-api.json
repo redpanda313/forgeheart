@@ -1,4 +1,4 @@
 {
-  "url": "",
-  "hint": "Paste your public account-server URL here (cloudflared tunnel), then commit & push so GitHub Pages players get it automatically. Example: https://xxxx.trycloudflare.com"
+  "url": "https://exceed-generates-satin-controversial.trycloudflare.com",
+  "hint": "Home-PC account server via Cloudflare quick tunnel. Restarting cloudflared usually changes this URL — update this file and push main."
 }

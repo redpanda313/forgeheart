@@ -603,16 +603,14 @@
 
           <div id="account-panel" class="account-panel">
             <p class="account-heading">Account <span id="account-status" class="account-status">guest · local only</span></p>
-            <label class="account-field">
-              <span>Server URL</span>
-              <input
-                id="account-api-url"
-                type="url"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="http://127.0.0.1:8787 or https://….trycloudflare.com"
-              />
-            </label>
+            <!-- Server URL is loaded from public/account-api.json (hidden for players) -->
+            <input
+              id="account-api-url"
+              type="hidden"
+              autocomplete="off"
+              spellcheck="false"
+              value=""
+            />
             <div class="account-row">
               <label class="account-field">
                 <span>Username</span>

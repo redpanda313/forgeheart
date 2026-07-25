@@ -78,14 +78,10 @@ function syncAccountChrome() {
   btnRegister?.classList.toggle('hidden', logged);
   if (accountUsername) accountUsername.disabled = logged;
   if (accountPassword) accountPassword.disabled = logged;
-  // Always keep the field filled from resolved URL (localStorage / site config / localhost)
+  // Hidden field: always mirror resolved server URL (bundled config / localStorage / localhost)
   if (accountApiUrl) {
     const resolved = getAccountApiUrl();
-    if (resolved && accountApiUrl.value.trim() !== resolved) {
-      accountApiUrl.value = resolved;
-    } else if (!accountApiUrl.value.trim() && resolved) {
-      accountApiUrl.value = resolved;
-    }
+    if (resolved) accountApiUrl.value = resolved;
   }
 }
 
@@ -469,18 +465,30 @@ if (mobileHint && isMobileBrowser()) {
 }
 
 async function bootstrapTitle() {
-  // Auto-fill server URL from localStorage, then public/account-api.json, then localhost
+  // Load public/account-api.json so GitHub Pages ships the home-server tunnel URL
   await loadAccountApiConfig();
-  syncAccountChrome();
-
-  const api = getAccountApiUrl();
-  if (api) {
-    // Remember resolved default so next visit pre-fills even without the json file
-    if (accountApiUrl && !localStorage.getItem('forgeheart-account-api-url')) {
-      // Don't force-persist bundled URL until user interacts — only show it.
-      // Successful login/ping will persist via setAccountApiUrl.
+  // Prefer the bundled site URL for everyone (overrides stale localStorage from old tunnels)
+  const bundled = getAccountApiUrl();
+  if (bundled && accountApiUrl) accountApiUrl.value = bundled;
+  // If config loaded a URL, use it as the active API (and clear stale wrong tunnels)
+  try {
+    const res = await fetch(
+      `${((import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env?.BASE_URL || './')}account-api.json`.replace(
+        /([^:]\/)\/+/g,
+        '$1',
+      ),
+      { cache: 'no-store' },
+    );
+    if (res.ok) {
+      const j = (await res.json()) as { url?: string };
+      if (j?.url && String(j.url).trim()) {
+        setAccountApiUrl(String(j.url).trim());
+      }
     }
+  } catch {
+    /* offline / missing */
   }
+  syncAccountChrome();
 
   if (isLoggedIn() && getAccountApiUrl()) {
     setAccountMsg('Restoring cloud slots…');
@@ -494,11 +502,9 @@ async function bootstrapTitle() {
   } else {
     cloudMode = false;
     if (!getAccountApiUrl()) {
-      setAccountMsg(
-        'Guest mode. For cloud saves: run account server at home, tunnel it, put the URL in Server URL (or public/account-api.json).',
-      );
+      setAccountMsg('Guest mode (this browser only). Cloud accounts need the home server + tunnel running.');
     } else {
-      setAccountMsg(`Server URL ready · ${getAccountApiUrl()} · create account or log in`, 'ok');
+      setAccountMsg('Create an account or log in to use cloud save slots.', 'ok');
     }
   }
   selectedSlot = getLastSlotIndex() ?? selectedSlot;
