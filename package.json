@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "accounts": "node tools/account-server.mjs",
+    "accounts:open": "FORGEHEART_ACCOUNT_HOST=0.0.0.0 node tools/account-server.mjs"
   },
   "devDependencies": {
     "@types/three": "^0.185.1",

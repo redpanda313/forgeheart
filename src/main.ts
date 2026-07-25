@@ -10,8 +10,20 @@ import {
   listSlots,
   getLastSlotIndex,
   formatLevelProgress,
+  applyCloudSlotsToLocal,
   type ForgeSaveData,
 } from './forgeheart/save';
+import {
+  getAccountApiUrl,
+  setAccountApiUrl,
+  getSession,
+  isLoggedIn,
+  loginAccount,
+  registerAccount,
+  logoutAccount,
+  fetchCloudSlots,
+  pingAccountServer,
+} from './forgeheart/accounts';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 const titleScreen = document.getElementById('title-screen')!;
@@ -25,11 +37,49 @@ const btnSave = document.getElementById('btn-save') as HTMLButtonElement | null;
 const btnResume = document.getElementById('btn-resume') as HTMLButtonElement | null;
 const btnTitle = document.getElementById('btn-title') as HTMLButtonElement | null;
 
+const accountApiUrl = document.getElementById('account-api-url') as HTMLInputElement | null;
+const accountUsername = document.getElementById('account-username') as HTMLInputElement | null;
+const accountPassword = document.getElementById('account-password') as HTMLInputElement | null;
+const accountStatus = document.getElementById('account-status');
+const accountMsg = document.getElementById('account-msg');
+const btnLogin = document.getElementById('btn-account-login') as HTMLButtonElement | null;
+const btnRegister = document.getElementById('btn-account-register') as HTMLButtonElement | null;
+const btnLogout = document.getElementById('btn-account-logout') as HTMLButtonElement | null;
+const btnPing = document.getElementById('btn-account-ping') as HTMLButtonElement | null;
+
 let game: ForgeHeartGame | null = null;
 let running = false;
 let mouseWired = false;
 /** Selected slot on title (0–2) */
 let selectedSlot = getLastSlotIndex() ?? 0;
+/** Cloud slots loaded (when logged in); null = use local only */
+let cloudMode = false;
+
+function setAccountMsg(text: string, kind: '' | 'ok' | 'error' = '') {
+  if (!accountMsg) return;
+  accountMsg.textContent = text;
+  accountMsg.classList.remove('ok', 'error');
+  if (kind) accountMsg.classList.add(kind);
+}
+
+function syncAccountChrome() {
+  const session = getSession();
+  const logged = !!session;
+  if (accountStatus) {
+    accountStatus.textContent = logged
+      ? `logged in · ${session!.username}`
+      : 'guest · this browser only';
+    accountStatus.classList.toggle('online', logged);
+  }
+  btnLogout?.classList.toggle('hidden', !logged);
+  btnLogin?.classList.toggle('hidden', logged);
+  btnRegister?.classList.toggle('hidden', logged);
+  if (accountUsername) accountUsername.disabled = logged;
+  if (accountPassword) accountPassword.disabled = logged;
+  if (accountApiUrl && !accountApiUrl.value) {
+    accountApiUrl.value = getAccountApiUrl();
+  }
+}
 
 function refreshSlots() {
   const slots = listSlots();
@@ -38,7 +88,8 @@ function refreshSlots() {
   for (const s of slots) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'save-slot' + (s.empty ? ' empty' : '') + (s.index === selectedSlot ? ' selected' : '');
+    btn.className =
+      'save-slot' + (s.empty ? ' empty' : '') + (s.index === selectedSlot ? ' selected' : '');
     const name = document.createElement('span');
     name.className = 'slot-name';
     name.textContent = s.empty ? `Slot ${s.index + 1} — Empty` : s.label;
@@ -47,7 +98,9 @@ function refreshSlots() {
     if (s.data) {
       meta.textContent = `${s.sublabel} · ${formatLevelProgress(s.data)}`;
     } else {
-      meta.textContent = 'New game will use this slot';
+      meta.textContent = cloudMode
+        ? 'Cloud empty · New Game uses this slot'
+        : 'New game will use this slot';
     }
     btn.appendChild(name);
     btn.appendChild(meta);
@@ -59,9 +112,8 @@ function refreshSlots() {
     slotsEl.appendChild(btn);
   }
 
-  // Prefer last used if still valid
   if (last != null && slots[last] && !slots[last]!.empty && selectedSlot !== last) {
-    // keep user selection if they clicked; only set default once via selectedSlot init
+    // keep user selection
   }
   updateContinueButton();
 }
@@ -71,21 +123,23 @@ function updateContinueButton() {
   const selected = slots[selectedSlot];
   const last = getLastSlotIndex();
 
-  // Continue always loads the *selected* slot (not only last-played)
   if (selected && !selected.empty && selected.data) {
     btnContinue.classList.remove('hidden');
     const lastTag = last === selectedSlot ? ' · last played' : '';
-    btnContinue.textContent = `CONTINUE — Slot ${selectedSlot + 1} · ${selected.data.levelName}${lastTag}`;
+    const cloudTag = cloudMode ? ' · cloud' : '';
+    btnContinue.textContent = `CONTINUE — Slot ${selectedSlot + 1} · ${selected.data.levelName}${lastTag}${cloudTag}`;
   } else {
     btnContinue.classList.add('hidden');
   }
 
   if (selected?.empty) {
     btnNew.textContent = `NEW GAME (Slot ${selectedSlot + 1})`;
-    saveInfo.textContent = `Slot ${selectedSlot + 1} is empty · New Game starts Voss Workshop`;
+    saveInfo.textContent = cloudMode
+      ? `Slot ${selectedSlot + 1} empty on account · New Game starts workshop (saves to cloud)`
+      : `Slot ${selectedSlot + 1} is empty · New Game starts Voss Workshop`;
   } else if (selected?.data) {
     btnNew.textContent = `NEW GAME (overwrite Slot ${selectedSlot + 1})`;
-    saveInfo.textContent = `Selected Slot ${selectedSlot + 1}: ${selected.label} · Continue loads this save`;
+    saveInfo.textContent = `Selected Slot ${selectedSlot + 1}: ${selected.label} · Continue loads this save${cloudMode ? ' (cloud)' : ''}`;
   } else {
     btnNew.textContent = 'NEW GAME';
     saveInfo.textContent = 'Select a slot · New Game or Continue for that slot';
@@ -96,7 +150,6 @@ function updateContinueButton() {
 function loop() {
   if (!running || !game) return;
   game.update();
-  // Sync pause menu visibility
   if (pauseMenu) {
     if (game.isPaused()) pauseMenu.classList.remove('hidden');
     else pauseMenu.classList.add('hidden');
@@ -120,7 +173,6 @@ async function startGame(opts: { slot: number; save: ForgeSaveData | null }) {
   hud.classList.remove('hidden');
   pauseMenu?.classList.add('hidden');
 
-  // If a previous game exists, try to clean up
   if (game) {
     try {
       game.dispose?.();
@@ -136,6 +188,92 @@ async function startGame(opts: { slot: number; save: ForgeSaveData | null }) {
   running = true;
   requestAnimationFrame(loop);
 }
+
+async function afterAuthSuccess(msg: string) {
+  setAccountMsg(msg, 'ok');
+  syncAccountChrome();
+  const cloud = await fetchCloudSlots();
+  if (!cloud.ok) {
+    setAccountMsg(cloud.msg, 'error');
+    cloudMode = false;
+    refreshSlots();
+    return;
+  }
+  applyCloudSlotsToLocal(cloud.slots);
+  cloudMode = true;
+  selectedSlot = getLastSlotIndex() ?? 0;
+  // Prefer first empty or last used
+  refreshSlots();
+  setAccountMsg(`${msg} · ${cloud.slots.filter((s) => !s.empty).length}/3 slots used`, 'ok');
+}
+
+function readAuthForm(): { username: string; password: string; apiUrl: string } | null {
+  if (accountApiUrl) {
+    setAccountApiUrl(accountApiUrl.value);
+  }
+  const username = accountUsername?.value ?? '';
+  const password = accountPassword?.value ?? '';
+  if (!username.trim()) {
+    setAccountMsg('Enter a username (any non-empty text).', 'error');
+    return null;
+  }
+  if (!getAccountApiUrl()) {
+    setAccountMsg('Set the account server URL first (home PC tunnel or localhost).', 'error');
+    return null;
+  }
+  return { username: username.trim(), password, apiUrl: getAccountApiUrl() };
+}
+
+btnLogin?.addEventListener('click', () => {
+  void (async () => {
+    const form = readAuthForm();
+    if (!form) return;
+    setAccountMsg('Logging in…');
+    const r = await loginAccount(form.username, form.password);
+    if (!r.ok) {
+      setAccountMsg(r.msg, 'error');
+      return;
+    }
+    await afterAuthSuccess(r.msg);
+  })();
+});
+
+btnRegister?.addEventListener('click', () => {
+  void (async () => {
+    const form = readAuthForm();
+    if (!form) return;
+    setAccountMsg('Creating account…');
+    const r = await registerAccount(form.username, form.password);
+    if (!r.ok) {
+      setAccountMsg(r.msg, 'error');
+      return;
+    }
+    await afterAuthSuccess(r.msg);
+  })();
+});
+
+btnLogout?.addEventListener('click', () => {
+  void (async () => {
+    await logoutAccount();
+    cloudMode = false;
+    syncAccountChrome();
+    setAccountMsg('Logged out · slots below are this browser only.', 'ok');
+    refreshSlots();
+  })();
+});
+
+btnPing?.addEventListener('click', () => {
+  void (async () => {
+    if (accountApiUrl) setAccountApiUrl(accountApiUrl.value);
+    setAccountMsg('Pinging server…');
+    const r = await pingAccountServer();
+    setAccountMsg(r.msg, r.ok ? 'ok' : 'error');
+  })();
+});
+
+accountApiUrl?.addEventListener('change', () => {
+  setAccountApiUrl(accountApiUrl.value);
+});
 
 btnNew.addEventListener('click', () => {
   const slots = listSlots();
@@ -164,7 +302,9 @@ btnContinue.addEventListener('click', () => {
 btnSave?.addEventListener('click', () => {
   if (!game) return;
   game.saveProgress();
-  game.toastPublic?.('Progress saved.');
+  game.toastPublic?.(
+    isLoggedIn() ? 'Progress saved (local + cloud).' : 'Progress saved (this browser).',
+  );
 });
 
 btnResume?.addEventListener('click', () => {
@@ -211,10 +351,14 @@ document.getElementById('program-new')?.addEventListener('click', () => {
 });
 
 document.getElementById('program-templates')?.addEventListener('click', (ev) => {
-  const t = (ev.target as HTMLElement | null)?.closest?.('[data-program-template]') as HTMLElement | null;
+  const t = (ev.target as HTMLElement | null)?.closest?.(
+    '[data-program-template]',
+  ) as HTMLElement | null;
   const id = t?.dataset.programTemplate;
   if (!id) return;
-  (game as { newProgramFromTemplatePublic?: (id: string) => void } | null)?.newProgramFromTemplatePublic?.(id);
+  (game as { newProgramFromTemplatePublic?: (id: string) => void } | null)?.newProgramFromTemplatePublic?.(
+    id,
+  );
 });
 
 document.querySelectorAll('[data-bay-tab]').forEach((el) => {
@@ -243,7 +387,6 @@ btnTitle?.addEventListener('click', () => {
   }
   game = null;
   running = false;
-  // Ensure no leftover session UI (bay/market/etc.) on title
   for (const id of [
     'bay-panel',
     'craft-panel',
@@ -258,6 +401,12 @@ btnTitle?.addEventListener('click', () => {
     'maker-hud',
     'nav-compass',
     'mobile-controls',
+    'shop-panel',
+    'city-map-panel',
+    'romance-panel',
+    'neighbor-panel',
+    'lease-office-panel',
+    'garden-plant-panel',
   ]) {
     const el = document.getElementById(id);
     el?.classList.add('hidden');
@@ -266,20 +415,44 @@ btnTitle?.addEventListener('click', () => {
   hud.classList.add('hidden');
   pauseMenu?.classList.add('hidden');
   titleScreen.classList.remove('hidden');
-  refreshSlots();
+  void bootstrapTitle();
 });
 
-refreshSlots();
-
-// Title-screen tip when phone / touch browser is detected
 const mobileHint = document.getElementById('mobile-title-hint');
 if (mobileHint && isMobileBrowser()) {
   mobileHint.classList.remove('hidden');
   mobileHint.setAttribute('aria-hidden', 'false');
 }
 
+async function bootstrapTitle() {
+  syncAccountChrome();
+  if (isLoggedIn() && getAccountApiUrl()) {
+    setAccountMsg('Restoring cloud slots…');
+    const cloud = await fetchCloudSlots();
+    if (cloud.ok) {
+      applyCloudSlotsToLocal(cloud.slots);
+      cloudMode = true;
+      setAccountMsg(`Cloud ready · ${getSession()?.username}`, 'ok');
+    } else {
+      cloudMode = false;
+      setAccountMsg(cloud.msg || 'Cloud offline — showing local slots.', 'error');
+      // stale token?
+      if (/Not logged in|Wrong|401/i.test(cloud.msg || '')) {
+        await logoutAccount();
+        syncAccountChrome();
+      }
+    }
+  } else {
+    cloudMode = false;
+  }
+  selectedSlot = getLastSlotIndex() ?? selectedSlot;
+  refreshSlots();
+}
+
+void bootstrapTitle();
+
 console.info(
-  '%cForgeHeart',
-  'color:#c4a35a;font-size:16px;font-weight:bold',
+  'ForgeHeart',
   '— Gift of the Brass Gods · 3 save slots',
+  getAccountApiUrl() ? `· account API ${getAccountApiUrl()}` : '· set account server URL to enable cloud',
 );

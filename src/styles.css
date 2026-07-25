@@ -2589,6 +2589,108 @@ h1 {
   flex: 1;
   min-width: 0;
 }
+
+/* Title screen — light accounts */
+.account-panel {
+  margin: 0.75rem 0 1rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(196, 163, 90, 0.35);
+  border-radius: 10px;
+  background: rgba(12, 22, 34, 0.72);
+  text-align: left;
+}
+.account-heading {
+  margin: 0 0 0.55rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #e8c878;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+.account-status {
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: #9ab0c4;
+  font-weight: 500;
+}
+.account-status.online {
+  color: #82e0aa;
+}
+.account-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0.45rem;
+}
+.account-field span {
+  font-size: 0.68rem;
+  color: #8aa0b4;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.account-field input {
+  appearance: none;
+  border: 1px solid #3a5568;
+  background: #0a1824;
+  color: #e8f0f8;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  width: 100%;
+}
+.account-field input:focus {
+  outline: 1px solid #c4a35a;
+  border-color: #c4a35a;
+}
+.account-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+.account-actions button {
+  appearance: none;
+  border: 1px solid rgba(196, 163, 90, 0.55);
+  background: rgba(40, 32, 18, 0.9);
+  color: #f0e4c8;
+  padding: 0.4rem 0.7rem;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.account-actions button:hover {
+  border-color: #e8c878;
+  background: rgba(60, 48, 22, 0.95);
+}
+.account-actions button.account-secondary {
+  border-color: #3a5568;
+  background: #142838;
+  color: #b8c8d8;
+}
+.account-msg {
+  margin: 0.45rem 0 0;
+  min-height: 1.2em;
+  font-size: 0.78rem;
+  color: #c8d8e8;
+  line-height: 1.35;
+}
+.account-msg.error {
+  color: #f0a0a0;
+}
+.account-msg.ok {
+  color: #82e0aa;
+}
 .program-grade-hint {
   margin: 0.35rem 0 0.55rem;
 }

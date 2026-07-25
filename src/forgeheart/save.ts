@@ -1,9 +1,11 @@
 /**
- * ForgeHeart — 3 local save slots.
+ * ForgeHeart — 3 save slots.
+ * LocalStorage always; when logged into home account server, also cloud.
  * Slot display name = level that was saved.
  */
 
 import { generateBackstory } from './backstory';
+import { isLoggedIn, writeCloudSlot } from './accounts';
 
 export type LevelId = 'workshop' | 'sky_city' | 'sky_race' | 'mega_city';
 
@@ -176,10 +178,42 @@ export function writeSlot(index: number, data: ForgeSaveData): void {
   data.levelName = LEVEL_NAMES[data.levelId] ?? data.levelName;
   localStorage.setItem(slotKey(index), JSON.stringify(data));
   localStorage.setItem(LAST_SLOT_KEY, String(index));
+  // Fire-and-forget cloud mirror when logged in (home account server)
+  if (isLoggedIn()) {
+    void writeCloudSlot(index, data).catch(() => {
+      /* offline / server down — local still holds the save */
+    });
+  }
 }
 
 export function clearSlot(index: number): void {
   localStorage.removeItem(slotKey(index));
+  if (isLoggedIn()) {
+    void writeCloudSlot(index, null).catch(() => {
+      /* ignore */
+    });
+  }
+}
+
+/**
+ * Apply a cloud slot list into localStorage so existing game code keeps working.
+ * Call after successful login / slot fetch.
+ */
+export function applyCloudSlotsToLocal(
+  slots: { index: number; data: ForgeSaveData | null; empty?: boolean }[],
+): void {
+  for (let i = 0; i < SLOT_COUNT; i++) {
+    const s = slots.find((x) => x.index === i) ?? slots[i];
+    if (!s || s.empty || !s.data) {
+      localStorage.removeItem(slotKey(i));
+    } else {
+      try {
+        localStorage.setItem(slotKey(i), JSON.stringify(s.data));
+      } catch {
+        /* quota */
+      }
+    }
+  }
 }
 
 export function getLastSlotIndex(): number | null {
