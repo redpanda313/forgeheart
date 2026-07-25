@@ -72,6 +72,8 @@ import {
   clampLocalOnPlot,
   computeAutoBridges,
   bridgeEdgePoints,
+  platformsSeparatedForBridge,
+  plotPlatformHalf,
   type PlazaPlotsState,
   type PlotState,
   type DistrictLite,
@@ -7072,6 +7074,8 @@ export {
   clampLocalOnPlot,
   computeAutoBridges,
   bridgeEdgePoints,
+  platformsSeparatedForBridge,
+  plotPlatformHalf,
   movePlotFree,
 };
 
@@ -7224,6 +7228,16 @@ export function developPlot(
   if (kind === 'bridge' && !bridgeTo && dist) {
     const n = nearestOwnedPlot(inv.plazaPlots, plot, dist);
     bridgeTo = n?.id ?? null;
+  }
+  // Bridges only span open space — refuse when pads still touch
+  if (kind === 'bridge' && dist && bridgeTo) {
+    const other = getPlot(inv.plazaPlots, bridgeTo);
+    if (!other || !platformsSeparatedForBridge(plot, other, dist)) {
+      return {
+        ok: false,
+        msg: 'Platforms are still touching — move one apart so the bridge can span the gap.',
+      };
+    }
   }
   const q = quotePlotBuild(plot, kind);
   if (!q.ok) return { ok: false, msg: q.msg ?? 'Cannot build.' };

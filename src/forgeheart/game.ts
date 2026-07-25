@@ -239,8 +239,9 @@ import {
   clampPlotWorld,
   clampLocalOnPlot,
   nearestOwnedPlot,
-  hasNearbyOwned,
   bridgeEdgePoints,
+  platformsSeparatedForBridge,
+  plotPlatformHalf,
   ensureTutorialMarketCrew,
   assignMedallion,
   quotePlacement,
@@ -7457,10 +7458,12 @@ export class ForgeHeartGame {
         }
       }
       const start = plotLivePos(plot, d);
-      const valid =
-        !!targetId ||
-        hasNearbyOwned(this.inv.plazaPlots, plot, d);
-      // Edge-to-edge span (starts near each platform rim)
+      // Valid only when there is open space between separated pads
+      const separated = targetPlot
+        ? platformsSeparatedForBridge(plot, targetPlot, d)
+        : false;
+      const valid = !!targetId && separated && this.inv.brass >= q.cost;
+      // Rim-to-rim: bridge hangs only in the empty gap (island style)
       let ax: number;
       let az: number;
       let bx: number;
@@ -7475,18 +7478,18 @@ export class ForgeHeartGame {
         const dx = endX - start.x;
         const dz = endZ - start.z;
         const dist = Math.max(0.01, Math.hypot(dx, dz));
-        const half = s.cellSize * 0.5;
+        const half = plotPlatformHalf(s.cellSize);
         const ux = dx / dist;
         const uz = dz / dist;
-        ax = start.x + ux * half * 0.94;
-        az = start.z + uz * half * 0.94;
+        ax = start.x + ux * half;
+        az = start.z + uz * half;
         bx = endX;
         bz = endZ;
       }
-      const built = buildWorldSpanRopeBridge(ax, az, bx, bz, 3, 0.28, true);
+      const built = buildWorldSpanRopeBridge(ax, az, bx, bz, 1.35, 0.28, true);
       const ghost = built.group;
       liftGhost(ghost);
-      if (!valid || this.inv.brass < q.cost) {
+      if (!valid) {
         ghost.traverse((o) => {
           if (o instanceof THREE.Mesh && o.material && 'color' in o.material) {
             (o.material as THREE.MeshStandardMaterial).color?.setHex?.(0xaa6666);

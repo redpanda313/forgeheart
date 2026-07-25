@@ -22,7 +22,13 @@ import {
   type CommodityId,
 } from './economy';
 import { buildWorldSpanRopeBridge } from './plotBuild';
-import { plotLivePos, computeAutoBridges, bridgeEdgePoints } from './plazaPlots';
+import {
+  plotLivePos,
+  computeAutoBridges,
+  bridgeEdgePoints,
+  plotPlatformHalf,
+  platformsSeparatedForBridge,
+} from './plazaPlots';
 import { buildPrefab } from './cityEditor';
 import { CATALOG, type CatalogEntry } from './editorCatalog';
 import { buildMapSnapshot, type MapSnapshot } from './cityMap';
@@ -2405,8 +2411,8 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     pz: number,
     cellSize: number,
   ): PlotPlatformHandle => {
-    // Abut at default grid (no gap); drift opens a fracture that needs bridges
-    const half = cellSize * 0.5;
+    // Abut at default grid; moving a pad opens air that needs rope bridges
+    const half = plotPlatformHalf(cellSize);
     const root = new THREE.Group();
     root.name = plotKey;
     root.position.set(px, 0, pz);
@@ -2654,18 +2660,25 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           if (other && other.districtId) {
             const od = CITY_DISTRICTS.find((x) => x.id === other.districtId);
             if (od) {
-              const edges = bridgeEdgePoints(toPlotLite(p), toPlotLite(other), d);
-              const span = buildWorldSpanRopeBridge(
-                edges.ax,
-                edges.az,
-                edges.bx,
-                edges.bz,
-                3,
-                DECK_Y + FLOOR_THICK * 0.35,
-                false,
-              );
-              plotBuildRoot.add(span.group);
-              plotBridgeCols.push(...span.colliders);
+              const pa = toPlotLite(p);
+              const pb = toPlotLite(other);
+              // Only spawn when pads are separated — bridge sits in open space
+              if (platformsSeparatedForBridge(pa, pb, d)) {
+                const edges = bridgeEdgePoints(pa, pb, d);
+                const span = buildWorldSpanRopeBridge(
+                  edges.ax,
+                  edges.az,
+                  edges.bx,
+                  edges.bz,
+                  1.35,
+                  DECK_Y + FLOOR_THICK * 0.35,
+                  false,
+                );
+                if (span.group.children.length) {
+                  plotBuildRoot.add(span.group);
+                  plotBridgeCols.push(...span.colliders);
+                }
+              }
             }
           }
         }
@@ -2673,7 +2686,7 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       if (g.children.length) plotBuildRoot.add(g);
     }
 
-    // Auto bridges between nearby platforms (any owner) — edge-to-edge spans
+    // Auto bridges only across open voids between separated platforms (any owner)
     for (const d of CITY_DISTRICTS) {
       const pseudo = {
         plots: plots.filter((p) => p.districtId === d.id).map(toPlotLite),
@@ -2685,10 +2698,11 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           link.az,
           link.bx,
           link.bz,
-          5,
+          1.5,
           DECK_Y + FLOOR_THICK * 0.35,
           false,
         );
+        if (!span.group.children.length) continue;
         plotBuildRoot.add(span.group);
         plotBridgeCols.push(...span.colliders);
       }

@@ -480,9 +480,11 @@ function makeSolidStructure(
  * facing: 0=+X 1=+Z 2=-X 3=-Z
  */
 /**
- * Rope-plank bridge.
- * @param widthMul 1 = original, 3 = player placeable, 5 = auto connector
- * @param lengthOverride world length (span); default ~cellSize
+ * Rope-plank sky bridge (island style).
+ * Local +Z is the open-gap span; end posts sit on each platform rim and
+ * planks hang only across the void between them.
+ * @param widthMul visual width (≈1.2–1.6 island look; avoid huge decks)
+ * @param lengthOverride edge-to-edge gap length in world units
  */
 export function buildRopePlankBridgeMesh(
   cellSize: number,
@@ -494,90 +496,94 @@ export function buildRopePlankBridgeMesh(
 ): THREE.Group {
   const g = new THREE.Group();
   g.name = 'RopePlankBridge';
-  const w = Math.max(1, widthMul);
-  const halfW = 0.55 * w;
-  const len = lengthOverride ?? cellSize * 0.95;
+  const w = Math.max(0.9, Math.min(widthMul, 2.2));
+  // Narrow walkway like floating-island references
+  const halfW = 0.45 * w;
+  const len = Math.max(1.2, lengthOverride ?? cellSize * 0.95);
+  const halfL = len * 0.5;
   const opacity = Math.max(0.4, opacityOverride ?? (ghost ? 0.75 : 1));
   const wood = new THREE.MeshStandardMaterial({
-    color: 0x8a6a40,
-    roughness: 0.9,
-    metalness: 0.05,
+    color: 0x8b5a2b,
+    roughness: 0.92,
+    metalness: 0.04,
     transparent: true,
     opacity,
-    depthWrite: false,
+    depthWrite: !ghost,
     depthTest: true,
-    emissive: 0x4a3010,
-    emissiveIntensity: ghost ? 0.15 : 0,
+    emissive: 0x3a2208,
+    emissiveIntensity: ghost ? 0.15 : 0.02,
   });
   const rope = new THREE.MeshStandardMaterial({
-    color: 0xc4a878,
-    roughness: 0.85,
-    metalness: 0.1,
+    color: 0xc9a66a,
+    roughness: 0.88,
+    metalness: 0.08,
     transparent: true,
     opacity,
-    depthWrite: false,
+    depthWrite: !ghost,
     depthTest: true,
-    emissive: 0x665522,
-    emissiveIntensity: ghost ? 0.12 : 0,
+    emissive: 0x554418,
+    emissiveIntensity: ghost ? 0.12 : 0.02,
   });
   const postMat = new THREE.MeshStandardMaterial({
-    color: 0x5a4030,
-    roughness: 0.8,
-    metalness: 0.1,
+    color: 0x5c3d28,
+    roughness: 0.85,
+    metalness: 0.08,
     transparent: true,
     opacity,
-    depthWrite: false,
+    depthWrite: !ghost,
     depthTest: true,
     emissive: 0x2a1810,
-    emissiveIntensity: ghost ? 0.1 : 0,
+    emissiveIntensity: ghost ? 0.1 : 0.02,
   });
 
   const yaw = (facing % 4) * (Math.PI / 2);
   g.rotation.y = yaw;
 
-  for (const z of [-len * 0.42, len * 0.42]) {
+  // End posts at each rim (±halfL = bridge endpoints on platform edges)
+  const postH = 1.05;
+  for (const z of [-halfL, halfL]) {
     for (const x of [-halfW, halfW]) {
-      const post = new THREE.Mesh(
-        new THREE.BoxGeometry(0.12 * Math.min(w, 2), 1.15, 0.12 * Math.min(w, 2)),
-        postMat,
-      );
-      post.position.set(x, 0.55, z);
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, postH, 0.1), postMat);
+      post.position.set(x, postH * 0.5, z);
       g.add(post);
     }
   }
 
-  const plankCount = Math.max(6, Math.round(len / 0.55));
-  const plankW = 1.15 * w;
+  // Planks only in the open void between posts
+  const plankCount = Math.max(5, Math.round(len / 0.6));
+  const plankW = halfW * 2 * 0.92;
+  const sagAmp = Math.min(0.55, Math.max(0.14, len * 0.045));
   for (let i = 0; i < plankCount; i++) {
     const t = plankCount <= 1 ? 0.5 : i / (plankCount - 1);
-    const z = -len * 0.4 + t * len * 0.8;
-    const sag = Math.sin(t * Math.PI) * 0.12;
+    const z = -halfL * 0.9 + t * len * 0.9;
+    const sag = Math.sin(t * Math.PI) * sagAmp;
     const plank = new THREE.Mesh(
-      new THREE.BoxGeometry(plankW, 0.07, 0.38),
+      new THREE.BoxGeometry(plankW, 0.065, Math.min(0.42, (len / plankCount) * 0.7)),
       wood,
     );
-    plank.position.set(0, 0.28 - sag, z);
-    plank.rotation.y = ((i % 3) - 1) * 0.04;
+    plank.position.set(0, 0.12 - sag, z);
+    plank.rotation.y = ((i % 3) - 1) * 0.03;
     g.add(plank);
   }
 
-  const ropeSegs = Math.max(12, Math.round(12 * (len / (cellSize * 0.95))));
-  for (const x of [-halfW * 0.95, halfW * 0.95]) {
-    for (const yBase of [0.95, 0.32]) {
+  // Rope rails post-to-post with matching sag
+  const ropeSegs = Math.max(10, Math.round(len / 0.55));
+  for (const x of [-halfW * 0.98, halfW * 0.98]) {
+    for (const yBase of [0.92, 0.38]) {
+      const railSag = yBase > 0.5 ? sagAmp * 1.15 : sagAmp * 0.85;
       for (let i = 0; i < ropeSegs; i++) {
         const t0 = i / ropeSegs;
         const t1 = (i + 1) / ropeSegs;
-        const z0 = -len * 0.42 + t0 * len * 0.84;
-        const z1 = -len * 0.42 + t1 * len * 0.84;
-        const sag0 = Math.sin(t0 * Math.PI) * (yBase > 0.5 ? 0.18 : 0.1);
-        const sag1 = Math.sin(t1 * Math.PI) * (yBase > 0.5 ? 0.18 : 0.1);
-        const y0 = yBase - sag0;
-        const y1 = yBase - sag1;
+        const z0 = -halfL + t0 * len;
+        const z1 = -halfL + t1 * len;
+        const y0 = yBase - Math.sin(t0 * Math.PI) * railSag;
+        const y1 = yBase - Math.sin(t1 * Math.PI) * railSag;
         const dy = y1 - y0;
         const dz = z1 - z0;
         const segLen = Math.hypot(dy, dz);
+        if (segLen < 0.02) continue;
         const seg = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.025 * Math.min(w, 2), 0.025 * Math.min(w, 2), segLen, 5),
+          new THREE.CylinderGeometry(0.028, 0.028, segLen, 5),
           rope,
         );
         seg.position.set(x, (y0 + y1) / 2, (z0 + z1) / 2);
@@ -591,7 +597,10 @@ export function buildRopePlankBridgeMesh(
   return g;
 }
 
-/** Span a rope bridge in world space from A→B (edge points) + walk/side colliders */
+/**
+ * World-space rope bridge from rim A→rim B (open gap only) + floor/side colliders.
+ * Returns an empty group when the span is too short (pads not separated).
+ */
 export function buildWorldSpanRopeBridge(
   ax: number,
   az: number,
@@ -603,12 +612,17 @@ export function buildWorldSpanRopeBridge(
 ): { group: THREE.Group; colliders: Collider[] } {
   const dx = bx - ax;
   const dz = bz - az;
-  const len = Math.max(0.5, Math.hypot(dx, dz));
+  const len = Math.hypot(dx, dz);
   const g = new THREE.Group();
+  g.name = 'WorldSpanRopeBridge';
+  // Pads still touching / no real void → do not place a bridge
+  if (len < 1.2) {
+    return { group: g, colliders: [] };
+  }
   g.position.set((ax + bx) / 2, deckY, (az + bz) / 2);
   g.rotation.y = Math.atan2(dx, dz);
   const br = buildRopePlankBridgeMesh(
-    Math.max(len / 0.95, 4),
+    Math.max(len, 4),
     1,
     ghost,
     ghost ? 0.8 : 1,
@@ -619,41 +633,37 @@ export function buildWorldSpanRopeBridge(
 
   const colliders: Collider[] = [];
   if (!ghost) {
-    const halfW = (1.15 * widthMul) / 2;
+    const halfW = 0.45 * Math.max(0.9, Math.min(widthMul, 2.2));
     const ux = dx / len;
     const uz = dz / len;
-    // Perpendicular for sides
     const px = -uz;
     const pz = ux;
-    // Walk deck — thin floor along span
-    const top = deckY + 0.45;
-    const bot = deckY - 0.05;
-    // Sample several boxes along the length for reliable landing
-    const segs = Math.max(2, Math.ceil(len / 4));
+    const top = deckY + 0.38;
+    const bot = deckY - 0.35;
+    const segs = Math.max(2, Math.ceil(len / 3.5));
     for (let i = 0; i < segs; i++) {
       const t0 = i / segs;
       const t1 = (i + 1) / segs;
-      const mx = ax + dx * ((t0 + t1) / 2);
-      const mz = az + dz * ((t0 + t1) / 2);
-      const segLen = (len / segs) * 0.98;
-      // AABB that covers rotated segment (conservative)
-      const extX = Math.abs(ux) * (segLen / 2) + Math.abs(px) * halfW + 0.15;
-      const extZ = Math.abs(uz) * (segLen / 2) + Math.abs(pz) * halfW + 0.15;
+      const tm = (t0 + t1) / 2;
+      const mx = ax + dx * tm;
+      const mz = az + dz * tm;
+      const segLen = (len / segs) * 0.96;
+      const extX = Math.abs(ux) * (segLen / 2) + Math.abs(px) * halfW + 0.12;
+      const extZ = Math.abs(uz) * (segLen / 2) + Math.abs(pz) * halfW + 0.12;
       colliders.push({
         min: new THREE.Vector3(mx - extX, bot, mz - extZ),
         max: new THREE.Vector3(mx + extX, top, mz + extZ),
         kind: 'floor',
       });
     }
-    // Rope side barriers (solid) — low walls along both flanks
-    const sideH = 1.05;
+    const sideH = 1.0;
     for (const side of [-1, 1]) {
-      const sx = ((ax + bx) / 2) + px * halfW * side;
-      const sz = ((az + bz) / 2) + pz * halfW * side;
-      const extX = Math.abs(ux) * (len / 2) + 0.12;
-      const extZ = Math.abs(uz) * (len / 2) + 0.12;
+      const sx = (ax + bx) / 2 + px * halfW * 1.05 * side;
+      const sz = (az + bz) / 2 + pz * halfW * 1.05 * side;
+      const extX = Math.abs(ux) * (len / 2) + 0.1;
+      const extZ = Math.abs(uz) * (len / 2) + 0.1;
       colliders.push({
-        min: new THREE.Vector3(sx - extX, deckY, sz - extZ),
+        min: new THREE.Vector3(sx - extX, deckY - 0.15, sz - extZ),
         max: new THREE.Vector3(sx + extX, deckY + sideH, sz + extZ),
         kind: 'solid',
       });

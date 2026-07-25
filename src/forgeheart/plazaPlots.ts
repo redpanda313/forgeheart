@@ -159,6 +159,46 @@ export interface DistrictLite {
 
 export const PLOT_GRID = 3;
 
+/** Solid pad half-extent (matches skyCity). 0.5 → default 3×3 pads abut (no void). */
+export const PLOT_PLATFORM_HALF_MUL = 0.5;
+
+export function plotPlatformHalf(cellSize: number): number {
+  return cellSize * PLOT_PLATFORM_HALF_MUL;
+}
+
+/** Min edge-to-edge air before a bridge is allowed (abutting pads stay bridgeless). */
+export function bridgeMinGap(cellSize: number): number {
+  return Math.max(2.5, cellSize * 0.28);
+}
+
+export function bridgeMaxGap(cellSize: number): number {
+  return cellSize * 4.5;
+}
+
+/** Edge-to-edge void between two pads (≤0 = touching / overlapping). */
+export function platformEdgeGap(
+  a: PlotState,
+  b: PlotState,
+  d: { x: number; z: number; size: number },
+): number {
+  const cellSize = plotWorldCenter(d, 0, 0).cellSize;
+  const half = plotPlatformHalf(cellSize);
+  const pa = plotLivePos(a, d);
+  const pb = plotLivePos(b, d);
+  return Math.hypot(pb.x - pa.x, pb.z - pa.z) - 2 * half;
+}
+
+/** True when there is open space between pads for a rope bridge. */
+export function platformsSeparatedForBridge(
+  a: PlotState,
+  b: PlotState,
+  d: { x: number; z: number; size: number },
+): boolean {
+  const cellSize = plotWorldCenter(d, 0, 0).cellSize;
+  const gap = platformEdgeGap(a, b, d);
+  return gap >= bridgeMinGap(cellSize) && gap <= bridgeMaxGap(cellSize);
+}
+
 export function plotId(districtId: string, cellX: number, cellY: number): string {
   return `plot_${districtId}_${cellX}_${cellY}`;
 }
@@ -783,32 +823,32 @@ export function movePlotFree(
   };
 }
 
-/** Gaps that should get auto connector bridges (5× placeable width) */
+/**
+ * Auto connector across an open void (any owner).
+ * Endpoints are pad rims — mesh lives only in empty air between platforms.
+ */
 export interface AutoBridgeLink {
   fromId: string;
   toId: string;
-  /** Edge points (not centers) — bridge deck starts near each platform rim */
   ax: number;
   az: number;
   bx: number;
   bz: number;
+  gap: number;
 }
 
 /**
- * Auto bridges between nearby platforms in a district — any owner.
- * Spans edge-to-edge so the rope meets near each pad’s rim.
+ * Auto bridges only when pads are clearly separated.
+ * Default abutting 3×3 has gap≈0 → no bridges. Move a pad → void opens → bridge.
  */
 export function computeAutoBridges(
   state: PlazaPlotsState,
   d: { id: string; x: number; z: number; size: number },
 ): AutoBridgeLink[] {
   const cellSize = plotWorldCenter(d, 0, 0).cellSize;
-  // Match solid platform half in skyCity (cellSize * 0.5) so edges meet the pad rim
-  const half = cellSize * 0.5;
-  // Edge-to-edge gap: default grid abuts (gap≈0) and diagonal corners kiss (gap≈0.41cs).
-  // Only span after a real fracture opens.
-  const minGap = cellSize * 0.5;
-  const maxGap = cellSize * 4.5;
+  const half = plotPlatformHalf(cellSize);
+  const minGap = bridgeMinGap(cellSize);
+  const maxGap = bridgeMaxGap(cellSize);
   const list = state.plots.filter((p) => p.districtId === d.id);
   const links: AutoBridgeLink[] = [];
   for (let i = 0; i < list.length; i++) {
@@ -829,28 +869,31 @@ export function computeAutoBridges(
       if (gap < minGap || gap > maxGap) continue;
       const ux = dx / dist;
       const uz = dz / dist;
-      // Start/end near platform edges facing each other
+      // Exact facing rims — bridge hangs in the open space only
       links.push({
         fromId: a.id,
         toId: b.id,
-        ax: pa.x + ux * half * 0.94,
-        az: pa.z + uz * half * 0.94,
-        bx: pb.x - ux * half * 0.94,
-        bz: pb.z - uz * half * 0.94,
+        ax: pa.x + ux * half,
+        az: pa.z + uz * half,
+        bx: pb.x - ux * half,
+        bz: pb.z - uz * half,
+        gap,
       });
     }
   }
   return links;
 }
 
-/** Edge points for a player bridge from plot A toward plot B */
+/**
+ * Rim endpoints A→B. Segment length equals the air gap when pads are separated.
+ */
 export function bridgeEdgePoints(
   a: PlotState,
   b: PlotState,
   d: { x: number; z: number; size: number },
-): { ax: number; az: number; bx: number; bz: number } {
+): { ax: number; az: number; bx: number; bz: number; gap: number } {
   const cellSize = plotWorldCenter(d, 0, 0).cellSize;
-  const half = cellSize * 0.5;
+  const half = plotPlatformHalf(cellSize);
   const pa = plotLivePos(a, d);
   const pb = plotLivePos(b, d);
   const dx = pb.x - pa.x;
@@ -858,12 +901,12 @@ export function bridgeEdgePoints(
   const dist = Math.max(0.01, Math.hypot(dx, dz));
   const ux = dx / dist;
   const uz = dz / dist;
-  // Slightly inset from rim so planks sit on the pad edge
   return {
-    ax: pa.x + ux * half * 0.94,
-    az: pa.z + uz * half * 0.94,
-    bx: pb.x - ux * half * 0.94,
-    bz: pb.z - uz * half * 0.94,
+    ax: pa.x + ux * half,
+    az: pa.z + uz * half,
+    bx: pb.x - ux * half,
+    bz: pb.z - uz * half,
+    gap: dist - 2 * half,
   };
 }
 
