@@ -623,11 +623,11 @@ export function quotePlotShapeChange(plot: PlotState, shape: PlotShape): number 
   if (plot.shape === shape) return 0;
   const base: Record<PlotShape, number> = {
     square: 0,
-    octagon: 4_500,
-    circle: 7_500,
-    triangle: 6_000,
+    octagon: 2_600,
+    circle: 4_200,
+    triangle: 3_400,
   };
-  return Math.max(2_500, base[shape] ?? 5_000);
+  return Math.max(1_400, base[shape] ?? 2_800);
 }
 
 /** Highest deck index players can unlock (0..MAX = 8 total decks). */
@@ -648,7 +648,7 @@ export function quotePlotLayerUpgrade(plot: PlotState): number {
 
 /** Cost to open a player airway between two owned plots (Task 12). */
 export function quotePlotAirwayLink(_a: PlotState, _b: PlotState): number {
-  return 9_500;
+  return 5_200;
 }
 
 /**

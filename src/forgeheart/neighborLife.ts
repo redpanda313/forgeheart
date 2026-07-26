@@ -657,20 +657,20 @@ export function neighborLifeFromSave(raw: unknown): NeighborLifeState {
 
 /**
  * Rent as a fraction of pad basePrice per bay-upkeep tick (~28s).
- * Tuned so a 10k pad at fair ≈ 50b/tick; 125k pad ≈ 625b/tick.
+ * ~+20% vs original: 10k pad fair ≈ 60b/tick; 125k fair ≈ 750b/tick.
  * Cheap is soft (standing); predatory pays more but risk of leave.
  */
 export const RENT_RATE_OF_VALUE: Record<RentPolicy, number> = {
-  cheap: 0.002, // 0.20% of value / tick
-  fair: 0.005, // 0.50% of value / tick
-  predatory: 0.009, // 0.90% of value / tick
+  cheap: 0.0024, // 0.24% of value / tick
+  fair: 0.006, // 0.60% of value / tick
+  predatory: 0.011, // 1.10% of value / tick
 };
 
 /** @deprecated fixed amounts — use rentIncomeForPad */
 export const RENT_INCOME: Record<RentPolicy, number> = {
-  cheap: 20,
-  fair: 50,
-  predatory: 90,
+  cheap: 24,
+  fair: 60,
+  predatory: 110,
 };
 
 /** Chance tenant leaves on a rent tick under predatory policy */

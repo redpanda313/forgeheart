@@ -3876,8 +3876,8 @@ export function bayLevelName(level: number): string {
 export function expandBayCost(fromLevel: number): number {
   if (fromLevel === 1) return BAY_EXPAND_L2;
   if (fromLevel === 2) return BAY_EXPAND_L3;
-  // L3→4: 180, then ~1.65× each step
-  return Math.round(180 * Math.pow(1.65, fromLevel - 3));
+  // L3→4: 150, then ~1.38× each step (was 180 × 1.65 — scaled too hard)
+  return Math.round(150 * Math.pow(1.38, fromLevel - 3));
 }
 
 /** Hire cost rises with crew size */
