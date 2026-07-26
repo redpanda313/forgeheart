@@ -1807,21 +1807,22 @@ export function plotRentIncome(plot: PlotState): number {
 }
 
 // ——— Task 13: recurring plot ownership costs (vacancy / bureaucracy / structure) ———
+// Kept deliberately tiny so land ownership is not a meaningful brass drain.
 
 const BUILD_UPKEEP: Partial<Record<PlotBuildKind, number>> = {
-  apartment: 6,
-  home: 5,
-  garden: 4,
-  factory: 10,
-  retail: 8,
-  decor: 2,
+  apartment: 1,
+  home: 1,
+  garden: 1,
+  factory: 1,
+  retail: 1,
+  decor: 0,
 };
 
 const SHAPE_UPKEEP: Record<PlotShape, number> = {
   square: 0,
-  octagon: 3,
-  circle: 5,
-  triangle: 4,
+  octagon: 0,
+  circle: 1,
+  triangle: 0,
 };
 
 /** Empty holding: no primary structure and no paying tenant (land bank). */
@@ -1842,9 +1843,10 @@ export function plotStructureUpkeep(plot: PlotState): {
   let building = 0;
   for (const b of plot.buildings) {
     if (b.kind === 'empty' || b.kind === 'bridge') continue;
-    building += BUILD_UPKEEP[b.kind] ?? 3;
+    building += BUILD_UPKEEP[b.kind] ?? 1;
   }
-  const layer = Math.max(0, plot.layer ?? 0) * 8;
+  // 1b per unlocked deck above ground (was 8)
+  const layer = Math.max(0, plot.layer ?? 0) * 1;
   const shape = SHAPE_UPKEEP[plot.shape ?? 'square'] ?? 0;
   return { building, layer, shape, total: building + layer + shape };
 }
@@ -1852,6 +1854,6 @@ export function plotStructureUpkeep(plot: PlotState): {
 /** Vacancy tax for a single empty player plot (soft land-bank sink). */
 export function plotEmptyTax(plot: PlotState): number {
   if (!plotIsEmptyHolding(plot)) return 0;
-  // ~0.12% of list / tick, floor so cheap pads still cost to sit idle
-  return Math.max(14, Math.round(plot.listPrice * 0.0012));
+  // Tiny idle fee so empty land barely matters
+  return Math.max(1, Math.round(plot.listPrice * 0.00008));
 }

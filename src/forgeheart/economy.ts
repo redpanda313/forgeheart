@@ -8274,15 +8274,11 @@ export function tickAllLandlordRents(inv: InventoryState): {
 
 // ——— Task 13: plot ownership costs (empty tax, bureaucracy, structure/layer/airway) ———
 
-/** First owned plot is free of multi-plot paperwork; extras scale. */
+/** First owned plot is free of multi-plot paperwork; extras scale (negligible). */
 export function multiPlotBureaucracyFee(ownedCount: number): number {
   if (ownedCount <= 1) return 0;
-  // Soft-infinite land: each extra plot costs more paperwork
-  let fee = 0;
-  for (let i = 2; i <= ownedCount; i++) {
-    fee += 12 + (i - 2) * 10;
-  }
-  return fee;
+  // 1b per extra plot after the first (was 12 + 10×(n−2) ramp)
+  return ownedCount - 1;
 }
 
 export interface PlotOwnershipCostBreakdown {
@@ -8321,7 +8317,8 @@ export function plotOwnershipCostsDue(inv: InventoryState): PlotOwnershipCostBre
     shape += s.shape;
   }
   const bureaucracy = multiPlotBureaucracyFee(owned.length);
-  const airway = listPlotAirways(inv.plazaPlots).length * 6;
+  // 1b per private airway (was 6)
+  const airway = listPlotAirways(inv.plazaPlots).length * 1;
   const total = emptyTax + bureaucracy + structure + layer + shape + airway;
   const parts: string[] = [];
   if (emptyTax) parts.push(`empty ${emptyTax}`);
