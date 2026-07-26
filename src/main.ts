@@ -17,6 +17,7 @@ import {
   getAccountApiUrl,
   setAccountApiUrl,
   loadAccountApiConfig,
+  getBundledAccountApiUrl,
   getSession,
   isLoggedIn,
   loginAccount,
@@ -44,10 +45,13 @@ const accountUsername = document.getElementById('account-username') as HTMLInput
 const accountPassword = document.getElementById('account-password') as HTMLInputElement | null;
 const accountStatus = document.getElementById('account-status');
 const accountMsg = document.getElementById('account-msg');
+const accountServerPill = document.getElementById('account-server-pill');
+const accountAdvanced = document.getElementById('account-advanced');
 const btnLogin = document.getElementById('btn-account-login') as HTMLButtonElement | null;
 const btnRegister = document.getElementById('btn-account-register') as HTMLButtonElement | null;
 const btnLogout = document.getElementById('btn-account-logout') as HTMLButtonElement | null;
 const btnPing = document.getElementById('btn-account-ping') as HTMLButtonElement | null;
+const btnAdvanced = document.getElementById('btn-account-advanced') as HTMLButtonElement | null;
 
 let game: ForgeHeartGame | null = null;
 let running = false;
@@ -56,12 +60,36 @@ let mouseWired = false;
 let selectedSlot = getLastSlotIndex() ?? 0;
 /** Cloud slots loaded (when logged in); null = use local only */
 let cloudMode = false;
+/** Last ping result — gates Create / Log in */
+let accountServerOnline = false;
+let accountConfigReady = false;
 
 function setAccountMsg(text: string, kind: '' | 'ok' | 'error' = '') {
   if (!accountMsg) return;
   accountMsg.textContent = text;
   accountMsg.classList.remove('ok', 'error');
   if (kind) accountMsg.classList.add(kind);
+}
+
+function setServerPill(state: 'checking' | 'up' | 'down', label?: string) {
+  if (!accountServerPill) return;
+  accountServerPill.classList.remove('up', 'down');
+  if (state === 'up') {
+    accountServerPill.classList.add('up');
+    accountServerPill.textContent = label || 'server online';
+  } else if (state === 'down') {
+    accountServerPill.classList.add('down');
+    accountServerPill.textContent = label || 'server offline';
+  } else {
+    accountServerPill.textContent = label || 'checking server…';
+  }
+}
+
+function setAuthBusy(busy: boolean) {
+  const canAuth = accountConfigReady && accountServerOnline && !busy;
+  if (btnLogin) btnLogin.disabled = !canAuth || isLoggedIn();
+  if (btnRegister) btnRegister.disabled = !canAuth || isLoggedIn();
+  if (btnPing) btnPing.disabled = busy || !getAccountApiUrl();
 }
 
 function syncAccountChrome() {
@@ -78,11 +106,32 @@ function syncAccountChrome() {
   btnRegister?.classList.toggle('hidden', logged);
   if (accountUsername) accountUsername.disabled = logged;
   if (accountPassword) accountPassword.disabled = logged;
-  // Hidden field: always mirror resolved server URL (bundled config / localStorage / localhost)
   if (accountApiUrl) {
     const resolved = getAccountApiUrl();
     if (resolved) accountApiUrl.value = resolved;
   }
+  setAuthBusy(false);
+}
+
+function revealAdvancedServer(reason?: string) {
+  accountAdvanced?.classList.remove('hidden');
+  if (reason) setAccountMsg(reason, 'error');
+}
+
+async function refreshAccountServerStatus(): Promise<boolean> {
+  const url = getAccountApiUrl();
+  if (!url) {
+    accountServerOnline = false;
+    setServerPill('down', 'no server url');
+    setAuthBusy(false);
+    return false;
+  }
+  setServerPill('checking');
+  const r = await pingAccountServer();
+  accountServerOnline = r.ok;
+  setServerPill(r.ok ? 'up' : 'down', r.ok ? 'server online' : 'server offline');
+  setAuthBusy(false);
+  return r.ok;
 }
 
 function refreshSlots() {
@@ -255,7 +304,13 @@ function readAuthForm(): { username: string; password: string; apiUrl: string } 
     return null;
   }
   if (!getAccountApiUrl()) {
-    setAccountMsg('Set the account server URL first (home PC tunnel or localhost).', 'error');
+    revealAdvancedServer('Set the account server URL (home PC Cloudflare tunnel).');
+    return null;
+  }
+  if (!accountServerOnline) {
+    revealAdvancedServer(
+      'Account server is offline. Creating an account does not need a save on this device — it needs your home server + tunnel running. Open Server… to paste a new tunnel URL, or Test server after starting it.',
+    );
     return null;
   }
   return { username: username.trim(), password, apiUrl: getAccountApiUrl() };
@@ -265,14 +320,22 @@ btnLogin?.addEventListener('click', () => {
   void (async () => {
     const form = readAuthForm();
     if (!form) return;
-    setAccountApiUrl(form.apiUrl); // remember for next visit
+    setAccountApiUrl(form.apiUrl);
+    setAuthBusy(true);
     setAccountMsg('Logging in…');
     const r = await loginAccount(form.username, form.password);
     if (!r.ok) {
       setAccountMsg(r.msg, 'error');
+      if (/Cannot reach|Offline|network/i.test(r.msg)) {
+        accountServerOnline = false;
+        revealAdvancedServer();
+        setServerPill('down');
+      }
+      setAuthBusy(false);
       return;
     }
     await afterAuthSuccess(r.msg);
+    setAuthBusy(false);
   })();
 });
 
@@ -281,14 +344,35 @@ btnRegister?.addEventListener('click', () => {
     const form = readAuthForm();
     if (!form) return;
     setAccountApiUrl(form.apiUrl);
+    setAuthBusy(true);
     setAccountMsg('Creating account…');
     const r = await registerAccount(form.username, form.password);
     if (!r.ok) {
-      setAccountMsg(r.msg, 'error');
+      setAccountMsg(
+        /Cannot reach|Offline|network/i.test(r.msg)
+          ? `${r.msg} (Not a missing-save issue — new accounts start empty.)`
+          : r.msg,
+        'error',
+      );
+      if (/Cannot reach|Offline|network/i.test(r.msg)) {
+        accountServerOnline = false;
+        revealAdvancedServer();
+        setServerPill('down');
+      }
+      setAuthBusy(false);
       return;
     }
     await afterAuthSuccess(r.msg);
+    setAuthBusy(false);
   })();
+});
+
+btnAdvanced?.addEventListener('click', () => {
+  const open = accountAdvanced?.classList.contains('hidden');
+  accountAdvanced?.classList.toggle('hidden', !open);
+  if (open && accountApiUrl) {
+    accountApiUrl.focus();
+  }
 });
 
 btnLogout?.addEventListener('click', () => {
@@ -305,7 +389,11 @@ btnPing?.addEventListener('click', () => {
   void (async () => {
     if (accountApiUrl) setAccountApiUrl(accountApiUrl.value);
     setAccountMsg('Pinging server…');
+    setAuthBusy(true);
     const r = await pingAccountServer();
+    accountServerOnline = r.ok;
+    setServerPill(r.ok ? 'up' : 'down');
+    setAuthBusy(false);
     if (r.ok && accountApiUrl?.value) setAccountApiUrl(accountApiUrl.value);
     setAccountMsg(r.msg, r.ok ? 'ok' : 'error');
   })();
@@ -465,30 +553,37 @@ if (mobileHint && isMobileBrowser()) {
 }
 
 async function bootstrapTitle() {
-  // Load public/account-api.json so GitHub Pages ships the home-server tunnel URL
+  accountConfigReady = false;
+  accountServerOnline = false;
+  setServerPill('checking');
+  setAuthBusy(true);
+
   await loadAccountApiConfig();
-  // Prefer the bundled site URL for everyone (overrides stale localStorage from old tunnels)
-  const bundled = getAccountApiUrl();
-  if (bundled && accountApiUrl) accountApiUrl.value = bundled;
-  // If config loaded a URL, use it as the active API (and clear stale wrong tunnels)
-  try {
-    const res = await fetch(
-      `${((import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env?.BASE_URL || './')}account-api.json`.replace(
-        /([^:]\/)\/+/g,
-        '$1',
-      ),
-      { cache: 'no-store' },
-    );
-    if (res.ok) {
-      const j = (await res.json()) as { url?: string };
-      if (j?.url && String(j.url).trim()) {
-        setAccountApiUrl(String(j.url).trim());
-      }
-    }
-  } catch {
-    /* offline / missing */
+  const bundled = getBundledAccountApiUrl();
+  let active = getAccountApiUrl();
+  if (accountApiUrl && active) accountApiUrl.value = active;
+
+  // Prefer a live URL: try current, then bundled if different
+  let online = await refreshAccountServerStatus();
+  if (!online && bundled && bundled !== active) {
+    setAccountApiUrl(bundled);
+    if (accountApiUrl) accountApiUrl.value = bundled;
+    active = bundled;
+    online = await refreshAccountServerStatus();
   }
+
+  accountConfigReady = true;
   syncAccountChrome();
+
+  if (!online) {
+    cloudMode = false;
+    revealAdvancedServer(
+      'Account server offline — new devices cannot create/log in until your home PC tunnel is running. This is not caused by missing save data on this browser. Use Server… after you start `npm run accounts` + cloudflared and paste the new HTTPS URL (also update public/account-api.json on main). Guest New Game still works locally.',
+    );
+    selectedSlot = getLastSlotIndex() ?? selectedSlot;
+    refreshSlots();
+    return;
+  }
 
   if (isLoggedIn() && getAccountApiUrl()) {
     setAccountMsg('Restoring cloud slots…');
@@ -501,11 +596,10 @@ async function bootstrapTitle() {
     }
   } else {
     cloudMode = false;
-    if (!getAccountApiUrl()) {
-      setAccountMsg('Guest mode (this browser only). Cloud accounts need the home server + tunnel running.');
-    } else {
-      setAccountMsg('Create an account or log in to use cloud save slots.', 'ok');
-    }
+    setAccountMsg(
+      'Server online · create an account or log in for cloud slots (no prior save needed on this device).',
+      'ok',
+    );
   }
   selectedSlot = getLastSlotIndex() ?? selectedSlot;
   refreshSlots();

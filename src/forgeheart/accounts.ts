@@ -69,17 +69,10 @@ export function setAccountApiUrl(url: string): void {
 
 /**
  * Load default server URL from the static site (account-api.json).
- * Safe to call multiple times; no-ops if already loaded or offline.
+ * Always refreshes `bundledApiUrl`; only writes localStorage when empty
+ * (so a working player override is kept until ping proves it dead).
  */
 export async function loadAccountApiConfig(): Promise<string> {
-  // Already have a player override
-  try {
-    const stored = localStorage.getItem(API_URL_KEY);
-    if (stored && stored.trim()) return trimUrl(stored);
-  } catch {
-    /* ignore */
-  }
-
   try {
     const base = (import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env?.BASE_URL || './';
     const url = `${base}account-api.json`.replace(/([^:]\/)\/+/g, '$1');
@@ -94,7 +87,21 @@ export async function loadAccountApiConfig(): Promise<string> {
     /* missing file / offline */
   }
 
+  try {
+    const stored = localStorage.getItem(API_URL_KEY);
+    if (!stored || !stored.trim()) {
+      if (bundledApiUrl) localStorage.setItem(API_URL_KEY, bundledApiUrl);
+    }
+  } catch {
+    /* ignore */
+  }
+
   return getAccountApiUrl();
+}
+
+/** Bundled URL from account-api.json (may be empty until loadAccountApiConfig). */
+export function getBundledAccountApiUrl(): string {
+  return bundledApiUrl;
 }
 
 export function getSession(): AccountSession | null {

@@ -602,15 +602,11 @@
           </p>
 
           <div id="account-panel" class="account-panel">
-            <p class="account-heading">Account <span id="account-status" class="account-status">guest · local only</span></p>
-            <!-- Server URL is loaded from public/account-api.json (hidden for players) -->
-            <input
-              id="account-api-url"
-              type="hidden"
-              autocomplete="off"
-              spellcheck="false"
-              value=""
-            />
+            <p class="account-heading">
+              Account
+              <span id="account-status" class="account-status">guest · local only</span>
+              <span id="account-server-pill" class="account-server-pill">checking server…</span>
+            </p>
             <div class="account-row">
               <label class="account-field">
                 <span>Username</span>
@@ -626,6 +622,24 @@
               <button type="button" id="btn-account-register">Create account</button>
               <button type="button" id="btn-account-logout" class="hidden">Log out</button>
               <button type="button" id="btn-account-ping" class="account-secondary">Test server</button>
+              <button type="button" id="btn-account-advanced" class="account-secondary">Server…</button>
+            </div>
+            <div id="account-advanced" class="account-advanced hidden">
+              <label class="account-field account-field-wide">
+                <span>Account server URL (home PC tunnel)</span>
+                <input
+                  id="account-api-url"
+                  type="url"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="https://….trycloudflare.com"
+                  value=""
+                />
+              </label>
+              <p class="account-advanced-hint">
+                Cloud accounts need your home server running. New accounts do
+                <strong>not</strong> need a save on this device — only a live server URL.
+              </p>
             </div>
             <p id="account-msg" class="account-msg"></p>
           </div>

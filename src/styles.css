@@ -2620,6 +2620,40 @@ h1 {
 .account-status.online {
   color: #82e0aa;
 }
+.account-server-pill {
+  margin-left: 0.35rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8899aa;
+}
+.account-server-pill.up {
+  color: #82e0aa;
+}
+.account-server-pill.down {
+  color: #e08888;
+}
+.account-advanced {
+  margin-top: 0.55rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid #2a4055;
+}
+.account-advanced.hidden {
+  display: none;
+}
+.account-field-wide {
+  width: 100%;
+}
+.account-advanced-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.68rem;
+  color: #8090a0;
+  line-height: 1.35;
+}
+.account-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .account-field {
   display: flex;
   flex-direction: column;

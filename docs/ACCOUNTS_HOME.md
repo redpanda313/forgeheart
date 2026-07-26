@@ -51,7 +51,9 @@ You’ll get a URL like `https://random-words.trycloudflare.com`.
 3. Title screen **auto-populates Server URL** from that file.
 
 **Note:** free `trycloudflare.com` URLs **change every time** you restart cloudflared.  
-When the URL changes: update `account-api.json` and push again, **or** paste once in the title field (browser remembers it).
+When the URL changes: update `account-api.json` and push again, **or** open **Server…** on the title screen and paste the new HTTPS URL (browser remembers it).
+
+**New device / create account failing?** Creating an account does **not** need local save data. If Create account fails on a fresh browser while an old logged-in browser still plays, the tunnel URL is almost always dead — restart cloudflared, update `account-api.json`, push `main`.
 
 **Stable URL (best):** Cloudflare named tunnel + your own hostname so you never change the json again.
 
