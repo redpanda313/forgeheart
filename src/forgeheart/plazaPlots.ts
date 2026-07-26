@@ -618,16 +618,16 @@ export function plotShapeLabel(shape: PlotShape): string {
   }
 }
 
-/** Brass cost to remodel pad plan (Task 10). */
+/** Brass cost to remodel pad plan (Task 10). All under 2k. */
 export function quotePlotShapeChange(plot: PlotState, shape: PlotShape): number {
   if (plot.shape === shape) return 0;
   const base: Record<PlotShape, number> = {
     square: 0,
-    octagon: 2_600,
-    circle: 4_200,
-    triangle: 3_400,
+    octagon: 1_200,
+    circle: 1_800,
+    triangle: 1_500,
   };
-  return Math.max(1_400, base[shape] ?? 2_800);
+  return Math.max(900, base[shape] ?? 1_400);
 }
 
 /** Highest deck index players can unlock (0..MAX = 8 total decks). */
@@ -646,9 +646,9 @@ export function quotePlotLayerUpgrade(plot: PlotState): number {
   return Math.round(base * Math.pow(1.18, next - 1));
 }
 
-/** Cost to open a player airway between two owned plots (Task 12). */
+/** Cost to open a player airway between two owned plots (Task 12). Under 2k. */
 export function quotePlotAirwayLink(_a: PlotState, _b: PlotState): number {
-  return 5_200;
+  return 1_600;
 }
 
 /**
