@@ -6753,16 +6753,168 @@ export function inventSlotBlurb(a: CommodityId, b: CommodityId): string {
   return slots.map((s) => labels[s] ?? s).join(' · ');
 }
 
+/** Stable key for an invention’s two material inputs (order-independent). */
+export function inventionPairKey(a: CommodityId, b: CommodityId): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+export function recipeInventionPairKey(recipe: CustomRecipe): string {
+  const ids = (recipe.inputs ?? [])
+    .map((i) => i.id)
+    .filter((id): id is CommodityId => typeof id === 'string' && id.length > 0);
+  if (ids.length < 2) return `id:${recipe.id}`;
+  return inventionPairKey(ids[0]!, ids[1]!);
+}
+
+export function hasInventionPair(
+  inv: InventoryState,
+  a: CommodityId,
+  b: CommodityId,
+): boolean {
+  const key = inventionPairKey(a, b);
+  return inv.customRecipes.some((r) => recipeInventionPairKey(r) === key);
+}
+
+/**
+ * One-time / load-time cleanup: drop duplicate recipes that share the same
+ * material pair. Keeps the best quality (then sell value). Merges stock and
+ * remaps programs / stalls / frame slots that pointed at removed ids.
+ */
+export function dedupeCustomRecipes(inv: InventoryState): {
+  removed: number;
+  kept: number;
+} {
+  if (!inv.customRecipes?.length) return { removed: 0, kept: 0 };
+  const flag = inv as InventoryState & { inventionsDedupedV1?: boolean };
+  // Always safe/idempotent; flag only tracks that we ran once for saves
+  const best = new Map<string, CustomRecipe>();
+  for (const r of inv.customRecipes) {
+    const key = recipeInventionPairKey(r);
+    const cur = best.get(key);
+    if (!cur) {
+      best.set(key, r);
+      continue;
+    }
+    const score = (x: CustomRecipe) =>
+      (x.quality ?? 1) * 100_000 + (x.sellValue ?? 0);
+    if (score(r) > score(cur)) best.set(key, r);
+  }
+  if (best.size === inv.customRecipes.length) {
+    flag.inventionsDedupedV1 = true;
+    return { removed: 0, kept: inv.customRecipes.length };
+  }
+
+  const keepIds = new Set([...best.values()].map((r) => r.id));
+  const idMap = new Map<string, string>(); // removed → kept
+  for (const r of inv.customRecipes) {
+    if (keepIds.has(r.id)) continue;
+    const keeper = best.get(recipeInventionPairKey(r));
+    if (keeper) idMap.set(r.id, keeper.id);
+  }
+
+  // Merge invention stock
+  if (!inv.customStock) inv.customStock = {};
+  for (const [from, to] of idMap) {
+    const n = inv.customStock[from] ?? 0;
+    if (n > 0) {
+      inv.customStock[to] = (inv.customStock[to] ?? 0) + n;
+    }
+    delete inv.customStock[from];
+  }
+
+  // Stall custom shelves / asks
+  const stalls: StallState[] = [inv.stall];
+  if (inv.cityStalls) stalls.push(...Object.values(inv.cityStalls));
+  for (const stall of stalls) {
+    if (!stall) continue;
+    if (stall.customShelf) {
+      for (const [from, to] of idMap) {
+        const n = stall.customShelf[from] ?? 0;
+        if (n > 0) {
+          stall.customShelf[to] = (stall.customShelf[to] ?? 0) + n;
+        }
+        delete stall.customShelf[from];
+      }
+    }
+    if (stall.customAsks) {
+      for (const [from, to] of idMap) {
+        if (stall.customAsks[from] != null && stall.customAsks[to] == null) {
+          stall.customAsks[to] = stall.customAsks[from]!;
+        }
+        delete stall.customAsks[from];
+      }
+    }
+  }
+
+  // Program invention targets
+  for (const p of inv.programs ?? []) {
+    if (p.inventionId && idMap.has(p.inventionId)) {
+      p.inventionId = idMap.get(p.inventionId)!;
+    }
+  }
+
+  // Assembled frame part refs
+  for (const f of inv.assembledFrames ?? []) {
+    if (!f.slots) continue;
+    for (const slot of Object.keys(f.slots) as (keyof typeof f.slots)[]) {
+      const ref = f.slots[slot];
+      if (typeof ref === 'string' && ref.startsWith('custom:')) {
+        const rid = ref.slice('custom:'.length);
+        if (idMap.has(rid)) {
+          (f.slots as Record<string, string>)[slot as string] = `custom:${idMap.get(rid)}`;
+        }
+      }
+    }
+  }
+
+  const removed = inv.customRecipes.length - best.size;
+  inv.customRecipes = [...best.values()];
+  flag.inventionsDedupedV1 = true;
+  return { removed, kept: inv.customRecipes.length };
+}
+
+/** Find a material pair not already in the invention book (with stock ×2 each). */
+function findNewInventPair(
+  inv: InventoryState,
+  preferA?: CommodityId | null,
+  preferB?: CommodityId | null,
+): { a: CommodityId; b: CommodityId } | null {
+  if (
+    preferA &&
+    preferB &&
+    preferA !== preferB &&
+    getQty(inv, preferA) >= 2 &&
+    getQty(inv, preferB) >= 2 &&
+    !hasInventionPair(inv, preferA, preferB)
+  ) {
+    return { a: preferA, b: preferB };
+  }
+  const held = INVENT_MATERIAL_IDS.filter((id) => getQty(inv, id) >= 2);
+  for (let i = 0; i < held.length; i++) {
+    for (let j = i + 1; j < held.length; j++) {
+      const a = held[i]!;
+      const b = held[j]!;
+      if (!hasInventionPair(inv, a, b)) return { a, b };
+    }
+  }
+  return null;
+}
+
 /**
  * Worker invent step: use program mat pair, or auto-pick two invent mats held ×2+.
+ * Never creates a recipe that already exists for the same material pair.
  */
 export function inventRecipeForWorker(
   inv: InventoryState,
   prog?: WorkerProgram,
 ): { ok: boolean; msg: string; recipe?: CustomRecipe } {
-  let a = prog?.inventMatA ?? null;
-  let b = prog?.inventMatB ?? null;
-  if (!a || !b || a === b) {
+  dedupeCustomRecipes(inv);
+  const pair = findNewInventPair(
+    inv,
+    prog?.inventMatA ?? null,
+    prog?.inventMatB ?? null,
+  );
+  if (!pair) {
     const held = INVENT_MATERIAL_IDS.filter((id) => getQty(inv, id) >= 2);
     if (held.length < 2) {
       return {
@@ -6770,10 +6922,12 @@ export function inventRecipeForWorker(
         msg: 'Need 2× of two different invent mats (set pair in program or stock pack).',
       };
     }
-    a = held[0]!;
-    b = held[1]!;
+    return {
+      ok: false,
+      msg: 'No new invention pairs left — that material combo is already in the book (or try other mats).',
+    };
   }
-  return inventCustomRecipe(inv, a, b);
+  return inventCustomRecipe(inv, pair.a, pair.b);
 }
 
 export function inventCustomRecipe(
@@ -6790,6 +6944,15 @@ export function inventCustomRecipe(
   if (a === b) return { ok: false, msg: 'Pick two different materials.' };
   if (!INVENT_MATERIAL_IDS.includes(a) || !INVENT_MATERIAL_IDS.includes(b)) {
     return { ok: false, msg: 'Those materials can’t be prototyped at this desk.' };
+  }
+  if (hasInventionPair(inv, a, b)) {
+    const existing = inv.customRecipes.find(
+      (r) => recipeInventionPairKey(r) === inventionPairKey(a, b),
+    );
+    return {
+      ok: false,
+      msg: `Already invented “${existing?.name ?? 'that pair'}” — pick different materials.`,
+    };
   }
   if (getQty(inv, a) < 2 || getQty(inv, b) < 2) {
     return { ok: false, msg: 'Need 2 of each input material to prototype.' };
@@ -7267,6 +7430,8 @@ export function invToSave(inv: InventoryState) {
       quality: r.quality ?? 1,
     })),
     customStock: { ...inv.customStock },
+    inventionsDedupedV1: !!(inv as InventoryState & { inventionsDedupedV1?: boolean })
+      .inventionsDedupedV1,
     programs: inv.programs.map((p) => ({
       id: p.id,
       name: p.name,
@@ -7511,6 +7676,8 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
       };
     });
   }
+  // After recipes, stock, stalls, frames, programs are loaded — purge duplicate pairs
+  dedupeCustomRecipes(inv);
   inv.brokerFrameStock = typeof o.brokerFrameStock === 'number' ? o.brokerFrameStock : 0;
   inv.medallionLoose = !!o.medallionLoose;
   inv.medallionHostId = typeof o.medallionHostId === 'string' ? o.medallionHostId : null;
