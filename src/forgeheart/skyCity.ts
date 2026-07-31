@@ -86,7 +86,9 @@ export type CityInteractKind =
   /** Planted garden bed — harvest that bloom type */
   | 'plot_garden_harvest'
   /** Player retail front with shopkeeper — buy goods */
-  | 'plot_shop';
+  | 'plot_shop'
+  /** Player home / retail / factory door — manage tenant/shop/works */
+  | 'plot_door';
 
 /** Plaza work a city chassis is assigned to while owned. */
 export type CityRobotJobId =
@@ -2854,8 +2856,10 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
         it.kind === 'plot_garden_plant' ||
         it.kind === 'plot_garden_harvest' ||
         it.kind === 'plot_shop' ||
+        it.kind === 'plot_door' ||
         it.id.startsWith('plot_garden_') ||
-        it.id.startsWith('plot_shop_')
+        it.id.startsWith('plot_shop_') ||
+        it.id.startsWith('plot_door_')
       ) {
         interactables.splice(i, 1);
       }
@@ -2965,32 +2969,62 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
           shell.group.rotation.y = lyaw;
           plotBuildRoot.add(shell.group);
           plotBuildingCols.push(...rotateOffsetColliders(shell.colliders, wx, walkY, wz, lyaw));
-          // Staffed retail → buy interact
-          if (b.kind === 'retail' && p.hasRetailShop && p.retailOperatorId) {
+          // Door manage ring — E for tenant/shopkeeper/factory offers
+          if (
+            b.kind === 'retail' ||
+            b.kind === 'factory' ||
+            b.kind === 'home' ||
+            b.kind === 'apartment'
+          ) {
+            const staffedShop = b.kind === 'retail' && p.hasRetailShop && p.retailOperatorId;
             const ring = new THREE.Mesh(
               new THREE.TorusGeometry(0.7, 0.06, 6, 16),
               new THREE.MeshStandardMaterial({
-                color: 0x66ccff,
-                emissive: 0x226688,
+                color: staffedShop ? 0x66ccff : 0xffcc66,
+                emissive: staffedShop ? 0x226688 : 0xaa7700,
                 emissiveIntensity: 0.65,
               }),
             );
             ring.rotation.x = Math.PI / 2;
             ring.position.set(wx, walkY + 0.15, wz + 1.4);
             plotBuildRoot.add(ring);
-            const shopIt: CityInteract = {
-              id: `plot_shop_${p.id}_${bi}`,
-              kind: 'plot_shop',
-              position: new THREE.Vector3(wx, walkY + 1.0, wz + 1.2),
-              radius: 3.6,
-              mesh: ring,
-              label: p.occupancyLabel
-                ? `Buy · ${p.occupancyLabel}`
-                : 'Buy from shop',
-              districtId: p.districtId,
-              plotId: p.id,
-            };
-            interactables.push(shopIt);
+            if (staffedShop) {
+              const shopIt: CityInteract = {
+                id: `plot_shop_${p.id}_${bi}`,
+                kind: 'plot_shop',
+                position: new THREE.Vector3(wx, walkY + 1.0, wz + 1.2),
+                radius: 3.6,
+                mesh: ring,
+                label: p.occupancyLabel
+                  ? `Buy · ${p.occupancyLabel}`
+                  : 'Buy from shop',
+                districtId: p.districtId,
+                plotId: p.id,
+              };
+              interactables.push(shopIt);
+            }
+            // Door manage (always for home/factory; vacant retail too)
+            if (!staffedShop) {
+              const doorLabel =
+                b.kind === 'retail'
+                  ? p.occupancyLabel ?? 'Vacant shop · E hire shopkeeper'
+                  : b.kind === 'factory'
+                    ? p.occupancyLabel ?? 'Vacant works · E assign operator'
+                    : p.occupancyLabel ?? 'Vacant home · E review tenant offers';
+              const doorIt: CityInteract = {
+                id: `plot_door_${p.id}_${bi}`,
+                kind: 'plot_door',
+                position: new THREE.Vector3(wx, walkY + 1.0, wz + 1.2),
+                radius: 3.8,
+                mesh: ring,
+                label: doorLabel,
+                districtId: p.districtId,
+                plotId: p.id,
+              };
+              interactables.push(doorIt);
+            } else {
+              // Second ring slightly offset for manage if needed — shop E is buy
+            }
           }
         } else if (b.kind === 'garden') {
           // Outer bed ring (plot garden footprint)

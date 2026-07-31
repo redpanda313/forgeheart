@@ -234,8 +234,12 @@ import {
   listPendingFillOffers,
   acceptFillOffer,
   rejectFillOffer,
+  ensureFillOfferForPlot,
   buyFromPlotShop,
   plotOccupancyLabel,
+  plotHasHousing,
+  plotHasRetail,
+  plotHasFactory,
   craftFoundryPart,
   FOUNDRY_PARTS,
   foundryPartOwned,
@@ -4849,6 +4853,8 @@ export class ForgeHeartGame {
     if (stall && !stall.classList.contains('hidden')) return true;
     const plotShop = document.getElementById('plot-shop-panel');
     if (plotShop && !plotShop.classList.contains('hidden')) return true;
+    const plotDoor = document.getElementById('plot-door-panel');
+    if (plotDoor && !plotDoor.classList.contains('hidden')) return true;
     return false;
   }
 
@@ -5291,6 +5297,10 @@ export class ForgeHeartGame {
     }
     if (it.kind === 'plot_shop' && it.plotId) {
       this.openPlotShop(it.plotId);
+      return true;
+    }
+    if (it.kind === 'plot_door' && it.plotId) {
+      this.openPlotDoor(it.plotId);
       return true;
     }
     if (it.kind === 'plot_garden_plant') {
@@ -7895,7 +7905,7 @@ export class ForgeHeartGame {
         yaw: s.previewYaw,
         layer: s.placeLayer ?? 0,
       });
-      this.toast(r.msg, 4);
+      this.toast(r.msg, r.ok ? 5.5 : 4);
       if (r.ok) {
         this.audio.playPickup();
         this.brass = this.inv.brass;
@@ -7905,6 +7915,18 @@ export class ForgeHeartGame {
         this.objective = this.megaCityObjective();
         writeSlot(this.activeSlot, this.buildSaveData());
         this.syncEconomyHud();
+        // Point player at door interact for fill offers
+        if (
+          s.buildKind === 'retail' ||
+          s.buildKind === 'factory' ||
+          s.buildKind === 'home' ||
+          s.buildKind === 'apartment'
+        ) {
+          this.toast(
+            'Gold ring at the door · E to hire tenant/shopkeeper/operator (or Lease office).',
+            6,
+          );
+        }
         s.step = 'choose';
         s.buildKind = null;
         s.placeLx = 0;
@@ -7951,6 +7973,19 @@ export class ForgeHeartGame {
   private openLeaseOffice() {
     this.leaseOfficeOpen = true;
     ensureInvPlots(this.inv);
+    // Seed fill offers for any vacant homes/shops/works so UI isn't empty
+    for (const p of this.inv.plazaPlots.plots) {
+      if (p.owner !== 'player') continue;
+      if (plotHasHousing(p) && (p.vacant || !p.tenantNeighborId)) {
+        ensureFillOfferForPlot(this.inv, p.id, 'housing');
+      }
+      if (plotHasRetail(p) && !p.retailOperatorId) {
+        ensureFillOfferForPlot(this.inv, p.id, 'retail');
+      }
+      if (plotHasFactory(p) && !p.factoryOperatorId) {
+        ensureFillOfferForPlot(this.inv, p.id, 'factory');
+      }
+    }
     if (!this.leaseDistrictFilter) this.leaseDistrictFilter = 'residential';
     const el = this.ensureLeaseOfficePanel();
     el.classList.remove('hidden');
@@ -7963,10 +7998,180 @@ export class ForgeHeartGame {
       /* ignore */
     }
     this.audio.playPickup();
-    this.toast('Leasing office · pick a plaza, then a plot. Gold pads are yours.', 4);
+    const n = listPendingFillOffers(this.inv).length;
+    this.toast(
+      n > 0
+        ? `Leasing office · ${n} pad fill offer(s) at top · gold pads are yours.`
+        : 'Leasing office · pick a plaza, then a plot. Gold pads are yours.',
+      4,
+    );
   }
 
   /** Plant a held flower into an empty plot-garden bed. */
+  /** E on home / vacant shop / factory — accept fill offers at the door. */
+  private openPlotDoor(plotId: string) {
+    ensureInvPlots(this.inv);
+    const plot = getPlot(this.inv.plazaPlots, plotId);
+    if (!plot || plot.owner !== 'player') {
+      this.toast('Not your pad.', 2.5);
+      return;
+    }
+    // Seed offers immediately if empty
+    if (plotHasHousing(plot) && (plot.vacant || !plot.tenantNeighborId)) {
+      ensureFillOfferForPlot(this.inv, plotId, 'housing');
+    }
+    if (plotHasRetail(plot) && !plot.retailOperatorId) {
+      ensureFillOfferForPlot(this.inv, plotId, 'retail');
+    }
+    if (plotHasFactory(plot) && !plot.factoryOperatorId) {
+      ensureFillOfferForPlot(this.inv, plotId, 'factory');
+    }
+
+    const occ = plotOccupancyLabel(plot, (id) => neighborDef(id)?.name);
+    const offers = listPendingFillOffers(this.inv).filter((o) => o.plotId === plotId);
+
+    let el = document.getElementById('plot-door-panel');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'plot-door-panel';
+      el.className = 'market-panel romance-panel hidden';
+      el.innerHTML = `
+        <div class="market-card romance-card" style="max-width:min(440px,96vw);max-height:80vh;overflow:auto">
+          <header class="market-head">
+            <div>
+              <h3 id="plot-door-title">Pad door</h3>
+              <p class="market-sub" id="plot-door-sub">Occupancy</p>
+            </div>
+            <button type="button" id="plot-door-close" class="maker-close">×</button>
+          </header>
+          <p class="romance-status" id="plot-door-status"></p>
+          <div id="plot-door-actions" class="romance-actions"></div>
+        </div>`;
+      document.getElementById('app')?.appendChild(el);
+      el.querySelector('#plot-door-close')?.addEventListener('click', () => {
+        el?.classList.add('hidden');
+        el?.setAttribute('aria-hidden', 'true');
+        this.syncMobileGameplay();
+        if (!this.paused && !this.disposed) this.controls.lock();
+      });
+    }
+    const title = el.querySelector('#plot-door-title');
+    const sub = el.querySelector('#plot-door-sub');
+    const status = el.querySelector('#plot-door-status');
+    const actions = el.querySelector('#plot-door-actions');
+    if (title) title.textContent = occ ?? 'Your building';
+    if (sub) {
+      sub.textContent = plotHasRetail(plot)
+        ? 'Retail front'
+        : plotHasFactory(plot)
+          ? 'Factory pad'
+          : 'Housing';
+    }
+    if (status) {
+      const bits: string[] = [];
+      if (plotHasHousing(plot)) {
+        bits.push(
+          plot.tenantNeighborId && !plot.vacant
+            ? `Tenant: ${neighborDef(plot.tenantNeighborId)?.name ?? plot.tenantNeighborId} · ${plot.rentPolicy ?? 'rent'}`
+            : 'Housing vacant — accept a tenant offer below',
+        );
+      }
+      if (plotHasRetail(plot)) {
+        bits.push(
+          plot.retailOperatorId
+            ? `Shopkeeper: ${neighborDef(plot.retailOperatorId)?.name ?? 'open'} · E shop ring to buy`
+            : 'Shop vacant — accept a shopkeeper offer',
+        );
+      }
+      if (plotHasFactory(plot)) {
+        bits.push(
+          plot.factoryOperatorId
+            ? `Operator: ${plot.factoryOperatorKind === 'worker' ? 'crew' : neighborDef(plot.factoryOperatorId)?.name ?? 'NPC'} · earns works brass`
+            : 'Works vacant — accept an operator offer',
+        );
+      }
+      status.textContent = bits.join(' · ') || 'No fillable use on this pad.';
+    }
+    if (actions) {
+      actions.innerHTML = '';
+      if (!offers.length) {
+        const p = document.createElement('p');
+        p.className = 'craft-hint';
+        p.textContent =
+          'No offers right now. Wait a rent tick (~28s) or rebuild — offers also appear in the lease office.';
+        actions.appendChild(p);
+      }
+      for (const o of offers) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'romance-btn';
+        b.textContent = `Accept · ${o.kind} · ${o.applicantName}`;
+        b.addEventListener('click', () => {
+          const r = acceptFillOffer(this.inv, o.id);
+          this.toast(r.msg, 4);
+          if (r.ok) {
+            this.audio.playPickup();
+            this.brass = this.inv.brass;
+            this.syncPlotOwnershipVisuals();
+            writeSlot(this.activeSlot, this.buildSaveData());
+            this.syncEconomyHud();
+            // Staffed retail → jump to shop
+            const p2 = getPlot(this.inv.plazaPlots, plotId);
+            if (p2?.retailOperatorId && o.kind === 'retail') {
+              el?.classList.add('hidden');
+              this.openPlotShop(plotId);
+              return;
+            }
+            this.openPlotDoor(plotId);
+          }
+        });
+        actions.appendChild(b);
+        const dec = document.createElement('button');
+        dec.type = 'button';
+        dec.className = 'romance-btn';
+        dec.textContent = `Decline ${o.applicantName}`;
+        dec.addEventListener('click', () => {
+          const r = rejectFillOffer(this.inv, o.id);
+          this.toast(r.msg, 2.5);
+          // Immediately seed a replacement offer
+          ensureFillOfferForPlot(this.inv, plotId, o.kind);
+          writeSlot(this.activeSlot, this.buildSaveData());
+          this.openPlotDoor(plotId);
+        });
+        actions.appendChild(dec);
+      }
+      if (plot.retailOperatorId) {
+        const buy = document.createElement('button');
+        buy.type = 'button';
+        buy.className = 'romance-btn';
+        buy.textContent = 'Open shop shelf (buy goods)';
+        buy.addEventListener('click', () => {
+          el?.classList.add('hidden');
+          this.openPlotShop(plotId);
+        });
+        actions.appendChild(buy);
+      }
+      const leave = document.createElement('button');
+      leave.type = 'button';
+      leave.className = 'romance-btn';
+      leave.textContent = 'Leave';
+      leave.addEventListener('click', () => {
+        el?.classList.add('hidden');
+        if (!this.paused && !this.disposed) this.controls.lock();
+      });
+      actions.appendChild(leave);
+    }
+    el.classList.remove('hidden');
+    el.setAttribute('aria-hidden', 'false');
+    this.syncMobileGameplay();
+    try {
+      this.controls.unlock();
+    } catch {
+      /* ignore */
+    }
+    writeSlot(this.activeSlot, this.buildSaveData());
+  }
+
   private openPlotShop(plotId: string) {
     ensureInvPlots(this.inv);
     const plot = getPlot(this.inv.plazaPlots, plotId);

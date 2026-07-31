@@ -8786,7 +8786,17 @@ export function developPlot(
   if (kind === 'garden') {
     inv.softGoalFlags.plantedGarden = true;
   }
-  return { ok: true, msg: r.msg };
+  // New housing starts vacant and ready for tenant offers
+  if (kind === 'home' || kind === 'apartment') {
+    if (!plot.tenantNeighborId) {
+      plot.vacant = true;
+      plot.rentPolicy = null;
+    }
+  }
+  // Immediate fill offers so players don't wait a rent tick
+  const seeded = seedOffersAfterBuild(inv, plotKey, kind);
+  const seedBit = seeded.msgs.length ? ` · ${seeded.msgs[0]}` : '';
+  return { ok: true, msg: r.msg + seedBit };
 }
 
 /** Task 8 */
@@ -9184,6 +9194,150 @@ export function listPendingFillOffers(inv: InventoryState): PlotFillOffer[] {
   return [...(inv.plazaPlots.pendingFillOffers ?? [])];
 }
 
+function freeNpcApplicants(inv: InventoryState): NeighborState[] {
+  inv.neighborLife = ensureNeighborLife(inv.neighborLife);
+  // Anyone not already your tenant or on crew can apply (broad pool so offers always appear)
+  return inv.neighborLife.neighbors.filter((n) => {
+    if (n.hiredAsWorkerId) {
+      const still = inv.workers.some((w) => w.id === n.hiredAsWorkerId);
+      if (still) return false;
+    }
+    if (n.isPlayerTenant && !n.vacated) return false;
+    return true;
+  });
+}
+
+function pickNpcApplicant(
+  inv: InventoryState,
+  preferSeeking: boolean,
+): NeighborState | undefined {
+  const all = freeNpcApplicants(inv);
+  if (!all.length) return undefined;
+  if (preferSeeking) {
+    const seeking = all.filter(
+      (n) =>
+        n.homeless ||
+        n.drama === 'homeless' ||
+        n.drama === 'behind_on_rent' ||
+        n.vacated ||
+        (n.debt && n.debt.amount > 0),
+    );
+    if (seeking.length) {
+      return seeking[Math.floor(Math.random() * seeking.length)]!;
+    }
+  }
+  return all[Math.floor(Math.random() * all.length)]!;
+}
+
+/**
+ * Create one fill offer for a plot kind if the pad is empty and no offer pending.
+ * Used after build + on door interact so players always see the system.
+ */
+export function ensureFillOfferForPlot(
+  inv: InventoryState,
+  plotId: string,
+  kind: 'housing' | 'retail' | 'factory',
+): PlotFillOffer | null {
+  ensureInvPlots(inv);
+  inv.neighborLife = ensureNeighborLife(inv.neighborLife);
+  if (!inv.plazaPlots.pendingFillOffers) inv.plazaPlots.pendingFillOffers = [];
+  const plot = getPlot(inv.plazaPlots, plotId);
+  if (!plot || plot.owner !== 'player') return null;
+
+  if (kind === 'housing') {
+    if (!plotHasHousing(plot) || (plot.tenantNeighborId && !plot.vacant)) return null;
+  } else if (kind === 'retail') {
+    if (!plotHasRetail(plot) || plot.retailOperatorId) return null;
+  } else if (kind === 'factory') {
+    if (!plotHasFactory(plot) || plot.factoryOperatorId) return null;
+  }
+
+  const existing = inv.plazaPlots.pendingFillOffers.find(
+    (o) => o.plotId === plotId && o.kind === kind,
+  );
+  if (existing) return existing;
+
+  let offer: PlotFillOffer | null = null;
+  if (kind === 'housing') {
+    const app = pickNpcApplicant(inv, true);
+    if (!app) return null;
+    const def = neighborDef(app.id);
+    const pol = defaultHousingOfferPolicy();
+    const rent = housingOfferRent(plot.listPrice || 12_000, pol);
+    offer = {
+      id: `fill_h_${plot.id}_${app.id}_${Date.now().toString(36)}`,
+      plotId: plot.id,
+      kind: 'housing',
+      applicantId: app.id,
+      applicantKind: 'npc',
+      applicantName: def?.name ?? app.id,
+      offeredPolicy: pol,
+      offeredRent: rent,
+      pitch: `${def?.name ?? 'Someone'} offers ${pol} rent (${rent.toLocaleString()}b/tick) for this home.`,
+    };
+  } else if (kind === 'retail') {
+    const app = pickNpcApplicant(inv, false);
+    if (!app) return null;
+    const def = neighborDef(app.id);
+    offer = {
+      id: `fill_r_${plot.id}_${app.id}_${Date.now().toString(36)}`,
+      plotId: plot.id,
+      kind: 'retail',
+      applicantId: app.id,
+      applicantKind: 'npc',
+      applicantName: def?.name ?? app.id,
+      pitch: `${def?.name ?? 'A merchant'} wants to run this shop — stock goods you can buy.`,
+    };
+  } else {
+    const idleCrew = inv.workers.filter((w) => w.job === 'idle' && !w.unpaid);
+    if (idleCrew.length) {
+      const w = idleCrew[Math.floor(Math.random() * idleCrew.length)]!;
+      offer = {
+        id: `fill_f_${plot.id}_${w.id}_${Date.now().toString(36)}`,
+        plotId: plot.id,
+        kind: 'factory',
+        applicantId: w.id,
+        applicantKind: 'worker',
+        applicantName: w.name,
+        pitch: `${w.name} (crew) offers to run this factory pad for works brass.`,
+      };
+    } else {
+      const app = pickNpcApplicant(inv, false);
+      if (!app) return null;
+      const def = neighborDef(app.id);
+      offer = {
+        id: `fill_f_${plot.id}_${app.id}_${Date.now().toString(36)}`,
+        plotId: plot.id,
+        kind: 'factory',
+        applicantId: app.id,
+        applicantKind: 'npc',
+        applicantName: def?.name ?? app.id,
+        pitch: `${def?.name ?? 'A hand'} wants to operate this factory.`,
+      };
+    }
+  }
+  if (offer) inv.plazaPlots.pendingFillOffers.push(offer);
+  return offer;
+}
+
+/** After building home/retail/factory — seed offers immediately. */
+export function seedOffersAfterBuild(
+  inv: InventoryState,
+  plotId: string,
+  buildKind: string,
+): { msgs: string[] } {
+  const msgs: string[] = [];
+  const kinds: ('housing' | 'retail' | 'factory')[] = [];
+  if (buildKind === 'home' || buildKind === 'apartment') kinds.push('housing');
+  if (buildKind === 'retail') kinds.push('retail');
+  if (buildKind === 'factory') kinds.push('factory');
+  for (const k of kinds) {
+    const o = ensureFillOfferForPlot(inv, plotId, k);
+    if (o) msgs.push(o.pitch + ' · Lease office or E on the building to accept.');
+  }
+  return { msgs };
+}
+
 /**
  * Generate fill offers for vacant housing / retail / factory on player land,
  * restock open shops, pay factory operator wages to player.
@@ -9232,104 +9386,15 @@ export function tickPlotFillAndUse(inv: InventoryState): {
     msgs.push(`Factory works +${brass}b.`);
   }
 
-  // Generate new offers
+  // Guarantee an offer for every fillable pad (not random miss)
   const fillable = listFillablePlayerPlots(inv.plazaPlots);
-  if (inv.plazaPlots.pendingFillOffers!.length >= 8) {
-    return { msgs, brass, newOffers };
-  }
-
   for (const { plot, kinds } of fillable) {
-    if (inv.plazaPlots.pendingFillOffers!.length >= 8) break;
     for (const kind of kinds) {
-      if (inv.plazaPlots.pendingFillOffers!.some((o) => o.plotId === plot.id && o.kind === kind)) {
-        continue;
-      }
-      if (Math.random() > 0.38) continue;
-
-      let offer: PlotFillOffer | null = null;
-      if (kind === 'housing') {
-        // Prefer homeless / seeking neighbors
-        const seekers = inv.neighborLife.neighbors.filter(
-          (n) =>
-            n.homeless ||
-            n.drama === 'homeless' ||
-            (n.vacated && !n.isPlayerTenant) ||
-            (n.drama === 'behind_on_rent' && n.homeOwner === 'npc_landlord'),
-        );
-        if (!seekers.length) continue;
-        const app = seekers[Math.floor(Math.random() * seekers.length)]!;
-        const def = neighborDef(app.id);
-        const pol = defaultHousingOfferPolicy();
-        const rent = housingOfferRent(plot.listPrice || 12_000, pol);
-        offer = {
-          id: `fill_h_${plot.id}_${app.id}_${Date.now().toString(36)}`,
-          plotId: plot.id,
-          kind: 'housing',
-          applicantId: app.id,
-          applicantKind: 'npc',
-          applicantName: def?.name ?? app.id,
-          offeredPolicy: pol,
-          offeredRent: rent,
-          pitch: `${def?.name ?? 'Someone'} offers ${pol} rent (${rent.toLocaleString()}b/tick) for this home.`,
-        };
-      } else if (kind === 'retail') {
-        const vendors = inv.neighborLife.neighbors.filter(
-          (n) =>
-            !n.hiredAsWorkerId &&
-            (n.homeless ||
-              n.vendorOpen === false ||
-              (n.drama !== 'none' && !n.isPlayerTenant)),
-        );
-        const pool =
-          vendors.length > 0
-            ? vendors
-            : inv.neighborLife.neighbors.filter((n) => !n.hiredAsWorkerId);
-        if (!pool.length) continue;
-        const app = pool[Math.floor(Math.random() * Math.min(5, pool.length))]!;
-        const def = neighborDef(app.id);
-        offer = {
-          id: `fill_r_${plot.id}_${app.id}_${Date.now().toString(36)}`,
-          plotId: plot.id,
-          kind: 'retail',
-          applicantId: app.id,
-          applicantKind: 'npc',
-          applicantName: def?.name ?? app.id,
-          pitch: `${def?.name ?? 'A merchant'} wants to run this shop — stock goods you can buy.`,
-        };
-      } else {
-        // Factory: prefer idle crew, else NPC
-        const idleCrew = inv.workers.filter((w) => w.job === 'idle' && !w.unpaid);
-        if (idleCrew.length && Math.random() < 0.55) {
-          const w = idleCrew[Math.floor(Math.random() * idleCrew.length)]!;
-          offer = {
-            id: `fill_f_${plot.id}_${w.id}_${Date.now().toString(36)}`,
-            plotId: plot.id,
-            kind: 'factory',
-            applicantId: w.id,
-            applicantKind: 'worker',
-            applicantName: w.name,
-            pitch: `${w.name} (crew) offers to run this factory pad for works brass.`,
-          };
-        } else {
-          const pool = inv.neighborLife.neighbors.filter((n) => !n.hiredAsWorkerId);
-          if (!pool.length) continue;
-          const app = pool[Math.floor(Math.random() * Math.min(4, pool.length))]!;
-          const def = neighborDef(app.id);
-          offer = {
-            id: `fill_f_${plot.id}_${app.id}_${Date.now().toString(36)}`,
-            plotId: plot.id,
-            kind: 'factory',
-            applicantId: app.id,
-            applicantKind: 'npc',
-            applicantName: def?.name ?? app.id,
-            pitch: `${def?.name ?? 'A hand'} wants to operate this factory.`,
-          };
-        }
-      }
-      if (offer) {
-        inv.plazaPlots.pendingFillOffers!.push(offer);
-        newOffers.push(offer);
-        msgs.push(offer.pitch);
+      const before = inv.plazaPlots.pendingFillOffers!.length;
+      const o = ensureFillOfferForPlot(inv, plot.id, kind);
+      if (o && inv.plazaPlots.pendingFillOffers!.length > before) {
+        newOffers.push(o);
+        msgs.push(o.pitch);
       }
     }
   }
