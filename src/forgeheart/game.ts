@@ -231,6 +231,18 @@ import {
   listPendingTenantOffers,
   acceptTenantOffer,
   rejectTenantOffer,
+  listPendingFillOffers,
+  acceptFillOffer,
+  rejectFillOffer,
+  buyFromPlotShop,
+  plotOccupancyLabel,
+  craftFoundryPart,
+  FOUNDRY_PARTS,
+  foundryPartOwned,
+  ownsPlayerFactory,
+  playerHarvestQtyBonus,
+  playerHarvestZoneBonus,
+  playerBoardTurnMul,
   getInvNeighbor,
   neighborDef,
   neighborStatusLine,
@@ -242,6 +254,7 @@ import {
   setPlotRentPolicy,
   tickAllLandlordRents,
   ensureInvPlots,
+  getPlot,
   quotePlotBuyPrice,
   plotsInDistrict,
   playerOwnedPlotCount,
@@ -4834,6 +4847,8 @@ export class ForgeHeartGame {
     if (prog && !prog.classList.contains('hidden')) return true;
     const stall = document.getElementById('stall-panel');
     if (stall && !stall.classList.contains('hidden')) return true;
+    const plotShop = document.getElementById('plot-shop-panel');
+    if (plotShop && !plotShop.classList.contains('hidden')) return true;
     return false;
   }
 
@@ -5272,6 +5287,10 @@ export class ForgeHeartGame {
         name: it.harvestName ?? 'Flower patch',
         mode: 'flower',
       });
+      return true;
+    }
+    if (it.kind === 'plot_shop' && it.plotId) {
+      this.openPlotShop(it.plotId);
       return true;
     }
     if (it.kind === 'plot_garden_plant') {
@@ -7345,6 +7364,7 @@ export class ForgeHeartGame {
   private syncPlotOwnershipVisuals() {
     if (!this.skyCity) return;
     ensureInvPlots(this.inv);
+    const nameOf = (id: string) => neighborDef(id)?.name;
     this.skyCity.syncPlotOwnership(
       this.inv.plazaPlots.plots.map((p) => ({
         id: p.id,
@@ -7369,6 +7389,9 @@ export class ForgeHeartGame {
           gardenSpots: b.gardenSpots ? [...b.gardenSpots] : undefined,
         })),
         isEdge: p.isEdge,
+        occupancyLabel: plotOccupancyLabel(p, nameOf),
+        retailOperatorId: p.retailOperatorId ?? null,
+        hasRetailShop: !!(p.retailOperatorId && (p.buildings ?? []).some((b) => b.kind === 'retail')),
       })),
       this.inv.plazaPlots.airways ?? [],
     );
@@ -7944,6 +7967,95 @@ export class ForgeHeartGame {
   }
 
   /** Plant a held flower into an empty plot-garden bed. */
+  private openPlotShop(plotId: string) {
+    ensureInvPlots(this.inv);
+    const plot = getPlot(this.inv.plazaPlots, plotId);
+    if (!plot?.retailOperatorId) {
+      this.toast('Shop vacant — accept a shopkeeper offer at the lease office.', 3.5);
+      return;
+    }
+    const op = neighborDef(plot.retailOperatorId)?.name ?? 'Shopkeeper';
+    const shelf = plot.retailShelf ?? {};
+    const entries = Object.entries(shelf).filter(([, n]) => (n ?? 0) > 0);
+    if (!entries.length) {
+      this.toast(`${op}'s shop is restocking — check after rent tick.`, 3);
+      return;
+    }
+    // Lightweight panel reuse: romance-style dynamic panel
+    let el = document.getElementById('plot-shop-panel');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'plot-shop-panel';
+      el.className = 'market-panel romance-panel hidden';
+      el.innerHTML = `
+        <div class="market-card romance-card" style="max-width:min(420px,96vw);max-height:80vh;overflow:auto">
+          <header class="market-head">
+            <div>
+              <h3 id="plot-shop-title">Shop</h3>
+              <p class="market-sub" id="plot-shop-sub">Player retail</p>
+            </div>
+            <button type="button" id="plot-shop-close" class="maker-close">×</button>
+          </header>
+          <p class="romance-status" id="plot-shop-status"></p>
+          <div id="plot-shop-actions" class="romance-actions"></div>
+        </div>`;
+      document.getElementById('app')?.appendChild(el);
+      el.querySelector('#plot-shop-close')?.addEventListener('click', () => {
+        el?.classList.add('hidden');
+        el?.setAttribute('aria-hidden', 'true');
+        this.syncMobileGameplay();
+        if (!this.paused && !this.disposed) this.controls.lock();
+      });
+    }
+    const title = el.querySelector('#plot-shop-title');
+    const sub = el.querySelector('#plot-shop-sub');
+    const status = el.querySelector('#plot-shop-status');
+    const actions = el.querySelector('#plot-shop-actions');
+    if (title) title.textContent = `${op}'s shop`;
+    if (sub) sub.textContent = plotOccupancyLabel(plot, (id) => neighborDef(id)?.name) ?? 'Open for trade';
+    if (status) status.textContent = `Brass ${this.inv.brass} · buy shelf goods at street fair price`;
+    if (actions) {
+      actions.innerHTML = '';
+      for (const [cid, n] of entries) {
+        const id = cid as CommodityId;
+        const fair = fairStallPrice(id, this.inv);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'romance-btn';
+        b.textContent = `Buy ${COMMODITIES[id].name} ×1 @ ${fair}b (×${n} stock)`;
+        b.addEventListener('click', () => {
+          const r = buyFromPlotShop(this.inv, plotId, id, 1);
+          this.toast(r.msg, 3);
+          if (r.ok) {
+            this.brass = this.inv.brass;
+            this.audio.playPickup();
+            writeSlot(this.activeSlot, this.buildSaveData());
+            this.syncEconomyHud();
+            this.openPlotShop(plotId);
+          }
+        });
+        actions.appendChild(b);
+      }
+      const leave = document.createElement('button');
+      leave.type = 'button';
+      leave.className = 'romance-btn';
+      leave.textContent = 'Leave shop';
+      leave.addEventListener('click', () => {
+        el?.classList.add('hidden');
+        if (!this.paused && !this.disposed) this.controls.lock();
+      });
+      actions.appendChild(leave);
+    }
+    el.classList.remove('hidden');
+    el.setAttribute('aria-hidden', 'false');
+    this.syncMobileGameplay();
+    try {
+      this.controls.unlock();
+    } catch {
+      /* ignore */
+    }
+  }
+
   private openGardenPlantPicker(it: {
     plotId?: string;
     gardenBuildingIndex?: number;
@@ -8171,6 +8283,55 @@ export class ForgeHeartGame {
         dec.textContent = 'Decline';
         dec.addEventListener('click', () => {
           const r = rejectTenantOffer(this.inv, o.id);
+          if (log) log.textContent = r.msg;
+          this.toast(r.msg, 2.5);
+          writeSlot(this.activeSlot, this.buildSaveData());
+          this.fillLeaseOffice();
+        });
+        btns.appendChild(acc);
+        btns.appendChild(dec);
+        row.appendChild(btns);
+        plotsEl.appendChild(row);
+      }
+    }
+
+    // Plot fill: housing / retail shopkeeper / factory operator
+    const fills = listPendingFillOffers(this.inv);
+    if (fills.length) {
+      const head = document.createElement('p');
+      head.className = 'craft-hint';
+      head.textContent = 'Pad fill offers (home · shop · factory):';
+      plotsEl.appendChild(head);
+      for (const o of fills) {
+        const row = document.createElement('div');
+        row.className = 'stall-price-card';
+        row.style.marginBottom = '0.4rem';
+        row.innerHTML = `<div class="stall-price-head"><strong>${o.applicantName}</strong><span>${o.kind}</span></div><p class="craft-hint">${o.pitch}</p>`;
+        const btns = document.createElement('div');
+        btns.className = 'romance-actions';
+        const acc = document.createElement('button');
+        acc.type = 'button';
+        acc.className = 'romance-btn';
+        acc.textContent = `Accept · ${o.kind}`;
+        acc.addEventListener('click', () => {
+          const r = acceptFillOffer(this.inv, o.id);
+          if (log) log.textContent = r.msg;
+          this.toast(r.msg, 4);
+          if (r.ok) {
+            this.audio.playPickup();
+            this.brass = this.inv.brass;
+            this.syncPlotOwnershipVisuals();
+            writeSlot(this.activeSlot, this.buildSaveData());
+            this.syncEconomyHud();
+          }
+          this.fillLeaseOffice();
+        });
+        const dec = document.createElement('button');
+        dec.type = 'button';
+        dec.className = 'romance-btn';
+        dec.textContent = 'Decline';
+        dec.addEventListener('click', () => {
+          const r = rejectFillOffer(this.inv, o.id);
           if (log) log.textContent = r.msg;
           this.toast(r.msg, 2.5);
           writeSlot(this.activeSlot, this.buildSaveData());
@@ -9154,10 +9315,12 @@ export class ForgeHeartGame {
     }
     // Free-roam: island decks + board-only skyways (no solid roads between islands)
     const floorY = this.sampleBoardFloorY(this.board.position.x, this.board.position.z);
+    // Foundry gyro / rails → more maneuverable steer
+    const turnMul = playerBoardTurnMul(this.inv);
     this.board.tick(
       dt,
       accel,
-      steer,
+      steer * turnMul,
       path,
       pathDist,
       slide,
@@ -9168,7 +9331,7 @@ export class ForgeHeartGame {
       floorY,
     );
 
-    // Shop upgrades → speed cap
+    // Shop + foundry upgrades → speed cap
     const mul = playerBoardSpeedMul(this.inv);
     const cap = BOARD.maxSpeed * mul;
     if (this.board.speed > cap) this.board.speed = cap;
@@ -10691,6 +10854,36 @@ export class ForgeHeartGame {
       this.syncBoardWallet();
       this.syncEconomyHud();
     });
+    // Foundry line — craft on factory pad, install here for visibility
+    const foundryNote = document.createElement('p');
+    foundryNote.className = 'craft-hint';
+    foundryNote.style.marginTop = '0.6rem';
+    foundryNote.textContent = ownsPlayerFactory(this.inv)
+      ? 'Foundry line (needs factory pad + mats):'
+      : 'Foundry line locked — build a Factory pad on your land first.';
+    list.appendChild(foundryNote);
+    for (const part of FOUNDRY_PARTS) {
+      const done = foundryPartOwned(this.inv, part.id);
+      const mats = part.mats.map((m) => `${m.n}× ${COMMODITIES[m.id].name}`).join(', ');
+      mk(
+        `${part.name} (${part.brass}b · ${mats}) — ${part.blurb}`,
+        done,
+        () => {
+          const r = craftFoundryPart(this.inv, part.id);
+          this.boardShopLog(r.msg);
+          if (r.ok) {
+            this.brass = this.inv.brass;
+            this.audio.playPickup();
+            writeSlot(this.activeSlot, this.buildSaveData());
+          } else {
+            this.toast(r.msg, 3.5);
+          }
+          this.fillBoardShop();
+          this.syncBoardWallet();
+          this.syncEconomyHud();
+        },
+      );
+    }
   }
 
   private syncBoardWallet() {
@@ -11480,19 +11673,21 @@ export class ForgeHeartGame {
       this.harvestMode === 'flower'
         ? 1 + (Math.random() < 0.4 ? 1 : 0) // 1–2
         : 1 + Math.floor(Math.random() * 3); // 1–3
+    const gearBonus = playerHarvestQtyBonus(this.inv);
+    const zoneGear = playerHarvestZoneBonus(this.inv);
     this.harvestHaulQty =
       this.harvestMode === 'flower'
-        ? haulTier
+        ? haulTier + (gearBonus > 0 ? 1 : 0)
         : haulTier === 1
-          ? 1 + Math.floor(Math.random() * 2)
+          ? 1 + Math.floor(Math.random() * 2) + gearBonus
           : haulTier === 2
-            ? 2 + Math.floor(Math.random() * 2)
-            : 3 + Math.floor(Math.random() * 2);
+            ? 2 + Math.floor(Math.random() * 2) + gearBonus
+            : 3 + Math.floor(Math.random() * 2) + gearBonus;
 
-    // Zone width shrinks slightly on larger hauls (still fair)
+    // Zone width shrinks slightly on larger hauls (still fair); reef gauge widens
     this.harvestZoneWidth = Math.max(
       8,
-      (this.harvestMode === 'flower' ? 15 : 17) - haulTier * 2.4,
+      (this.harvestMode === 'flower' ? 15 : 17) - haulTier * 2.4 + zoneGear.zoneWidth,
     );
     // Green zone starts in the right 2/3 of the bar
     const rightStart = 100 / 3;
@@ -11501,7 +11696,8 @@ export class ForgeHeartGame {
     // Gentle drift; faster drift for larger hauls
     this.harvestZoneVel =
       (Math.random() < 0.5 ? 1 : -1) * (2.8 + haulTier * 1.4 + Math.random() * 1.2);
-    this.harvestNeedleSpeed = 40 + haulTier * 24 + (this.harvestMode === 'flower' ? 6 : 0);
+    this.harvestNeedleSpeed =
+      (40 + haulTier * 24 + (this.harvestMode === 'flower' ? 6 : 0)) * zoneGear.needleSlow;
     this.harvestNeedle = 0;
     this.harvestDir = 1;
 

@@ -120,6 +120,13 @@ export interface PlotState {
   isEdge?: boolean;
   /** Retail bound to district stall */
   retailBound?: boolean;
+  /** NPC shopkeeper (neighbor id) running retail front */
+  retailOperatorId?: string | null;
+  /** Stock on the plot shop — player can buy */
+  retailShelf?: Partial<Record<import('./economy').CommodityId, number>>;
+  /** Crew worker id or neighbor id operating factory */
+  factoryOperatorId?: string | null;
+  factoryOperatorKind?: 'npc' | 'worker' | null;
 }
 
 /** Task 12 — player airway between two plots (same district). */
@@ -298,6 +305,8 @@ export interface PlazaPlotsState {
   padsResetV1?: boolean;
   /** Task 12 player skyway links between owned pads */
   airways?: PlotAirwayLink[];
+  /** NPC/crew offers to fill vacant housing, retail, or factory */
+  pendingFillOffers?: import('./plotUse').PlotFillOffer[];
 }
 
 export interface DistrictLite {
@@ -982,6 +991,7 @@ export function plazaPlotsToSave(state: PlazaPlotsState) {
     bridgesClearedV1: !!state.bridgesClearedV1,
     padsResetV1: !!state.padsResetV1,
     airways: listPlotAirways(state).map((a) => ({ ...a })),
+    pendingFillOffers: (state.pendingFillOffers ?? []).map((o) => ({ ...o })),
     plots: state.plots.map((p) => ({
       id: p.id,
       districtId: p.districtId,
@@ -1003,6 +1013,10 @@ export function plazaPlotsToSave(state: PlazaPlotsState) {
       retailBound: !!p.retailBound,
       worldX: p.worldX,
       worldZ: p.worldZ,
+      retailOperatorId: p.retailOperatorId ?? null,
+      retailShelf: { ...(p.retailShelf ?? {}) },
+      factoryOperatorId: p.factoryOperatorId ?? null,
+      factoryOperatorKind: p.factoryOperatorKind ?? null,
     })),
   };
 }
@@ -1072,7 +1086,24 @@ export function plazaPlotsFromSave(
       retailBound: !!r.retailBound,
       worldX: typeof r.worldX === 'number' ? r.worldX : undefined,
       worldZ: typeof r.worldZ === 'number' ? r.worldZ : undefined,
+      retailOperatorId:
+        typeof r.retailOperatorId === 'string' ? r.retailOperatorId : null,
+      retailShelf: {},
+      factoryOperatorId:
+        typeof r.factoryOperatorId === 'string' ? r.factoryOperatorId : null,
+      factoryOperatorKind:
+        r.factoryOperatorKind === 'npc' || r.factoryOperatorKind === 'worker'
+          ? r.factoryOperatorKind
+          : null,
     });
+    const last = plots[plots.length - 1]!;
+    if (r.retailShelf && typeof r.retailShelf === 'object') {
+      for (const [k, v] of Object.entries(r.retailShelf as Record<string, unknown>)) {
+        if (typeof v === 'number' && v > 0) {
+          last.retailShelf![k as import('./economy').CommodityId] = Math.floor(v);
+        }
+      }
+    }
   }
   const airways: PlotAirwayLink[] = [];
   if (Array.isArray(o.airways)) {
@@ -1103,6 +1134,30 @@ export function plazaPlotsFromSave(
   const cleanAirways = airways.filter(
     (a) => plotIds.has(a.fromId) && plotIds.has(a.toId) && a.fromId !== a.toId,
   );
+  const pendingFillOffers: import('./plotUse').PlotFillOffer[] = [];
+  const rawOffers = (o as { pendingFillOffers?: unknown }).pendingFillOffers;
+  if (Array.isArray(rawOffers)) {
+    for (const row of rawOffers) {
+      if (!row || typeof row !== 'object') continue;
+      const r = row as Record<string, unknown>;
+      if (typeof r.plotId !== 'string' || typeof r.applicantId !== 'string') continue;
+      const kind = r.kind;
+      if (kind !== 'housing' && kind !== 'retail' && kind !== 'factory') continue;
+      const pol = r.offeredPolicy;
+      pendingFillOffers.push({
+        id: typeof r.id === 'string' ? r.id : `fill_${r.plotId}_${r.applicantId}`,
+        plotId: r.plotId,
+        kind,
+        applicantId: r.applicantId,
+        applicantKind: r.applicantKind === 'worker' ? 'worker' : 'npc',
+        applicantName: typeof r.applicantName === 'string' ? r.applicantName : 'Applicant',
+        offeredPolicy:
+          pol === 'cheap' || pol === 'fair' || pol === 'predatory' ? pol : undefined,
+        offeredRent: typeof r.offeredRent === 'number' ? r.offeredRent : undefined,
+        pitch: typeof r.pitch === 'string' ? r.pitch : 'Wants to use this pad.',
+      });
+    }
+  }
   return ensurePlazaPlots(
     {
       plots,
@@ -1110,6 +1165,7 @@ export function plazaPlotsFromSave(
       bridgesClearedV1: true,
       // Unset → ensurePlazaPlots runs pad snap once for legacy free-move saves
       padsResetV1: padsAlreadyReset ? true : undefined,
+      pendingFillOffers,
     },
     districts,
   );

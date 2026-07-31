@@ -105,6 +105,18 @@ import {
   type PlotShape,
   type PlotAirwayLink,
 } from './plazaPlots';
+import {
+  listFillablePlayerPlots,
+  restockPlotRetail,
+  factoryPlotIncome,
+  plotHasRetail,
+  plotHasFactory,
+  plotHasHousing,
+  defaultHousingOfferPolicy,
+  housingOfferRent,
+  type PlotFillOffer,
+  PLOT_RETAIL_STOCK_POOL,
+} from './plotUse';
 
 export type {
   NeighborLifeState,
@@ -1010,6 +1022,22 @@ export interface PlayerBoardState {
   thruster: boolean;
   rails: boolean;
   deck: boolean;
+  /**
+   * Foundry line (craft at factory-owned empire or craft bench with recipes):
+   * gyro = turn / powerslide control; aetherDrive = top speed / accel.
+   */
+  gyro?: boolean;
+  aetherDrive?: boolean;
+}
+
+/** Personal harvest / field gear (Foundry line). */
+export interface PlayerFieldGear {
+  /** Wider green zone / slower needle — easier & faster hits */
+  reefGauge?: boolean;
+  /** +qty per successful haul */
+  haulRig?: boolean;
+  /** Extract 2 mat types at once on success */
+  multiScanner?: boolean;
 }
 
 /** Player-invented recipe (personal book) */
@@ -1769,23 +1797,38 @@ export function describeWorkerAssignment(inv: InventoryState, w: WorkerState): s
   return def?.name ?? w.job;
 }
 
-/** Player harvest minigame success — biased to biome mats */
+/** Player harvest minigame success — biased to biome mats; field gear boosts yield. */
 export function applyHarvestSuccess(
   inv: InventoryState,
   pool: CommodityId[] = DEFAULT_HARVEST_POOL,
   qtyHint?: number,
-): { id: CommodityId; qty: number; msg: string } {
+): { id: CommodityId; qty: number; msg: string; extra?: { id: CommodityId; qty: number } } {
+  ensureFieldGear(inv);
   const mats = pool.length ? pool : DEFAULT_HARVEST_POOL;
   const id = mats[Math.floor(Math.random() * mats.length)]!;
-  const qty = qtyHint ?? 1 + Math.floor(Math.random() * 3);
+  let qty = (qtyHint ?? 1 + Math.floor(Math.random() * 3)) + playerHarvestQtyBonus(inv);
+  qty = Math.max(1, qty);
   addItem(inv, id, qty);
   inv.harvestRuns += 1;
   noteMarketSupply(inv, id, qty);
+  let extra: { id: CommodityId; qty: number } | undefined;
+  if (inv.fieldGear.multiScanner && mats.length > 1) {
+    const others = mats.filter((m) => m !== id);
+    const id2 = others[Math.floor(Math.random() * others.length)]!;
+    const q2 = 1 + (inv.fieldGear.haulRig ? 1 : 0);
+    addItem(inv, id2, q2);
+    noteMarketSupply(inv, id2, q2);
+    extra = { id: id2, qty: q2 };
+  }
   notePeakBrass(inv);
+  const extraBit = extra
+    ? ` + ${extra.qty}× ${COMMODITIES[extra.id].name} (scanner)`
+    : '';
   return {
     id,
     qty,
-    msg: `Extracted ${qty}× ${COMMODITIES[id].name}`,
+    extra,
+    msg: `Extracted ${qty}× ${COMMODITIES[id].name}${extraBit}`,
   };
 }
 
@@ -1845,6 +1888,8 @@ export interface InventoryState {
   repairsDone: number;
   workers: WorkerState[];
   playerBoard: PlayerBoardState;
+  /** Foundry-line personal harvest gear */
+  fieldGear: PlayerFieldGear;
   customRecipes: CustomRecipe[];
   /** Stacks of invented goods by recipe id */
   customStock: Record<string, number>;
@@ -1960,7 +2005,15 @@ export function emptyInventory(starterBrass = 40): InventoryState {
     framesSold: 0,
     repairsDone: 0,
     workers: [],
-    playerBoard: { owned: false, thruster: false, rails: false, deck: false },
+    playerBoard: {
+      owned: false,
+      thruster: false,
+      rails: false,
+      deck: false,
+      gyro: false,
+      aetherDrive: false,
+    },
+    fieldGear: { reefGauge: false, haulRig: false, multiScanner: false },
     customRecipes: [],
     customStock: {},
     programs: [
@@ -7197,6 +7250,7 @@ export function playerWalkSpeedMul(inv: InventoryState): number {
   let m = 1.12;
   if (inv.playerBoard.thruster) m += 0.18;
   if (inv.playerBoard.rails) m += 0.08;
+  if (inv.playerBoard.aetherDrive) m += 0.1;
   return m;
 }
 
@@ -7207,7 +7261,192 @@ export function playerBoardSpeedMul(inv: InventoryState): number {
   if (inv.playerBoard.thruster) m += 0.22;
   if (inv.playerBoard.rails) m += 0.08;
   if (inv.playerBoard.deck) m += 0.05;
+  if (inv.playerBoard.aetherDrive) m += 0.28;
+  if (inv.playerBoard.gyro) m += 0.06;
   return m;
+}
+
+/** Turn / powerslide responsiveness (foundry gyro). */
+export function playerBoardTurnMul(inv: InventoryState): number {
+  if (!inv.playerBoard.owned) return 1;
+  let m = 1;
+  if (inv.playerBoard.rails) m += 0.12;
+  if (inv.playerBoard.gyro) m += 0.35;
+  return m;
+}
+
+export function ensureFieldGear(inv: InventoryState): PlayerFieldGear {
+  if (!inv.fieldGear || typeof inv.fieldGear !== 'object') {
+    inv.fieldGear = { reefGauge: false, haulRig: false, multiScanner: false };
+  }
+  return inv.fieldGear;
+}
+
+export function ownsPlayerFactory(inv: InventoryState): boolean {
+  ensureInvPlots(inv);
+  return inv.plazaPlots.plots.some(
+    (p) => p.owner === 'player' && (p.buildings ?? []).some((b) => b.kind === 'factory'),
+  );
+}
+
+/** Foundry craft costs — require factory pad (or already own part for re-craft fail). */
+export type FoundryPartId =
+  | 'board_gyro'
+  | 'board_drive'
+  | 'reef_gauge'
+  | 'haul_rig'
+  | 'multi_scanner';
+
+export const FOUNDRY_PARTS: {
+  id: FoundryPartId;
+  name: string;
+  blurb: string;
+  brass: number;
+  mats: { id: CommodityId; n: number }[];
+}[] = [
+  {
+    id: 'board_gyro',
+    name: 'Gyro gimbal',
+    blurb: 'Board turn & powerslide control',
+    brass: 120,
+    mats: [
+      { id: 'gear_blank', n: 2 },
+      { id: 'wire', n: 3 },
+      { id: 'scrap_brass', n: 4 },
+    ],
+  },
+  {
+    id: 'board_drive',
+    name: 'Aether drive coil',
+    blurb: 'Board top speed & acceleration',
+    brass: 180,
+    mats: [
+      { id: 'fuel_cell', n: 2 },
+      { id: 'polished_wire', n: 2 },
+      { id: 'cloud_iron', n: 6 },
+    ],
+  },
+  {
+    id: 'reef_gauge',
+    name: 'Reef chronometer',
+    blurb: 'Easier / faster harvest timing window',
+    brass: 95,
+    mats: [
+      { id: 'glass_pane', n: 1 },
+      { id: 'gear_blank', n: 1 },
+      { id: 'sky_salt', n: 4 },
+    ],
+  },
+  {
+    id: 'haul_rig',
+    name: 'Multi-haul arm',
+    blurb: '+yield per successful haul',
+    brass: 110,
+    mats: [
+      { id: 'cloud_iron', n: 5 },
+      { id: 'wire', n: 2 },
+      { id: 'repair_kit', n: 1 },
+    ],
+  },
+  {
+    id: 'multi_scanner',
+    name: 'Dual-mat scanner',
+    blurb: 'Harvest two mat types at once',
+    brass: 150,
+    mats: [
+      { id: 'glass_pane', n: 2 },
+      { id: 'fuel_cell', n: 1 },
+      { id: 'spore_silk', n: 3 },
+    ],
+  },
+];
+
+export function foundryPartOwned(inv: InventoryState, id: FoundryPartId): boolean {
+  ensureFieldGear(inv);
+  const b = inv.playerBoard;
+  switch (id) {
+    case 'board_gyro':
+      return !!b.gyro;
+    case 'board_drive':
+      return !!b.aetherDrive;
+    case 'reef_gauge':
+      return !!inv.fieldGear.reefGauge;
+    case 'haul_rig':
+      return !!inv.fieldGear.haulRig;
+    case 'multi_scanner':
+      return !!inv.fieldGear.multiScanner;
+  }
+}
+
+/** Craft + auto-install foundry part (needs a factory pad on your land). */
+export function craftFoundryPart(
+  inv: InventoryState,
+  id: FoundryPartId,
+): { ok: boolean; msg: string } {
+  ensureFieldGear(inv);
+  if (!ownsPlayerFactory(inv)) {
+    return {
+      ok: false,
+      msg: 'Build a Factory pad on your land first (lease office · Develop · Factory).',
+    };
+  }
+  if (foundryPartOwned(inv, id)) {
+    return { ok: false, msg: 'Already installed.' };
+  }
+  const def = FOUNDRY_PARTS.find((p) => p.id === id);
+  if (!def) return { ok: false, msg: 'Unknown foundry part.' };
+  if (inv.brass < def.brass) {
+    return { ok: false, msg: `Need ${def.brass} brass (have ${inv.brass}).` };
+  }
+  for (const m of def.mats) {
+    if (getQty(inv, m.id) < m.n) {
+      return {
+        ok: false,
+        msg: `Need ${m.n}× ${COMMODITIES[m.id].name} (have ${getQty(inv, m.id)}).`,
+      };
+    }
+  }
+  inv.brass -= def.brass;
+  for (const m of def.mats) removeItem(inv, m.id, m.n);
+  switch (id) {
+    case 'board_gyro':
+      inv.playerBoard.gyro = true;
+      break;
+    case 'board_drive':
+      inv.playerBoard.aetherDrive = true;
+      break;
+    case 'reef_gauge':
+      inv.fieldGear.reefGauge = true;
+      break;
+    case 'haul_rig':
+      inv.fieldGear.haulRig = true;
+      break;
+    case 'multi_scanner':
+      inv.fieldGear.multiScanner = true;
+      break;
+  }
+  notePeakBrass(inv);
+  return {
+    ok: true,
+    msg: `Foundry: installed ${def.name} (−${def.brass}b). ${def.blurb}.`,
+  };
+}
+
+/** Haul qty bonus from field gear */
+export function playerHarvestQtyBonus(inv: InventoryState): number {
+  ensureFieldGear(inv);
+  let n = 0;
+  if (inv.fieldGear.haulRig) n += 2;
+  return n;
+}
+
+export function playerHarvestZoneBonus(inv: InventoryState): {
+  zoneWidth: number;
+  needleSlow: number;
+} {
+  ensureFieldGear(inv);
+  if (inv.fieldGear.reefGauge) return { zoneWidth: 5, needleSlow: 0.82 };
+  return { zoneWidth: 0, needleSlow: 1 };
 }
 
 // ——— Light invention (constrained) ———
@@ -7948,7 +8187,12 @@ export function invToSave(inv: InventoryState) {
     framesSold: inv.framesSold,
     repairsDone: inv.repairsDone,
     workers: inv.workers.map((w) => ({ ...w, payGrade: w.payGrade ?? 0 })),
-    playerBoard: { ...inv.playerBoard },
+    playerBoard: {
+      ...inv.playerBoard,
+      gyro: !!inv.playerBoard.gyro,
+      aetherDrive: !!inv.playerBoard.aetherDrive,
+    },
+    fieldGear: { ...ensureFieldGear(inv) },
     customRecipes: inv.customRecipes.map((r) => ({
       ...r,
       inputs: r.inputs.map((i) => ({ ...i })),
@@ -8117,7 +8361,19 @@ export function invFromSave(raw: unknown, fallbackBrass = 40): InventoryState {
       thruster: !!b.thruster,
       rails: !!b.rails,
       deck: !!b.deck,
+      gyro: !!b.gyro,
+      aetherDrive: !!b.aetherDrive,
     };
+  }
+  if (o.fieldGear && typeof o.fieldGear === 'object') {
+    const g = o.fieldGear as PlayerFieldGear;
+    inv.fieldGear = {
+      reefGauge: !!g.reefGauge,
+      haulRig: !!g.haulRig,
+      multiScanner: !!g.multiScanner,
+    };
+  } else {
+    ensureFieldGear(inv);
   }
   if (Array.isArray(o.customRecipes)) {
     inv.customRecipes = (o.customRecipes as CustomRecipe[]).map((r) => ({
@@ -8903,8 +9159,9 @@ export function tickAllLandlordRents(inv: InventoryState): {
   }
   const life = tickNpcLivelihoods(inv);
   const offers = tickTenantOffers(inv);
-  const collected = nb.collected + pr.collected;
-  const msgs = [...nb.msgs, ...pr.msgs, ...life.msgs, ...offers.msgs];
+  const fill = tickPlotFillAndUse(inv);
+  const collected = nb.collected + pr.collected + fill.brass;
+  const msgs = [...nb.msgs, ...pr.msgs, ...life.msgs, ...offers.msgs, ...fill.msgs];
   const left = [
     ...nb.left.map((x) => x.name),
     ...pr.left.map((x) => x.tenantId),
@@ -8914,6 +9171,321 @@ export function tickAllLandlordRents(inv: InventoryState): {
     msgs,
     left,
     homelessNew: life.homelessNew.map((h) => h.name),
+  };
+}
+
+// ——— Plot fill: retail shopkeepers, factory crews, housing names ———
+
+export type { PlotFillOffer, PlotFillKind } from './plotUse';
+export { plotOccupancyLabel, plotHasRetail, plotHasFactory, plotHasHousing } from './plotUse';
+
+export function listPendingFillOffers(inv: InventoryState): PlotFillOffer[] {
+  ensureInvPlots(inv);
+  return [...(inv.plazaPlots.pendingFillOffers ?? [])];
+}
+
+/**
+ * Generate fill offers for vacant housing / retail / factory on player land,
+ * restock open shops, pay factory operator wages to player.
+ */
+export function tickPlotFillAndUse(inv: InventoryState): {
+  msgs: string[];
+  brass: number;
+  newOffers: PlotFillOffer[];
+} {
+  ensureInvPlots(inv);
+  inv.neighborLife = ensureNeighborLife(inv.neighborLife);
+  if (!inv.plazaPlots.pendingFillOffers) inv.plazaPlots.pendingFillOffers = [];
+  const offers = inv.plazaPlots.pendingFillOffers;
+  const msgs: string[] = [];
+  const newOffers: PlotFillOffer[] = [];
+  let brass = 0;
+
+  // Drop stale offers
+  inv.plazaPlots.pendingFillOffers = offers.filter((o) => {
+    const p = getPlot(inv.plazaPlots, o.plotId);
+    if (!p || p.owner !== 'player') return false;
+    if (o.kind === 'housing' && plotHasHousing(p) && (p.vacant || !p.tenantNeighborId)) {
+      return true;
+    }
+    if (o.kind === 'retail' && plotHasRetail(p) && !p.retailOperatorId) return true;
+    if (o.kind === 'factory' && plotHasFactory(p) && !p.factoryOperatorId) return true;
+    return false;
+  });
+
+  // Restock + factory income
+  for (const p of inv.plazaPlots.plots) {
+    if (p.owner !== 'player') continue;
+    if (p.retailOperatorId && plotHasRetail(p)) {
+      restockPlotRetail(p);
+    }
+    if (p.factoryOperatorId && plotHasFactory(p)) {
+      const pay = factoryPlotIncome(p);
+      if (pay > 0) {
+        inv.brass += pay;
+        brass += pay;
+      }
+    }
+  }
+  if (brass > 0) {
+    notePeakBrass(inv);
+    msgs.push(`Factory works +${brass}b.`);
+  }
+
+  // Generate new offers
+  const fillable = listFillablePlayerPlots(inv.plazaPlots);
+  if (inv.plazaPlots.pendingFillOffers!.length >= 8) {
+    return { msgs, brass, newOffers };
+  }
+
+  for (const { plot, kinds } of fillable) {
+    if (inv.plazaPlots.pendingFillOffers!.length >= 8) break;
+    for (const kind of kinds) {
+      if (inv.plazaPlots.pendingFillOffers!.some((o) => o.plotId === plot.id && o.kind === kind)) {
+        continue;
+      }
+      if (Math.random() > 0.38) continue;
+
+      let offer: PlotFillOffer | null = null;
+      if (kind === 'housing') {
+        // Prefer homeless / seeking neighbors
+        const seekers = inv.neighborLife.neighbors.filter(
+          (n) =>
+            n.homeless ||
+            n.drama === 'homeless' ||
+            (n.vacated && !n.isPlayerTenant) ||
+            (n.drama === 'behind_on_rent' && n.homeOwner === 'npc_landlord'),
+        );
+        if (!seekers.length) continue;
+        const app = seekers[Math.floor(Math.random() * seekers.length)]!;
+        const def = neighborDef(app.id);
+        const pol = defaultHousingOfferPolicy();
+        const rent = housingOfferRent(plot.listPrice || 12_000, pol);
+        offer = {
+          id: `fill_h_${plot.id}_${app.id}_${Date.now().toString(36)}`,
+          plotId: plot.id,
+          kind: 'housing',
+          applicantId: app.id,
+          applicantKind: 'npc',
+          applicantName: def?.name ?? app.id,
+          offeredPolicy: pol,
+          offeredRent: rent,
+          pitch: `${def?.name ?? 'Someone'} offers ${pol} rent (${rent.toLocaleString()}b/tick) for this home.`,
+        };
+      } else if (kind === 'retail') {
+        const vendors = inv.neighborLife.neighbors.filter(
+          (n) =>
+            !n.hiredAsWorkerId &&
+            (n.homeless ||
+              n.vendorOpen === false ||
+              (n.drama !== 'none' && !n.isPlayerTenant)),
+        );
+        const pool =
+          vendors.length > 0
+            ? vendors
+            : inv.neighborLife.neighbors.filter((n) => !n.hiredAsWorkerId);
+        if (!pool.length) continue;
+        const app = pool[Math.floor(Math.random() * Math.min(5, pool.length))]!;
+        const def = neighborDef(app.id);
+        offer = {
+          id: `fill_r_${plot.id}_${app.id}_${Date.now().toString(36)}`,
+          plotId: plot.id,
+          kind: 'retail',
+          applicantId: app.id,
+          applicantKind: 'npc',
+          applicantName: def?.name ?? app.id,
+          pitch: `${def?.name ?? 'A merchant'} wants to run this shop — stock goods you can buy.`,
+        };
+      } else {
+        // Factory: prefer idle crew, else NPC
+        const idleCrew = inv.workers.filter((w) => w.job === 'idle' && !w.unpaid);
+        if (idleCrew.length && Math.random() < 0.55) {
+          const w = idleCrew[Math.floor(Math.random() * idleCrew.length)]!;
+          offer = {
+            id: `fill_f_${plot.id}_${w.id}_${Date.now().toString(36)}`,
+            plotId: plot.id,
+            kind: 'factory',
+            applicantId: w.id,
+            applicantKind: 'worker',
+            applicantName: w.name,
+            pitch: `${w.name} (crew) offers to run this factory pad for works brass.`,
+          };
+        } else {
+          const pool = inv.neighborLife.neighbors.filter((n) => !n.hiredAsWorkerId);
+          if (!pool.length) continue;
+          const app = pool[Math.floor(Math.random() * Math.min(4, pool.length))]!;
+          const def = neighborDef(app.id);
+          offer = {
+            id: `fill_f_${plot.id}_${app.id}_${Date.now().toString(36)}`,
+            plotId: plot.id,
+            kind: 'factory',
+            applicantId: app.id,
+            applicantKind: 'npc',
+            applicantName: def?.name ?? app.id,
+            pitch: `${def?.name ?? 'A hand'} wants to operate this factory.`,
+          };
+        }
+      }
+      if (offer) {
+        inv.plazaPlots.pendingFillOffers!.push(offer);
+        newOffers.push(offer);
+        msgs.push(offer.pitch);
+      }
+    }
+  }
+  return { msgs, brass, newOffers };
+}
+
+export function rejectFillOffer(
+  inv: InventoryState,
+  offerId: string,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  const list = inv.plazaPlots.pendingFillOffers ?? [];
+  const idx = list.findIndex((o) => o.id === offerId);
+  if (idx < 0) return { ok: false, msg: 'Offer gone.' };
+  const o = list[idx]!;
+  list.splice(idx, 1);
+  return { ok: true, msg: `Declined ${o.applicantName}'s offer.` };
+}
+
+export function acceptFillOffer(
+  inv: InventoryState,
+  offerId: string,
+): { ok: boolean; msg: string } {
+  ensureInvPlots(inv);
+  inv.neighborLife = ensureNeighborLife(inv.neighborLife);
+  const list = inv.plazaPlots.pendingFillOffers ?? [];
+  const idx = list.findIndex((o) => o.id === offerId);
+  if (idx < 0) return { ok: false, msg: 'Offer expired.' };
+  const o = list[idx]!;
+  const plot = getPlot(inv.plazaPlots, o.plotId);
+  if (!plot || plot.owner !== 'player') {
+    list.splice(idx, 1);
+    return { ok: false, msg: 'You no longer own that plot.' };
+  }
+
+  if (o.kind === 'housing') {
+    if (!plotHasHousing(plot)) {
+      list.splice(idx, 1);
+      return { ok: false, msg: 'No housing on this plot.' };
+    }
+    if (plot.tenantNeighborId && !plot.vacant) {
+      list.splice(idx, 1);
+      return { ok: false, msg: 'Already tenanted.' };
+    }
+    const n = getInvNeighbor(inv, o.applicantId);
+    if (!n) {
+      list.splice(idx, 1);
+      return { ok: false, msg: 'Applicant left.' };
+    }
+    const pol = o.offeredPolicy ?? 'fair';
+    plot.vacant = false;
+    plot.tenantNeighborId = o.applicantId;
+    plot.rentPolicy = pol;
+    n.homeOwner = 'player';
+    n.isPlayerTenant = true;
+    n.rentPolicy = pol;
+    n.vacated = false;
+    n.homeless = false;
+    if (n.drama === 'homeless') n.drama = 'none';
+    bumpNeighborAffinity(n, 8);
+    list.splice(idx, 1);
+    inv.plazaPlots.pendingFillOffers = list.filter(
+      (x) => !(x.plotId === o.plotId && x.kind === 'housing') && x.applicantId !== o.applicantId,
+    );
+    return {
+      ok: true,
+      msg: `${o.applicantName} moves in · home named after them · ${pol} rent ${o.offeredRent?.toLocaleString() ?? '—'}b/tick.`,
+    };
+  }
+
+  if (o.kind === 'retail') {
+    if (!plotHasRetail(plot)) {
+      list.splice(idx, 1);
+      return { ok: false, msg: 'No retail front here.' };
+    }
+    if (plot.retailOperatorId) {
+      list.splice(idx, 1);
+      return { ok: false, msg: 'Shop already staffed.' };
+    }
+    plot.retailOperatorId = o.applicantId;
+    plot.retailShelf = plot.retailShelf ?? {};
+    // Opening stock
+    for (let i = 0; i < 4; i++) {
+      const id = PLOT_RETAIL_STOCK_POOL[Math.floor(Math.random() * PLOT_RETAIL_STOCK_POOL.length)]!;
+      plot.retailShelf[id] = (plot.retailShelf[id] ?? 0) + 2 + Math.floor(Math.random() * 3);
+    }
+    list.splice(idx, 1);
+    inv.plazaPlots.pendingFillOffers = list.filter(
+      (x) => !(x.plotId === o.plotId && x.kind === 'retail'),
+    );
+    return {
+      ok: true,
+      msg: `${o.applicantName} opens the shop · E on the front to buy goods.`,
+    };
+  }
+
+  // factory
+  if (!plotHasFactory(plot)) {
+    list.splice(idx, 1);
+    return { ok: false, msg: 'No factory on this plot.' };
+  }
+  if (plot.factoryOperatorId) {
+    list.splice(idx, 1);
+    return { ok: false, msg: 'Works already staffed.' };
+  }
+  plot.factoryOperatorId = o.applicantId;
+  plot.factoryOperatorKind = o.applicantKind;
+  list.splice(idx, 1);
+  inv.plazaPlots.pendingFillOffers = list.filter(
+    (x) => !(x.plotId === o.plotId && x.kind === 'factory'),
+  );
+  return {
+    ok: true,
+    msg: `${o.applicantName} runs the factory · works brass each rent tick.`,
+  };
+}
+
+/** Buy one unit from a plot shop shelf. */
+export function buyFromPlotShop(
+  inv: InventoryState,
+  plotId: string,
+  id: CommodityId,
+  qty = 1,
+): { ok: boolean; msg: string; spent?: number } {
+  ensureInvPlots(inv);
+  const plot = getPlot(inv.plazaPlots, plotId);
+  if (!plot || plot.owner !== 'player') {
+    return { ok: false, msg: 'Unknown shop.' };
+  }
+  if (!plot.retailOperatorId) {
+    return { ok: false, msg: 'Shop is vacant — wait for a shopkeeper offer.' };
+  }
+  const have = plot.retailShelf?.[id] ?? 0;
+  if (have < qty) {
+    return { ok: false, msg: `Only ${have}× ${COMMODITIES[id]?.name ?? id} on shelf.` };
+  }
+  const unit = fairStallPrice(id, inv);
+  const spent = unit * qty;
+  if (inv.brass < spent) {
+    return { ok: false, msg: `Need ${spent} brass.` };
+  }
+  if (!addItem(inv, id, qty)) {
+    return { ok: false, msg: 'Inventory full for that good.' };
+  }
+  inv.brass -= spent;
+  plot.retailShelf![id] = have - qty;
+  if ((plot.retailShelf![id] ?? 0) <= 0) delete plot.retailShelf![id];
+  // Operator cut already "paid" as shelf fiction; tiny standing for supporting shop
+  if (Math.random() < 0.25) {
+    applyStanding(inv, 0.5, { districtId: plot.districtId, districtDelta: 1 });
+  }
+  notePeakBrass(inv);
+  return {
+    ok: true,
+    spent,
+    msg: `Bought ${qty}× ${COMMODITIES[id].name} from shop @ ${unit}b (−${spent}).`,
   };
 }
 

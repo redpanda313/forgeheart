@@ -84,7 +84,9 @@ export type CityInteractKind =
   /** Empty garden bed on player plot — plant a held flower */
   | 'plot_garden_plant'
   /** Planted garden bed — harvest that bloom type */
-  | 'plot_garden_harvest';
+  | 'plot_garden_harvest'
+  /** Player retail front with shopkeeper — buy goods */
+  | 'plot_shop';
 
 /** Plaza work a city chassis is assigned to while owned. */
 export type CityRobotJobId =
@@ -2796,6 +2798,10 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
       gardenSpots?: (string | null)[];
     }[];
     isEdge?: boolean;
+    /** Live occupancy sign (tenant / shop / works) */
+    occupancyLabel?: string | null;
+    retailOperatorId?: string | null;
+    hasRetailShop?: boolean;
   };
 
   const toPlotLite = (p: PlotSyncInput) =>
@@ -2841,13 +2847,15 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
     plotAirwayCols = [];
     plotGardenInteracts = [];
 
-    // Drop prior dynamic garden bed interactables (rebuilt below)
+    // Drop prior dynamic garden / shop interactables (rebuilt below)
     for (let i = interactables.length - 1; i >= 0; i--) {
       const it = interactables[i]!;
       if (
         it.kind === 'plot_garden_plant' ||
         it.kind === 'plot_garden_harvest' ||
-        it.id.startsWith('plot_garden_')
+        it.kind === 'plot_shop' ||
+        it.id.startsWith('plot_garden_') ||
+        it.id.startsWith('plot_shop_')
       ) {
         interactables.splice(i, 1);
       }
@@ -2938,12 +2946,52 @@ export function buildSkyCity(opts?: { romanceSeed?: number }): SkyCityBuilt {
                   : b.kind === 'factory'
                     ? 0x5a5850
                     : 0x7a6a58,
-            label: b.kind === 'retail' ? 'SHOP' : b.kind === 'factory' ? 'WORKS' : undefined,
+            label:
+              p.occupancyLabel &&
+              (b.kind === 'retail' ||
+                b.kind === 'factory' ||
+                b.kind === 'home' ||
+                b.kind === 'apartment')
+                ? p.occupancyLabel
+                : b.kind === 'retail'
+                  ? p.hasRetailShop
+                    ? 'OPEN SHOP'
+                    : 'SHOP'
+                  : b.kind === 'factory'
+                    ? 'WORKS'
+                    : undefined,
           });
           shell.group.position.set(wx, walkY, wz);
           shell.group.rotation.y = lyaw;
           plotBuildRoot.add(shell.group);
           plotBuildingCols.push(...rotateOffsetColliders(shell.colliders, wx, walkY, wz, lyaw));
+          // Staffed retail → buy interact
+          if (b.kind === 'retail' && p.hasRetailShop && p.retailOperatorId) {
+            const ring = new THREE.Mesh(
+              new THREE.TorusGeometry(0.7, 0.06, 6, 16),
+              new THREE.MeshStandardMaterial({
+                color: 0x66ccff,
+                emissive: 0x226688,
+                emissiveIntensity: 0.65,
+              }),
+            );
+            ring.rotation.x = Math.PI / 2;
+            ring.position.set(wx, walkY + 0.15, wz + 1.4);
+            plotBuildRoot.add(ring);
+            const shopIt: CityInteract = {
+              id: `plot_shop_${p.id}_${bi}`,
+              kind: 'plot_shop',
+              position: new THREE.Vector3(wx, walkY + 1.0, wz + 1.2),
+              radius: 3.6,
+              mesh: ring,
+              label: p.occupancyLabel
+                ? `Buy · ${p.occupancyLabel}`
+                : 'Buy from shop',
+              districtId: p.districtId,
+              plotId: p.id,
+            };
+            interactables.push(shopIt);
+          }
         } else if (b.kind === 'garden') {
           // Outer bed ring (plot garden footprint)
           const soil = new THREE.Mesh(
