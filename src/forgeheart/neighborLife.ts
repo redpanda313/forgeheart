@@ -19,7 +19,9 @@ export type DramaKind =
   | 'workplace_fight'
   | 'lonely'
   | 'expansion_envy'
-  | 'tax_warning';
+  | 'tax_warning'
+  /** Lost home after rent/livelihood failure — still talkable/hireable (Layer M) */
+  | 'homeless';
 
 export type RentPolicy = 'cheap' | 'fair' | 'predatory';
 
@@ -75,17 +77,53 @@ export interface NeighborState {
   /** Linked WorkerState id if hired onto crew */
   hiredAsWorkerId: string | null;
   known: boolean;
-  /** Left after predatory rent */
+  /** Left after predatory rent (or pad empty); homeless still interactable */
   vacated: boolean;
   giftsGiven: number;
   /** Brass paid toward their debt via gifts (partial) */
   debtPaidToward: number;
+  /**
+   * Layer M — lost home, wanders city. Interactable for hire/gift/clear debt.
+   * Distinct from vacated-only (predatory leave with no rescue loop).
+   */
+  homeless?: boolean;
+  /** Livelihood fail counter toward homeless (NPC wages/rent stress) */
+  livelihoodFails?: number;
+  /** Wall-clock ms of last talk/learn affinity grant (rate limit) */
+  lastTalkAffinityMs?: number;
+  /** Wall-clock ms of last meaningful gift affinity grant */
+  lastGiftAffinityMs?: number;
+  /**
+   * Fiction: NPC runs a small stand in home district (same sales pipeline lite).
+   * Closed when homeless or livelihood failure closes shop.
+   */
+  vendorOpen?: boolean;
+  /** Soft wages earned from fictional stand (reduces fail pressure) */
+  vendorEarned?: number;
+}
+
+/**
+ * Prospective tenant offer on a vacant player-owned home (Layer M + RE).
+ * NPC proposes a rent tier; player accepts or rejects.
+ */
+export interface TenantOffer {
+  id: string;
+  /** Neighbor id applying for housing */
+  applicantId: string;
+  /** neighbor_pad = ring/homeowner pad key (neighbor id); plot = plaza plot id */
+  homeKind: 'neighbor_pad' | 'plot';
+  homeKey: string;
+  offeredPolicy: RentPolicy;
+  offeredRent: number;
+  pitch: string;
 }
 
 export interface NeighborLifeState {
   neighbors: NeighborState[];
   /** City clock ticks since last rent collection */
   rentTickAcc: number;
+  /** Open applications for vacant player homes */
+  pendingTenantOffers: TenantOffer[];
 }
 
 export const LANDLORDS: LandlordDef[] = [
@@ -127,6 +165,10 @@ export const NEIGHBOR_RING_DEFS: NeighborDef[] = [
       behind_on_rent: [
         'Mira Coil wants twelve hundred brass by week’s end or I’m out on the ring walk.',
         'I can still work — I just can’t float rent and food. If you know a soft landlord…',
+      ],
+      homeless: [
+        'Pad’s padlocked. I’m under the wind lanes — hire me or clear Mira and I can stand again.',
+        'Market runner without a roof. Still know every stall route if you’ve got a crew slot.',
       ],
       none: ['Things are quiet for once. Thanks for looking in.'],
     },
@@ -180,6 +222,10 @@ export const NEIGHBOR_RING_DEFS: NeighborDef[] = [
       ],
       behind_on_rent: [
         'Dredge doesn’t joke. Sixty-five hundred brass or the pad padlocks.',
+      ],
+      homeless: [
+        'Dredge took the pad. I’m a yard fitter on the street — hire me before the cold does.',
+        'No roof, full toolkit in my head. Clear the debt or put me on a bay board.',
       ],
       expansion_envy: [
         'You keep growing the bay. Some of us are stuck on the same square of deck.',
@@ -396,6 +442,10 @@ export function makePlazaHomeownerDef(
       sick_relative: [
         `Family’s rough this week. Brass for medicine would mean more than small talk.`,
       ],
+      homeless: [
+        `Pad’s gone on ${meta.name}. I’m on the wind lanes now — hire or gift if you’ve got a heart.`,
+        `No roof. Still got skill. Clear the debt or put me on crew and I’ll stand again.`,
+      ],
       tax_warning: [
         `City Lease Office sent a notice. ${debtStr ? debtStr + ' brass' : 'Coin'} or they seize the pad.`,
       ],
@@ -439,6 +489,8 @@ export function dramaLabel(d: DramaKind): string {
       return 'Wants more room';
     case 'tax_warning':
       return 'Tax warning';
+    case 'homeless':
+      return 'Homeless · needs help';
     default:
       return 'No drama';
   }
@@ -448,6 +500,7 @@ export function emptyNeighborLife(): NeighborLifeState {
   return {
     neighbors: NEIGHBOR_DEFS.map(seedNeighborState),
     rentTickAcc: 0,
+    pendingTenantOffers: [],
   };
 }
 
@@ -484,6 +537,16 @@ function seedNeighborState(def: NeighborDef): NeighborState {
   if (def.id === 'neighbor_pip') {
     drama = 'behind_on_rent';
   }
+  // Market-role jobs start with a small open stand fiction (Layer M wages)
+  const job = def.jobLabel.toLowerCase();
+  const vendorish =
+    job.includes('stall') ||
+    job.includes('market') ||
+    job.includes('broker') ||
+    job.includes('clerk') ||
+    job.includes('keeper') ||
+    job.includes('runner') ||
+    job.includes('host');
   return {
     id: def.id,
     affinity: 8,
@@ -498,6 +561,12 @@ function seedNeighborState(def: NeighborDef): NeighborState {
     vacated: false,
     giftsGiven: 0,
     debtPaidToward: 0,
+    homeless: false,
+    livelihoodFails: 0,
+    lastTalkAffinityMs: 0,
+    lastGiftAffinityMs: 0,
+    vendorOpen: vendorish && drama !== 'homeless',
+    vendorEarned: 0,
   };
 }
 
@@ -528,6 +597,7 @@ export function ensureNeighborLife(life: NeighborLifeState | null | undefined): 
     }
   }
   life.rentTickAcc = typeof life.rentTickAcc === 'number' ? life.rentTickAcc : 0;
+  if (!Array.isArray(life.pendingTenantOffers)) life.pendingTenantOffers = [];
   return life;
 }
 
@@ -543,6 +613,7 @@ export function neighborStatusLine(n: NeighborState): string {
     `Affinity ${Math.round(n.affinity)}`,
     dramaLabel(n.drama),
   ];
+  if (n.homeless) bits.push('Wandering · no pad');
   if (n.debt && n.debt.amount > 0) {
     bits.push(`Debt ${n.debt.amount}b → ${n.debt.landlordName}`);
   }
@@ -554,15 +625,25 @@ export function neighborStatusLine(n: NeighborState): string {
     );
   }
   if (n.hiredAsWorkerId) bits.push('On your crew');
-  if (n.vacated) bits.push('Vacated');
+  if (n.vendorOpen) bits.push('Stand open');
+  else if (n.vendorOpen === false && (n.vendorEarned ?? 0) > 0) bits.push('Stand closed');
+  if (n.vacated && !n.homeless) bits.push('Vacated');
   return bits.join(' · ');
 }
 
 export function neighborInteractLabel(n: NeighborState, name: string): string {
+  if (n.homeless) return `${name} · homeless · help?`;
   if (n.vacated) return `${name} (vacant pad)`;
   if (n.drama !== 'none') return `${name} · ${dramaLabel(n.drama)}`;
   if (n.debt && n.debt.amount > 0) return `${name} · debt ${n.debt.amount}b`;
   return `Talk to ${name}`;
+}
+
+/** True when the person is still a social target (not a pure empty pad). */
+export function neighborIsTalkable(n: NeighborState): boolean {
+  if (n.homeless) return true;
+  if (n.hiredAsWorkerId) return true;
+  return !n.vacated;
 }
 
 /** Goods useful as neighbor gifts (broader than romance) */
@@ -586,6 +667,15 @@ export function neighborLifeToSave(life: NeighborLifeState) {
   const L = ensureNeighborLife(life);
   return {
     rentTickAcc: L.rentTickAcc,
+    pendingTenantOffers: (L.pendingTenantOffers ?? []).map((o) => ({
+      id: o.id,
+      applicantId: o.applicantId,
+      homeKind: o.homeKind,
+      homeKey: o.homeKey,
+      offeredPolicy: o.offeredPolicy,
+      offeredRent: o.offeredRent,
+      pitch: o.pitch,
+    })),
     neighbors: L.neighbors.map((n) => ({
       id: n.id,
       affinity: n.affinity,
@@ -607,6 +697,12 @@ export function neighborLifeToSave(life: NeighborLifeState) {
       vacated: n.vacated,
       giftsGiven: n.giftsGiven,
       debtPaidToward: n.debtPaidToward,
+      homeless: !!n.homeless,
+      livelihoodFails: n.livelihoodFails ?? 0,
+      lastTalkAffinityMs: n.lastTalkAffinityMs ?? 0,
+      lastGiftAffinityMs: n.lastGiftAffinityMs ?? 0,
+      vendorOpen: n.vendorOpen !== false,
+      vendorEarned: n.vendorEarned ?? 0,
     })),
   };
 }
@@ -650,8 +746,41 @@ export function neighborLifeFromSave(raw: unknown): NeighborLifeState {
     n.vacated = !!s.vacated;
     n.giftsGiven = typeof s.giftsGiven === 'number' ? s.giftsGiven : 0;
     n.debtPaidToward = typeof s.debtPaidToward === 'number' ? s.debtPaidToward : 0;
+    n.homeless = !!s.homeless;
+    n.livelihoodFails = typeof s.livelihoodFails === 'number' ? s.livelihoodFails : 0;
+    n.lastTalkAffinityMs =
+      typeof s.lastTalkAffinityMs === 'number' ? s.lastTalkAffinityMs : 0;
+    n.lastGiftAffinityMs =
+      typeof s.lastGiftAffinityMs === 'number' ? s.lastGiftAffinityMs : 0;
+    n.vendorOpen = s.vendorOpen !== false && !n.homeless;
+    n.vendorEarned = typeof s.vendorEarned === 'number' ? s.vendorEarned : 0;
+    if (n.homeless) {
+      n.drama = 'homeless';
+      n.vacated = true;
+      n.vendorOpen = false;
+    }
   }
   base.rentTickAcc = typeof o.rentTickAcc === 'number' ? o.rentTickAcc : 0;
+  base.pendingTenantOffers = [];
+  if (Array.isArray(o.pendingTenantOffers)) {
+    for (const raw of o.pendingTenantOffers as Record<string, unknown>[]) {
+      if (!raw || typeof raw.applicantId !== 'string' || typeof raw.homeKey !== 'string') {
+        continue;
+      }
+      const pol = raw.offeredPolicy;
+      const offeredPolicy: RentPolicy =
+        pol === 'cheap' || pol === 'fair' || pol === 'predatory' ? pol : 'fair';
+      base.pendingTenantOffers.push({
+        id: typeof raw.id === 'string' ? raw.id : `offer_${raw.applicantId}_${raw.homeKey}`,
+        applicantId: raw.applicantId,
+        homeKind: raw.homeKind === 'plot' ? 'plot' : 'neighbor_pad',
+        homeKey: raw.homeKey,
+        offeredPolicy,
+        offeredRent: typeof raw.offeredRent === 'number' ? raw.offeredRent : 0,
+        pitch: typeof raw.pitch === 'string' ? raw.pitch : 'Looking for a pad.',
+      });
+    }
+  }
   return base;
 }
 

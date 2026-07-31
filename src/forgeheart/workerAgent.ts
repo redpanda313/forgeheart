@@ -209,7 +209,21 @@ export class WorkerAgent {
 
     // Built-in: queue legs; work only on action keys (not pure bay transit)
     const def = JOB_DEFS.find((j) => j.id === w.job);
-    const keys = (def?.route ?? ['bay']) as HubWaypointKey[];
+    let keys = (def?.route ?? ['bay']) as HubWaypointKey[];
+    // Empire harvest: prefer site-specific reef waypoint when present
+    if (
+      (w.job === 'harvest' || w.job === 'pick_flowers') &&
+      w.harvestSiteId &&
+      waypoints[`reef_${w.harvestSiteId}`]
+    ) {
+      const siteKey =
+        w.job === 'pick_flowers' && waypoints[`flowers_${w.harvestSiteId}`]
+          ? `flowers_${w.harvestSiteId}`
+          : w.job === 'pick_flowers'
+            ? 'flowers'
+            : `reef_${w.harvestSiteId}`;
+      keys = ['bay', siteKey, 'bay'];
+    }
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i]!;
       const isAction = i > 0 && i < keys.length - 1;
@@ -229,7 +243,16 @@ export class WorkerAgent {
       this.assignSig = ''; // force repath next tick
       return;
     }
-    this.path = nav.findPath(this.mesh.position, waypoints[leg.key]);
+    const dest =
+      waypoints[leg.key] ??
+      waypoints.bay ??
+      waypoints.market ??
+      this.mesh.position.clone();
+    this.path = nav.findPath(this.mesh.position, dest);
+    // Preserve deck height from waypoints (mega city plazas sit above y=0)
+    const destY = dest.y;
+    for (const p of this.path) p.y = destY;
+    this.mesh.position.y = destY;
     this.pathIdx = 0;
     this.pendingWork = leg.work ?? null;
     this.phase = 'walk';
@@ -345,7 +368,16 @@ export class WorkerAgent {
         this.startNextLeg(waypoints, nav);
         return null;
       }
-      const speed = workerMoveSpeed(w);
+      // Cruise between distant plazas so empire routes finish in seconds, not minutes
+      let speed = workerMoveSpeed(w);
+      const remaining = this.mesh.position.distanceTo(target);
+      let pathLeft = remaining;
+      for (let i = this.pathIdx + 1; i < this.path.length; i++) {
+        pathLeft += this.path[i - 1]!.distanceTo(this.path[i]!);
+      }
+      if (pathLeft > 28) {
+        speed = Math.min(36, speed * (1.2 + pathLeft / 55));
+      }
       const before = this.mesh.position.clone();
       const arrived = this.stepToward(target, speed * dt, nav);
       // Stuck recovery — repath if barely moved while walking
@@ -425,9 +457,12 @@ export class WorkerAgent {
     const dx = target.x - pos.x;
     const dz = target.z - pos.z;
     const dist = Math.hypot(dx, dz);
-    if (dist < 0.4) {
+    // Larger arrival radius for long sky hops
+    const arriveR = dist > 40 ? 2.2 : 0.55;
+    if (dist < arriveR) {
       pos.x = target.x;
       pos.z = target.z;
+      if (typeof target.y === 'number') pos.y = target.y;
       return true;
     }
     const nx = dx / dist;
@@ -453,6 +488,10 @@ export class WorkerAgent {
 
     pos.x = nextX;
     pos.z = nextZ;
+    // Lerp deck height toward target (plaza Y)
+    if (typeof target.y === 'number' && Math.abs(target.y - pos.y) > 0.05) {
+      pos.y += Math.sign(target.y - pos.y) * Math.min(Math.abs(target.y - pos.y), step * 0.35);
+    }
     this.mesh.rotation.y = Math.atan2(nx, nz);
     return false;
   }

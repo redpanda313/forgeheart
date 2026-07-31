@@ -199,6 +199,7 @@ import {
   fairInventionAsk,
   productQuality,
   stallDemandInfo,
+  marketDemandForStall,
   resolveStallHaggle,
   notePeakBrass,
   buyApartment,
@@ -227,6 +228,9 @@ import {
   buyNeighborProperty,
   setNeighborRentPolicy,
   listHeldNeighborGifts,
+  listPendingTenantOffers,
+  acceptTenantOffer,
+  rejectTenantOffer,
   getInvNeighbor,
   neighborDef,
   neighborStatusLine,
@@ -614,6 +618,10 @@ export class ForgeHeartGame {
   private softGoalNudgeAcc = 0;
   private workerAgents: WorkerAgent[] = [];
   private navGrid = new NavGrid(1.2, 0.5);
+  /** Mega-city open nav (no hub colliders) so crew can hop plazas */
+  private cityNavGrid = new NavGrid(8, 0.6);
+  private cityWorkerRoot: THREE.Group | null = null;
+  private cityWaypoints: Record<string, THREE.Vector3> = {};
   private activeProgramId: string | null = null;
   private marketBoardPath: THREE.Vector3[] = [];
   private marketBoardPathDist: number[] = [];
@@ -3411,13 +3419,13 @@ export class ForgeHeartGame {
         if (res === 'disabled') {
           this.flash(
             this.megaCityActive
-              ? 'KNOCKED OUT — Hand (1) to fix · E to harvest'
+              ? 'KNOCKED OUT — Hand (1) + Repair Kit · E harvest'
               : 'KNOCKED OUT — eyes dark. Hand reprogram or E scrap',
           );
         } else if (res === 'scrambled') {
           this.flash(
             this.megaCityActive
-              ? 'SCRAMBLE FULL — Hand (1) fix · E harvest parts'
+              ? 'SCRAMBLE FULL — Hand (1) + Repair Kit · E harvest'
               : 'SCRAMBLE FULL — Hand (1) to rewrite while it still walks',
           );
         }
@@ -3438,7 +3446,9 @@ export class ForgeHeartGame {
       }
       this.atkCd = 0.4;
       if (!best) {
-        this.toast('Stand by a scrambled or knocked-out rogue. Hand (1) fixes · E harvests.');
+        this.toast(
+          'Stand by a scrambled/KO rogue. Hand (1) + Repair Kit fixes · E harvests.',
+        );
         return;
       }
       this.fixCityRogue(best);
@@ -4208,6 +4218,7 @@ export class ForgeHeartGame {
       this.scene.remove(this.skyCity.group);
       this.skyCity = null;
     }
+    this.clearCityWorkerAgents();
     this.cityStreamer?.clear();
     this.cityStreamer = null;
     this.spatialGrid = null;
@@ -4452,6 +4463,10 @@ export class ForgeHeartGame {
   }
 
   private rebuildWorkerAgents() {
+    if (this.megaCityActive && this.skyCity) {
+      this.rebuildCityWorkerAgents();
+      return;
+    }
     if (!this.hub) return;
     while (this.hub.workerRoot.children.length) {
       this.hub.workerRoot.remove(this.hub.workerRoot.children[0]!);
@@ -4464,6 +4479,87 @@ export class ForgeHeartGame {
     );
   }
 
+  /** Empire crew: walk/cruise between plazas for assigned jobs & programs. */
+  private rebuildCityWorkerAgents() {
+    if (!this.skyCity || !this.megaCityActive) return;
+    if (!this.cityWorkerRoot) {
+      this.cityWorkerRoot = new THREE.Group();
+      this.cityWorkerRoot.name = 'CityCrewWorkers';
+      this.scene.add(this.cityWorkerRoot);
+    }
+    while (this.cityWorkerRoot.children.length) {
+      this.cityWorkerRoot.remove(this.cityWorkerRoot.children[0]!);
+    }
+    this.cityWaypoints = this.buildCityWorkerWaypoints();
+    this.cityNavGrid.rebuild(
+      [],
+      { minX: -900, maxX: 900, minZ: -900, maxZ: 900 },
+    );
+    this.workerAgents = createWorkerAgents(
+      this.inv,
+      this.cityWaypoints,
+      this.cityWorkerRoot,
+      this.cityNavGrid,
+    );
+  }
+
+  private buildCityWorkerWaypoints(): Record<string, THREE.Vector3> {
+    const sky = this.skyCity!;
+    const y = sky.apartmentSpawn?.y ?? 1.75;
+    const wps: Record<string, THREE.Vector3> = {};
+    const put = (key: string, x: number, z: number, yy = y) => {
+      wps[key] = new THREE.Vector3(x, yy, z);
+    };
+    // Bay / craft HQ = industrial workshop
+    put('bay', sky.industrial.x + 6, sky.industrial.z + 4, y);
+    put('craft', sky.industrial.x - 2, sky.industrial.z + 2, y);
+    put('market', sky.grandMarket.x, sky.grandMarket.z, y);
+    put('reef', sky.harvestSpot.x, sky.harvestSpot.z, y);
+    put('flowers', sky.residentialPlaza.x + 8, sky.residentialPlaza.z - 6, y);
+    put('repair', sky.residentialPlaza.x - 10, sky.residentialPlaza.z + 8, y);
+    put('stall', sky.grandMarket.x + 12, sky.grandMarket.z, y);
+    put('broker', sky.grandMarket.x - 10, sky.grandMarket.z + 8, y);
+    // Per-district harvest / flowers / stalls from interactables
+    for (const it of sky.interactables) {
+      const py = it.position.y || y;
+      if (it.kind === 'harvest' && it.districtId) {
+        put(`reef_${it.districtId}`, it.position.x, it.position.z, py);
+      }
+      if (it.kind === 'flower_pick' && it.districtId) {
+        put(`flowers_${it.districtId}`, it.position.x, it.position.z, py);
+      }
+      if (it.kind === 'city_stall' && it.districtId) {
+        put(`stall_${it.districtId}`, it.position.x, it.position.z, py);
+      }
+      if (it.kind === 'broker') {
+        put('broker', it.position.x, it.position.z, py);
+      }
+      if (it.kind === 'repair_job') {
+        put('repair', it.position.x, it.position.z, py);
+      }
+      if (it.kind === 'craft_bench') {
+        put('craft', it.position.x, it.position.z, py);
+      }
+      if (it.kind === 'hire_board' || it.kind === 'workshop_chest') {
+        put('bay', it.position.x, it.position.z, py);
+      }
+    }
+    // District centers as fallbacks
+    for (const d of CITY_DISTRICTS) {
+      if (!wps[`reef_${d.id}`]) put(`reef_${d.id}`, d.x + 15, d.z + 10, y);
+      if (!wps[`stall_${d.id}`]) put(`stall_${d.id}`, d.x - 8, d.z + 6, y);
+    }
+    return wps;
+  }
+
+  private clearCityWorkerAgents() {
+    if (this.cityWorkerRoot) {
+      this.scene.remove(this.cityWorkerRoot);
+      this.cityWorkerRoot = null;
+    }
+    if (this.megaCityActive) this.workerAgents = [];
+  }
+
   private syncWorkerAgentsLoadout() {
     for (const a of this.workerAgents) {
       const w = this.inv.workers.find((x) => x.id === a.workerId);
@@ -4471,6 +4567,11 @@ export class ForgeHeartGame {
     }
     if (this.workerAgents.length !== this.inv.workers.length) {
       this.rebuildWorkerAgents();
+    } else if (this.megaCityActive && this.skyCity) {
+      this.cityWaypoints = this.buildCityWorkerWaypoints();
+      for (const a of this.workerAgents) {
+        a.repath(this.inv, this.cityWaypoints, this.cityNavGrid);
+      }
     } else if (this.hub) {
       for (const a of this.workerAgents) {
         a.repath(this.inv, this.hub.waypoints, this.navGrid);
@@ -4803,9 +4904,24 @@ export class ForgeHeartGame {
       const r = tickBayUpkeep(this.inv);
       this.handleUpkeepResult(r);
       const rent = tickAllLandlordRents(this.inv);
-      if (rent.collected > 0 || rent.left.length) {
-        for (const m of rent.msgs) this.toast(m, rent.left.length ? 5 : 2.5);
-        if (rent.left.length) {
+      const lifeHit =
+        (rent.homelessNew && rent.homelessNew.length > 0) ||
+        rent.msgs.some(
+          (m) =>
+            m.includes('homeless') ||
+            m.includes('stand closed') ||
+            m.includes('lost their pad') ||
+            m.includes('offers') ||
+            m.includes('seeks a pad') ||
+            m.includes('wants to return'),
+        );
+      if (rent.collected > 0 || rent.left.length || lifeHit || rent.msgs.length) {
+        for (const m of rent.msgs) {
+          const critical =
+            m.includes('homeless') || m.includes('lost their pad') || rent.left.length > 0;
+          this.toast(m, critical ? 5.5 : 2.5, critical ? { critical: true } : undefined);
+        }
+        if (rent.left.length || (rent.homelessNew && rent.homelessNew.length)) {
           this.objective = this.megaCityObjective();
         }
         this.syncPlotOwnershipVisuals();
@@ -4835,7 +4951,7 @@ export class ForgeHeartGame {
       this.softGoalNudgeAcc = 0;
       this.nudgeActiveSoftGoal();
     }
-    // Multi-plaza retail + training stall
+    // Multi-plaza retail + training stall (Layer M customer sim)
     this.stallAcc += dt;
     if (this.stallAcc >= STALL_INTERVAL) {
       this.stallAcc = 0;
@@ -4843,30 +4959,38 @@ export class ForgeHeartGame {
       if (r.haggle && r.msg) {
         this.toast(r.msg, 4);
         if (this.stallOpen) this.fillStallPanel();
-      } else if (r.ok && r.msg) this.toast(r.msg, 2.2);
-      else if (r.msg && Math.random() < 0.25) this.toast(r.msg, 2);
+      } else if (r.ok && r.msg) {
+        this.toast(r.msg, 2.6);
+        if (this.stallOpen) this.fillStallPanel();
+      } else if (r.msg && Math.random() < 0.25) this.toast(r.msg, 2);
       this.brass = this.inv.brass;
       this.syncEconomyHud();
       writeSlot(this.activeSlot, this.buildSaveData());
     }
 
-    // Empire crew works without hub nav — harvest/craft/stock programs still advance
+    // Empire crew: visual agents walk jobs; fallback passive tick only if no agents
     if (this.inv.workers.length > 0 && !this.board?.mounted) {
-      this.cityWorkerAcc += dt;
-      if (this.cityWorkerAcc >= 16) {
-        this.cityWorkerAcc = 0;
-        const wr = tickAllPassiveWorkers(this.inv);
-        if (wr.brassDelta) this.brass = this.inv.brass;
-        if (wr.msgs.length && Math.random() < 0.55) {
-          this.toast(wr.msgs[wr.msgs.length - 1]!, 2.2);
+      if (this.workerAgents.length > 0) {
+        this.tickWorkers(dt);
+      } else {
+        this.cityWorkerAcc += dt;
+        if (this.cityWorkerAcc >= 16) {
+          this.cityWorkerAcc = 0;
+          const wr = tickAllPassiveWorkers(this.inv);
+          if (wr.brassDelta) this.brass = this.inv.brass;
+          if (wr.msgs.length && Math.random() < 0.55) {
+            this.toast(wr.msgs[wr.msgs.length - 1]!, 2.2);
+          }
+          this.syncEconomyHud();
+          writeSlot(this.activeSlot, this.buildSaveData());
         }
-        this.syncEconomyHud();
-        writeSlot(this.activeSlot, this.buildSaveData());
       }
     }
 
     if (this.board?.mounted) {
       this.tickMarketBoard(dt);
+      // Crew keeps working while you board between plazas
+      if (this.workerAgents.length > 0) this.tickWorkers(dt);
       this.syncEconomyHud();
       this.audio.setWind(0.35 + this.board.speedNorm * 0.4);
       return;
@@ -6879,7 +7003,13 @@ export class ForgeHeartGame {
     // First open = chat once so "meet neighbor" goal advances
     const n = getInvNeighbor(this.inv, npcId);
     if (n && !n.known) {
-      const r = chatNeighbor(this.inv, npcId);
+      const storyHint = this.backstory
+        ? `${this.backstory.companionName} engineer chassis crew`
+        : 'engineer companion chassis crew';
+      const r = chatNeighbor(this.inv, npcId, {
+        nowMs: Date.now(),
+        playerStoryHint: storyHint,
+      });
       this.neighborLog(r.msg);
     }
     this.fillNeighborPanel();
@@ -6926,12 +7056,13 @@ export class ForgeHeartGame {
       const plazaBit = def.id.startsWith('homeowner_')
         ? ` · plaza home on ${def.homeDistrictId.replace(/_/g, ' ')}`
         : ' · residential ring';
+      const homeBit = n.homeless ? ' · HOMELESS wanderer' : plazaBit;
       sub.textContent =
         this.neighborView === 'gift'
-          ? 'Gift brass or goods from your pack'
+          ? 'Gift brass or goods from your pack (affinity ~30s cool)'
           : this.neighborView === 'buy'
             ? 'Buy their pad · optional tenant rent'
-            : `${def.jobLabel}${plazaBit} (neighbor · not romance)`;
+            : `${def.jobLabel}${homeBit} (neighbor · talk affinity ~60s cool)`;
     }
     if (status) status.textContent = neighborStatusLine(n);
 
@@ -6962,19 +7093,19 @@ export class ForgeHeartGame {
 
     if (this.neighborView === 'gift') {
       addBtn('Gift 100 brass', () => {
-        const r = giftNeighborBrass(this.inv, id, 100);
+        const r = giftNeighborBrass(this.inv, id, 100, { nowMs: Date.now() });
         after(r.msg);
         if (r.ok) this.audio.playPickup();
       });
       addBtn('Gift 500 brass (strong help)', () => {
-        const r = giftNeighborBrass(this.inv, id, 500);
+        const r = giftNeighborBrass(this.inv, id, 500, { nowMs: Date.now() });
         after(r.msg);
         if (r.ok) this.audio.playPickup();
       });
       if (n.debt && n.debt.amount > 0) {
         const due = n.debt.amount;
         addBtn(`Gift ${due.toLocaleString()}b (full remaining debt)`, () => {
-          const r = giftNeighborBrass(this.inv, id, due);
+          const r = giftNeighborBrass(this.inv, id, due, { nowMs: Date.now() });
           after(r.msg);
           if (r.ok) this.audio.playPickup();
         });
@@ -6989,7 +7120,7 @@ export class ForgeHeartGame {
       }
       for (const g of held) {
         addBtn(`${COMMODITIES[g].name} ×${this.inv.items[g] ?? 0}`, () => {
-          const r = giftNeighborGoods(this.inv, id, g);
+          const r = giftNeighborGoods(this.inv, id, g, { nowMs: Date.now() });
           after(r.msg);
           if (r.ok) this.audio.playPickup();
         });
@@ -7078,12 +7209,15 @@ export class ForgeHeartGame {
     }
 
     // Menu
+    const storyHint = this.backstory
+      ? `${this.backstory.companionName} ${this.backstory.summary ?? ''} engineer chassis`
+      : 'engineer companion chassis crew';
     addBtn('Chat', () => {
-      const r = chatNeighbor(this.inv, id);
+      const r = chatNeighbor(this.inv, id, { nowMs: Date.now(), playerStoryHint: storyHint });
       after(r.msg);
     });
     addBtn('Learn situation', () => {
-      const r = learnNeighbor(this.inv, id);
+      const r = learnNeighbor(this.inv, id, { nowMs: Date.now() });
       after(r.msg);
     });
     addBtn('Gift brass / goods…', () => {
@@ -7098,7 +7232,11 @@ export class ForgeHeartGame {
       });
     }
     addBtn(
-      n.hiredAsWorkerId ? 'Already on your crew' : 'Offer hire (crew slot)',
+      n.hiredAsWorkerId
+        ? 'Already on your crew'
+        : n.homeless
+          ? 'Hire off the street (crew slot)'
+          : 'Offer hire (crew slot)',
       () => {
         const r = hireNeighbor(this.inv, id);
         after(r.msg);
@@ -7123,6 +7261,59 @@ export class ForgeHeartGame {
       addBtn('Rent → cheap', () => setPol('cheap'));
       addBtn('Rent → fair', () => setPol('fair'));
       addBtn('Rent → predatory', () => setPol('predatory'), { danger: true });
+    } else if (n.homeOwner === 'player' && (n.vacated || !n.isPlayerTenant)) {
+      // Vacant pad you own — show return/rent offers
+      const offers = listPendingTenantOffers(this.inv).filter(
+        (o) => o.homeKind === 'neighbor_pad' && o.homeKey === id,
+      );
+      if (offers.length) {
+        const hint = document.createElement('p');
+        hint.className = 'craft-hint';
+        hint.textContent = 'Rent offers for this vacant pad:';
+        actions.appendChild(hint);
+        for (const o of offers) {
+          addBtn(
+            `Accept · ${o.offeredPolicy} ${o.offeredRent.toLocaleString()}b/tick`,
+            () => {
+              const r = acceptTenantOffer(this.inv, o.id);
+              after(r.msg);
+              if (r.ok) {
+                this.audio.playPickup();
+                this.syncPlotOwnershipVisuals();
+              }
+            },
+          );
+          addBtn(`Decline offer`, () => {
+            const r = rejectTenantOffer(this.inv, o.id);
+            after(r.msg);
+          });
+        }
+      } else {
+        const hint = document.createElement('p');
+        hint.className = 'craft-hint';
+        hint.textContent =
+          'Pad vacant — seekers may offer rent on the next rent tick. Check back after upkeep.';
+        actions.appendChild(hint);
+      }
+    }
+    // Homeless / seeking: show any offers they made elsewhere
+    if (n.homeless || (n.vacated && !n.isPlayerTenant)) {
+      const theirs = listPendingTenantOffers(this.inv).filter(
+        (o) => o.applicantId === id,
+      );
+      for (const o of theirs) {
+        addBtn(
+          `Accept their offer · ${o.offeredPolicy} ${o.offeredRent.toLocaleString()}b/tick`,
+          () => {
+            const r = acceptTenantOffer(this.inv, o.id);
+            after(r.msg);
+            if (r.ok) {
+              this.audio.playPickup();
+              this.syncPlotOwnershipVisuals();
+            }
+          },
+        );
+      }
     }
     addBtn('Leave', () => this.closeNeighborPanel());
   }
@@ -7912,6 +8103,7 @@ export class ForgeHeartGame {
     const plotsEl = document.getElementById('lease-plots');
     if (!distEl || !plotsEl) return;
     const owned = playerOwnedPlotCount(this.inv);
+    const offers = listPendingTenantOffers(this.inv);
     if (status) {
       const land = plotOwnershipCostsDue(this.inv);
       const landBit =
@@ -7920,7 +8112,8 @@ export class ForgeHeartGame {
             ? ` · land tax ~${land.total}b/tick${land.emptyPlots ? ` (${land.emptyPlots} empty)` : ''}`
             : ' · land tax 0'
           : '';
-      status.textContent = `You own ${owned} plot(s) · Brass ${this.inv.brass.toLocaleString()}${landBit} · ${formatEmpireStandingLine(this.inv)}`;
+      const offerBit = offers.length ? ` · ${offers.length} rent offer(s)` : '';
+      status.textContent = `You own ${owned} plot(s) · Brass ${this.inv.brass.toLocaleString()}${landBit}${offerBit} · ${formatEmpireStandingLine(this.inv)}`;
     }
 
     distEl.innerHTML = '';
@@ -7941,6 +8134,55 @@ export class ForgeHeartGame {
     }
 
     plotsEl.innerHTML = '';
+    // Pending NPC rent offers (return / new tenants on vacant homes)
+    if (offers.length) {
+      const head = document.createElement('p');
+      head.className = 'craft-hint';
+      head.textContent = 'NPC rent offers (accept to re-house vacant pads):';
+      plotsEl.appendChild(head);
+      for (const o of offers) {
+        const app = neighborDef(o.applicantId);
+        const row = document.createElement('div');
+        row.className = 'stall-price-card';
+        row.style.marginBottom = '0.4rem';
+        row.innerHTML = `<div class="stall-price-head"><strong>${app?.name ?? o.applicantId}</strong><span>${o.offeredPolicy} · ${o.offeredRent.toLocaleString()}b/tick</span></div><p class="craft-hint">${o.pitch}</p>`;
+        const btns = document.createElement('div');
+        btns.className = 'romance-actions';
+        const acc = document.createElement('button');
+        acc.type = 'button';
+        acc.className = 'romance-btn';
+        acc.textContent = 'Accept rent offer';
+        acc.addEventListener('click', () => {
+          const r = acceptTenantOffer(this.inv, o.id);
+          if (log) log.textContent = r.msg;
+          this.toast(r.msg, 4);
+          if (r.ok) {
+            this.audio.playPickup();
+            this.brass = this.inv.brass;
+            this.syncPlotOwnershipVisuals();
+            writeSlot(this.activeSlot, this.buildSaveData());
+            this.syncEconomyHud();
+          }
+          this.fillLeaseOffice();
+        });
+        const dec = document.createElement('button');
+        dec.type = 'button';
+        dec.className = 'romance-btn';
+        dec.textContent = 'Decline';
+        dec.addEventListener('click', () => {
+          const r = rejectTenantOffer(this.inv, o.id);
+          if (log) log.textContent = r.msg;
+          this.toast(r.msg, 2.5);
+          writeSlot(this.activeSlot, this.buildSaveData());
+          this.fillLeaseOffice();
+        });
+        btns.appendChild(acc);
+        btns.appendChild(dec);
+        row.appendChild(btns);
+        plotsEl.appendChild(row);
+      }
+    }
+
     const did = this.leaseDistrictFilter ?? 'residential';
     const dist = districtById(did);
     const list = plotsInDistrict(this.inv.plazaPlots, did).slice().sort((a, b) => {
@@ -9042,16 +9284,21 @@ export class ForgeHeartGame {
   }
 
   private tickWorkers(dt: number) {
-    if (!this.hub) return;
+    const wps =
+      this.megaCityActive && Object.keys(this.cityWaypoints).length
+        ? this.cityWaypoints
+        : this.hub?.waypoints;
+    const nav = this.megaCityActive ? this.cityNavGrid : this.navGrid;
+    if (!wps || !this.workerAgents.length) return;
     let dirty = false;
-    // Companion idle-follow target = player feet on the market pad
+    // Companion idle-follow target = player feet
     const follow = new THREE.Vector3(
       this.camera.position.x,
-      0,
+      this.megaCityActive ? this.camera.position.y - 1.4 : 0,
       this.camera.position.z,
     );
     for (const a of this.workerAgents) {
-      const r = a.tick(dt, this.inv, this.hub.waypoints, this.navGrid, follow);
+      const r = a.tick(dt, this.inv, wps, nav, follow);
       if (r?.msg) {
         this.toast(r.msg, 2);
         dirty = true;
@@ -9059,8 +9306,9 @@ export class ForgeHeartGame {
     }
     if (dirty) {
       this.brass = this.inv.brass;
-      this.objective = this.skyCityObjective();
-      // Refresh tool/board visuals after wear or job results
+      this.objective = this.megaCityActive
+        ? this.megaCityObjective()
+        : this.skyCityObjective();
       for (const a of this.workerAgents) {
         const w = this.inv.workers.find((x) => x.id === a.workerId);
         if (w) a.syncLoadout(w);
@@ -11549,6 +11797,7 @@ export class ForgeHeartGame {
       this.scene.remove(this.skyCity.group);
       this.skyCity = null;
     }
+    this.clearCityWorkerAgents();
     this.cityStreamer?.clear();
     this.cityStreamer = null;
     this.spatialGrid = null;
@@ -11598,6 +11847,8 @@ export class ForgeHeartGame {
     if (this.bringEliasToRace || this.hadAllyOnce || fromSave?.bringElias) {
       ensureEliasRobotWorker(this.inv, this.companionName());
     }
+    // Visible crew that walk their assigned jobs across plazas
+    this.rebuildCityWorkerAgents();
 
     this.scene.background = new THREE.Color(0x5a7a9a);
     // Fog for scenery; far plane reaches distant plaza beacons (fog-immune)
@@ -12089,6 +12340,10 @@ export class ForgeHeartGame {
     const { stall, label, districtId } = this.getActiveStall();
     const dist = districtId ? districtById(districtId) : null;
     const shops = ownedCityStallCount(this.inv);
+    // Refresh Layer M drivers for HUD even between sale ticks
+    if (stall.owned && stall.open) {
+      marketDemandForStall(this.inv, stall, districtId);
+    }
 
     if (wallet) {
       const dem = stall.lastDemand ?? '—';
@@ -12105,8 +12360,13 @@ export class ForgeHeartGame {
         status.textContent = `HAGGLE · ${COMMODITIES[h.id].name} offer ${h.offer}b (ask ${h.ask}b · fair ${h.fair}b) · ${h.ttl} checks left`;
       } else {
         const bonus = dist ? ` · invent ×${dist.inventBonus}` : '';
+        // M5: legible sales drivers (under/over-serve, standing, décor)
+        const drivers =
+          stall.lastSalesDrivers && stall.lastSalesDrivers.length
+            ? stall.lastSalesDrivers
+            : 'Traffic: open stall · stock + price set demand';
         status.textContent = stall.open
-          ? `OPEN @ ${label} · demand ${stall.lastDemand ?? 'Steady'}${bonus} · stock inventions for premium plazas`
+          ? `OPEN @ ${label} · demand ${stall.lastDemand ?? 'Steady'}${bonus} · ${drivers}`
           : `CLOSED @ ${label} · toggle open when ready`;
       }
     }
@@ -13394,7 +13654,7 @@ export class ForgeHeartGame {
     this.audio.syncPlazaRogueSirens(alarms, focus.x, focus.z);
   }
 
-  /** Hand fix: restore rogue to its owner's job (not a player combat ally). */
+  /** Hand fix: restore rogue to its owner's job (not a player combat ally). Costs 1 Repair Kit. */
   private fixCityRogue(r: RobotUnit) {
     const leash = this.cityRogueLeash.get(r);
     const n = leash?.npc;
@@ -13403,6 +13663,11 @@ export class ForgeHeartGame {
       ownerName: n.owner?.name,
       jobLabel: this.cityJobLabel(n),
     });
+    if (!result.ok) {
+      this.toast(result.msg, 4);
+      this.flash('NEED REPAIR KIT');
+      return;
+    }
     this.brass = this.inv.brass;
     n.rogue = false;
     n.role = 'robot_helper';
@@ -13599,7 +13864,7 @@ export class ForgeHeartGame {
       if (n.rogue) {
         const owner = n.owner?.name ?? 'owner';
         it.label = downed
-          ? `Hand (1) fix → ${owner} · E harvest`
+          ? `Hand (1) fix (needs Repair Kit) → ${owner} · E harvest`
           : `Rogue (${owner}'s ${this.cityJobLabel(n)}) — wrench (2)`;
         const mesh = it.mesh as THREE.Mesh;
         const mat = mesh.material as THREE.MeshStandardMaterial | THREE.MeshStandardMaterial[];
