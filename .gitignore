@@ -10,3 +10,4 @@ data/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+public/mp-api.local.json
