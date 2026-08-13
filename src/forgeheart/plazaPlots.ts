@@ -1155,6 +1155,7 @@ export function plazaPlotsFromSave(
           pol === 'cheap' || pol === 'fair' || pol === 'predatory' ? pol : undefined,
         offeredRent: typeof r.offeredRent === 'number' ? r.offeredRent : undefined,
         pitch: typeof r.pitch === 'string' ? r.pitch : 'Wants to use this pad.',
+        migrantSeed: typeof r.migrantSeed === 'string' ? r.migrantSeed : undefined,
       });
     }
   }

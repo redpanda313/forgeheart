@@ -27,6 +27,20 @@ On rent ticks, vacant **player** builds get **fill offers** (lease office):
 
 Neighbor-pad return offers (earlier Layer M) still appear for vacated ring/plaza homes you own.
 
+## Labor market & housing (v1)
+
+| Concept | Rule |
+|---------|------|
+| **One home per NPC** | Residents do not double-up; new tenants are **spawned migrants** on accept |
+| **Baseline labor** | ~**30** humans hireable before housing matters |
+| **Soft start** | Around **25–30** crew, build apartments or wages rise |
+| **Labor supply** | `30 + housing beds + 0.35× settled tenants` |
+| **Tight market** | Hire cost & human wages scale up to ~×2.4; at cap **cannot hire humans** |
+| **Robots** | Still hire from frames if bay has slots (less housing-bound) |
+| **Accept rent** | Spawns a new named migrant into that home only |
+
+Bay Workers tab shows live labor line. Soft goal: **House the labor market**.
+
 ## Foundry line (factory unlock)
 
 Own any **Factory** plot → craft at board shop:

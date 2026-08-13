@@ -36,11 +36,24 @@ import {
   quoteNeighborPadPrice,
   PREDATORY_LEAVE_CHANCE,
   landlordById,
+  spawnMigrantResident,
   type NeighborLifeState,
   type NeighborState,
   type RentPolicy,
   type TenantOffer,
 } from './neighborLife';
+import {
+  laborMarketFromInv,
+  npcAlreadyHasHome,
+  LABOR_HOUSING_SOFT_START,
+  type LaborMarketSnapshot,
+} from './laborMarket';
+export {
+  laborMarketFromInv,
+  LABOR_HOUSING_SOFT_START,
+  LABOR_BASELINE_POOL,
+  type LaborMarketSnapshot,
+} from './laborMarket';
 import {
   emptyPlazaPlots,
   ensurePlazaPlots,
@@ -2498,6 +2511,16 @@ export const SOFT_GOALS: SoftGoalDef[] = [
     isDone: (inv) => inv.workers.length >= 1,
   },
   {
+    id: 'labor_housing',
+    title: 'House the labor market',
+    hint: `Around ${LABOR_HOUSING_SOFT_START}+ humans · build apartments so migrants arrive and wages ease`,
+    empireOnly: true,
+    isDone: (inv) => {
+      const m = laborMarketFromInv(inv);
+      return m.housing.slots >= 2 || m.humanWorkers < LABOR_HOUSING_SOFT_START - 5;
+    },
+  },
+  {
     id: 'stall',
     title: 'Open a plaza stall',
     hint: 'Lease a district shop · stock shelf · stay open',
@@ -3260,6 +3283,8 @@ export function hireNeighbor(
       msg: `Bay full (${inv.workers.length}/${max}). Expand bay first, then hire ${def.name}.`,
     };
   }
+  const gate = humanHireGate(inv);
+  if (!gate.ok) return { ok: false, msg: gate.msg ?? 'No labor available.' };
   const cost = Math.max(20, Math.floor(hireCost(inv) * 0.85));
   if (inv.brass < cost) {
     return { ok: false, msg: `Need ${cost} brass to hire ${def.name}.` };
@@ -4354,9 +4379,38 @@ export function expandBayCost(fromLevel: number): number {
   return Math.round(150 * Math.pow(1.38, fromLevel - 3));
 }
 
-/** Hire cost rises with crew size */
+/** Hire cost rises with crew size + labor market tightness (housing supply). */
 export function hireCost(inv: InventoryState): number {
-  return LABORER_HIRE_COST + inv.workers.length * 18;
+  const base = LABORER_HIRE_COST + inv.workers.length * 18;
+  const m = laborMarketFromInv(inv);
+  return Math.max(1, Math.round(base * m.hireCostMul));
+}
+
+/** Live labor market snapshot (housing-constrained). */
+export function getLaborMarket(inv: InventoryState): LaborMarketSnapshot {
+  ensureInvPlots(inv);
+  inv.neighborLife = ensureNeighborLife(inv.neighborLife);
+  return laborMarketFromInv(inv);
+}
+
+/** Block / price human hires when labor supply is exhausted. */
+export function humanHireGate(inv: InventoryState): {
+  ok: boolean;
+  msg?: string;
+  market: LaborMarketSnapshot;
+} {
+  const market = getLaborMarket(inv);
+  if (!market.canHireHuman) {
+    return {
+      ok: false,
+      market,
+      msg:
+        `Labor market empty (${market.humanWorkers}/${market.laborSupply} humans). ` +
+        `Build apartments/homes (${market.housing.slots} beds now) so migrants move in, then hire. ` +
+        `Robots still hire if bay slots allow.`,
+    };
+  }
+  return { ok: true, market };
 }
 
 // ——— Bonded storage (per-category stack caps) ———
@@ -4560,6 +4614,11 @@ export function workerWagePerTick(inv: InventoryState, w: WorkerState): number {
     if (p) wage = Math.max(wage, programNodeWage(p.nodes.length) + w.payGrade);
   }
   if (isRobotWorker(w)) wage = Math.max(1, Math.round(wage * ROBOT_WAGE_MUL));
+  else {
+    // Humans feel labor-market pressure (housing scarcity)
+    const m = laborMarketFromInv(inv);
+    wage = Math.max(1, Math.round(wage * m.wageMul));
+  }
   return wage;
 }
 
@@ -5082,9 +5141,15 @@ export function hireLaborer(inv: InventoryState): { ok: boolean; msg: string; wo
       msg: `Bay full (${inv.workers.length}/${max}). Expand bay (unlimited) for more worker slots.`,
     };
   }
+  // Human hire — gated by housing-backed labor supply
+  const gate = humanHireGate(inv);
+  if (!gate.ok) return { ok: false, msg: gate.msg ?? 'No labor available.' };
   const cost = hireCost(inv);
   if (inv.brass < cost) {
-    return { ok: false, msg: `Need ${cost} brass to hire (crew demand rises).` };
+    return {
+      ok: false,
+      msg: `Need ${cost} brass to hire (crew + labor market ×${gate.market.hireCostMul.toFixed(2)}).`,
+    };
   }
   inv.brass -= cost;
   const name = WORKER_NAMES[inv.workers.length % WORKER_NAMES.length]!;
@@ -5103,14 +5168,19 @@ export function hireLaborer(inv: InventoryState): { ok: boolean; msg: string; wo
     harvestSiteId: null,
     harvestMatId: null,
     flowerMatId: null,
+    kind: 'human',
   };
   inv.workers.push(w);
   inv.laborerHired = true;
   applyStanding(inv, 2);
+  const tight =
+    gate.market.tightness >= 0.75
+      ? ` · labor tight (wage ×${gate.market.wageMul.toFixed(2)}; build housing)`
+      : '';
   return {
     ok: true,
     worker: w,
-    msg: `Hired ${name} (−${cost} brass). Raise pay for long programs · expand bay for more crew.`,
+    msg: `Hired ${name} (−${cost} brass)${tight}. ${gate.market.line}`,
   };
 }
 
@@ -9196,13 +9266,14 @@ export function listPendingFillOffers(inv: InventoryState): PlotFillOffer[] {
 
 function freeNpcApplicants(inv: InventoryState): NeighborState[] {
   inv.neighborLife = ensureNeighborLife(inv.neighborLife);
-  // Anyone not already your tenant or on crew can apply (broad pool so offers always appear)
+  ensureInvPlots(inv);
+  // One home per NPC — cannot apply if they already hold a pad
   return inv.neighborLife.neighbors.filter((n) => {
     if (n.hiredAsWorkerId) {
       const still = inv.workers.some((w) => w.id === n.hiredAsWorkerId);
       if (still) return false;
     }
-    if (n.isPlayerTenant && !n.vacated) return false;
+    if (npcAlreadyHasHome(n, inv.plazaPlots, inv.neighborLife.neighbors)) return false;
     return true;
   });
 }
@@ -9259,24 +9330,34 @@ export function ensureFillOfferForPlot(
 
   let offer: PlotFillOffer | null = null;
   if (kind === 'housing') {
-    const app = pickNpcApplicant(inv, true);
-    if (!app) return null;
-    const def = neighborDef(app.id);
+    // Always a new migrant (one home per NPC) — spawn on accept
+    const migrantSeed = `m_${plot.id}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const h = migrantSeed.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+    const first = ['Ash', 'Cora', 'Dax', 'Fern', 'Ivy', 'Kade', 'Nia', 'Pax', 'Remy', 'Sol'][h % 10]!;
+    const last = ['Weld', 'Coil', 'Drift', 'Reed', 'Forge', 'Salt', 'Spire', 'Skiff'][(h >> 3) % 8]!;
+    const applicantName = `${first} ${last}`;
     const pol = defaultHousingOfferPolicy();
     const rent = housingOfferRent(plot.listPrice || 12_000, pol);
     offer = {
-      id: `fill_h_${plot.id}_${app.id}_${Date.now().toString(36)}`,
+      id: `fill_h_${plot.id}_${migrantSeed}`,
       plotId: plot.id,
       kind: 'housing',
-      applicantId: app.id,
+      applicantId: `pending_migrant`,
       applicantKind: 'npc',
-      applicantName: def?.name ?? app.id,
+      applicantName,
       offeredPolicy: pol,
       offeredRent: rent,
-      pitch: `${def?.name ?? 'Someone'} offers ${pol} rent (${rent.toLocaleString()}b/tick) for this home.`,
+      migrantSeed,
+      pitch: `${applicantName} (new migrant) offers ${pol} rent (${rent.toLocaleString()}b/tick) — accepts and moves into this home only.`,
     };
   } else if (kind === 'retail') {
-    const app = pickNpcApplicant(inv, false);
+    // Shopkeepers may already have a home — job is separate from housing
+    let app = pickNpcApplicant(inv, false);
+    if (!app) {
+      inv.neighborLife = ensureNeighborLife(inv.neighborLife);
+      const pool = inv.neighborLife.neighbors.filter((n) => !n.hiredAsWorkerId);
+      app = pool[Math.floor(Math.random() * Math.max(1, pool.length))];
+    }
     if (!app) return null;
     const def = neighborDef(app.id);
     offer = {
@@ -9302,7 +9383,12 @@ export function ensureFillOfferForPlot(
         pitch: `${w.name} (crew) offers to run this factory pad for works brass.`,
       };
     } else {
-      const app = pickNpcApplicant(inv, false);
+      let app = pickNpcApplicant(inv, false);
+      if (!app) {
+        inv.neighborLife = ensureNeighborLife(inv.neighborLife);
+        const pool = inv.neighborLife.neighbors.filter((n) => !n.hiredAsWorkerId);
+        app = pool[Math.floor(Math.random() * Math.max(1, pool.length))];
+      }
       if (!app) return null;
       const def = neighborDef(app.id);
       offer = {
@@ -9439,29 +9525,65 @@ export function acceptFillOffer(
       list.splice(idx, 1);
       return { ok: false, msg: 'Already tenanted.' };
     }
-    const n = getInvNeighbor(inv, o.applicantId);
-    if (!n) {
-      list.splice(idx, 1);
-      return { ok: false, msg: 'Applicant left.' };
-    }
     const pol = o.offeredPolicy ?? 'fair';
+    // Spawn a brand-new resident on accept (default one home only)
+    let tenantId = o.applicantId;
+    let tenantName = o.applicantName;
+    if (o.migrantSeed || o.applicantId === 'pending_migrant') {
+      const spawned = spawnMigrantResident(inv.neighborLife, {
+        districtId: plot.districtId,
+        seed: o.migrantSeed ?? `${plot.id}_${Date.now()}`,
+        basePrice: plot.listPrice || 12_000,
+      });
+      // Prefer offer display name if we generated one
+      if (o.applicantName && o.applicantName.includes(' ')) {
+        spawned.def.name = o.applicantName;
+      }
+      tenantId = spawned.state.id;
+      tenantName = spawned.def.name;
+      spawned.state.homeOwner = 'player';
+      spawned.state.isPlayerTenant = true;
+      spawned.state.rentPolicy = pol;
+      spawned.state.vacated = false;
+      spawned.state.homeless = false;
+      spawned.state.known = true;
+      bumpNeighborAffinity(spawned.state, 10);
+    } else {
+      const n = getInvNeighbor(inv, o.applicantId);
+      if (!n) {
+        list.splice(idx, 1);
+        return { ok: false, msg: 'Applicant left.' };
+      }
+      ensureInvPlots(inv);
+      if (npcAlreadyHasHome(n, inv.plazaPlots, inv.neighborLife.neighbors)) {
+        list.splice(idx, 1);
+        return {
+          ok: false,
+          msg: `${neighborDef(n.id)?.name ?? n.id} already has a home — NPCs keep one pad.`,
+        };
+      }
+      n.homeOwner = 'player';
+      n.isPlayerTenant = true;
+      n.rentPolicy = pol;
+      n.vacated = false;
+      n.homeless = false;
+      if (n.drama === 'homeless') n.drama = 'none';
+      bumpNeighborAffinity(n, 8);
+      tenantName = neighborDef(n.id)?.name ?? o.applicantName;
+    }
     plot.vacant = false;
-    plot.tenantNeighborId = o.applicantId;
+    plot.tenantNeighborId = tenantId;
     plot.rentPolicy = pol;
-    n.homeOwner = 'player';
-    n.isPlayerTenant = true;
-    n.rentPolicy = pol;
-    n.vacated = false;
-    n.homeless = false;
-    if (n.drama === 'homeless') n.drama = 'none';
-    bumpNeighborAffinity(n, 8);
     list.splice(idx, 1);
     inv.plazaPlots.pendingFillOffers = list.filter(
-      (x) => !(x.plotId === o.plotId && x.kind === 'housing') && x.applicantId !== o.applicantId,
+      (x) => !(x.plotId === o.plotId && x.kind === 'housing'),
     );
+    const labor = getLaborMarket(inv);
     return {
       ok: true,
-      msg: `${o.applicantName} moves in · home named after them · ${pol} rent ${o.offeredRent?.toLocaleString() ?? '—'}b/tick.`,
+      msg:
+        `${tenantName} moves in (their only home) · ${pol} rent ${o.offeredRent?.toLocaleString() ?? '—'}b/tick. ` +
+        `Labor supply now ${labor.laborSupply} humans · ${labor.housing.slots} housing beds.`,
     };
   }
 

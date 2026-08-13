@@ -119,6 +119,7 @@ import {
   craftCustomTimes,
   maxCraftCustomTimes,
   hireLaborer,
+  getLaborMarket,
   expandBay,
   sellFrameToBroker,
   completeRepair,
@@ -10575,10 +10576,17 @@ export class ForgeHeartGame {
     }
     if (wrEl) {
       wrEl.innerHTML = '';
+      const labor = getLaborMarket(this.inv);
       if (this.inv.workers.length === 0) {
         wrEl.innerHTML = `<p class="craft-hint">No crew. Hire at the Hire Board (${hireCost(this.inv)}b). Assign tasks in Programs (reefs + programs). Gear & pay here.</p>`;
       }
       const cap = maxWorkersForBay(this.inv.bayLevel);
+      {
+        const laborP = document.createElement('p');
+        laborP.className = 'craft-hint';
+        laborP.textContent = labor.line + (labor.coach ? ` · ${labor.coach}` : '');
+        wrEl.appendChild(laborP);
+      }
       if (this.inv.workers.length > 0) {
         const head = document.createElement('p');
         head.className = 'craft-hint';
@@ -10589,7 +10597,7 @@ export class ForgeHeartGame {
           : this.inv.bayLevel >= TRAINING_MAX_BAY_LEVEL
             ? `bay max L${TRAINING_MAX_BAY_LEVEL} in training`
             : `next expand L${this.inv.bayLevel + 1} · ${expandBayCost(this.inv.bayLevel)}b`;
-        head.textContent = `Status & gear only · ${this.inv.workers.length}/${cap} crew · hire ${hireCost(this.inv)}b · ${expandHint} · assign in Programs`;
+        head.textContent = `Status & gear · ${this.inv.workers.length}/${cap} bay · hire ${hireCost(this.inv)}b · ${expandHint} · assign in Programs`;
         wrEl.appendChild(head);
       }
       for (const w of this.inv.workers) {

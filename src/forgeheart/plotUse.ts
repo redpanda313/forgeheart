@@ -25,6 +25,11 @@ export interface PlotFillOffer {
   offeredPolicy?: RentPolicy;
   offeredRent?: number;
   pitch: string;
+  /**
+   * When set, accepting housing spawns a brand-new migrant NPC (one home only)
+   * instead of reusing an existing resident who already has a pad.
+   */
+  migrantSeed?: string;
 }
 
 export interface PlotUseSnapshot {
@@ -205,6 +210,7 @@ export function pendingOffersFromSave(raw: unknown): PlotFillOffer[] {
         pol === 'cheap' || pol === 'fair' || pol === 'predatory' ? pol : undefined,
       offeredRent: typeof r.offeredRent === 'number' ? r.offeredRent : undefined,
       pitch: typeof r.pitch === 'string' ? r.pitch : 'Wants to use this pad.',
+      migrantSeed: typeof r.migrantSeed === 'string' ? r.migrantSeed : undefined,
     });
   }
   return out;

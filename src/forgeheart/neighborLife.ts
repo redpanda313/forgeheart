@@ -120,6 +120,11 @@ export interface TenantOffer {
 
 export interface NeighborLifeState {
   neighbors: NeighborState[];
+  /**
+   * Procedural residents spawned when player accepts rent (migrants).
+   * Looked up via neighborDef() after registerDynamicNeighborDefs.
+   */
+  dynamicDefs: NeighborDef[];
   /** City clock ticks since last rent collection */
   rentTickAcc: number;
   /** Open applications for vacant player homes */
@@ -465,8 +470,118 @@ export const NEIGHBOR_DEFS: NeighborDef[] = [
   ...PLAZA_HOMEOWNER_DEFS,
 ];
 
+/** Runtime registry for migrant / spawned residents (save-restored). */
+const dynamicNeighborDefs = new Map<string, NeighborDef>();
+
+export function registerDynamicNeighborDef(def: NeighborDef): void {
+  dynamicNeighborDefs.set(def.id, def);
+}
+
+export function clearDynamicNeighborDefs(): void {
+  dynamicNeighborDefs.clear();
+}
+
+export function registerDynamicNeighborDefs(defs: NeighborDef[]): void {
+  for (const d of defs) registerDynamicNeighborDef(d);
+}
+
 export function neighborDef(id: string): NeighborDef | undefined {
-  return NEIGHBOR_DEFS.find((d) => d.id === id);
+  return NEIGHBOR_DEFS.find((d) => d.id === id) ?? dynamicNeighborDefs.get(id);
+}
+
+const MIGRANT_FIRST = [
+  'Ash', 'Bram', 'Cora', 'Dax', 'Elia', 'Fern', 'Grit', 'Hale', 'Ivy', 'Joss',
+  'Kade', 'Lark', 'Moss', 'Nia', 'Orrin', 'Pax', 'Quinn', 'Rook', 'Sage', 'Tess',
+  'Una', 'Vex', 'Wren', 'Yara', 'Zed', 'Nyx', 'Remy', 'Sol',
+];
+const MIGRANT_LAST = [
+  'Weld', 'Pike', 'Coil', 'Drift', 'Voss', 'Reed', 'Thorn', 'Gilt', 'Marsh', 'Crane',
+  'Forge', 'Salt', 'Spire', 'Quill', 'Hearth', 'Lantern', 'Bramble', 'Skiff', 'Aether',
+];
+const MIGRANT_JOBS = [
+  'Dock hand',
+  'Bay fitter',
+  'Market runner',
+  'Board courier',
+  'Yard laborer',
+  'Stall clerk',
+  'Reef hauler',
+  'Wire drawer',
+  'Plaza caretaker',
+];
+
+/**
+ * Create a brand-new resident who will occupy player housing (one home only).
+ * Registered for neighborDef lookup and appended to life.neighbors.
+ */
+export function spawnMigrantResident(
+  life: NeighborLifeState,
+  opts: {
+    districtId: string;
+    seed?: string;
+    basePrice?: number;
+  },
+): { def: NeighborDef; state: NeighborState } {
+  const L = ensureNeighborLife(life);
+  if (!L.dynamicDefs) L.dynamicDefs = [];
+  const seed = opts.seed ?? `mig_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  const h = hashStr(seed);
+  const id = `migrant_${seed.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 24)}`;
+  // Avoid id collision
+  let finalId = id;
+  let n = 0;
+  while (neighborDef(finalId) || L.neighbors.some((x) => x.id === finalId)) {
+    n++;
+    finalId = `${id}_${n}`;
+  }
+  const first = MIGRANT_FIRST[h % MIGRANT_FIRST.length]!;
+  const last = MIGRANT_LAST[(h >> 5) % MIGRANT_LAST.length]!;
+  const job = MIGRANT_JOBS[(h >> 9) % MIGRANT_JOBS.length]!;
+  const def: NeighborDef = {
+    id: finalId,
+    name: `${first} ${last}`,
+    homeDistrictId: opts.districtId,
+    jobLabel: job,
+    startDrama: 'none',
+    startHomeOwner: 'player',
+    basePrice: opts.basePrice ?? 12_000,
+    priceTierLabel: 'Migrant · new pad',
+    chatLines: [
+      'New to this pad — work if you have it, rent if you don’t.',
+      'Housing was the hard part. Hands are ready.',
+      'City grows when people have roofs. I’ll earn my keep.',
+    ],
+    dramaLines: {
+      none: ['Settled enough to sleep. Thank you for the pad.'],
+      behind_on_rent: ['Rent’s tight this tick — still better than the wind lanes.'],
+      homeless: ['Lost the pad. Looking for any soft landlord or hire board.'],
+    },
+  };
+  registerDynamicNeighborDef(def);
+  L.dynamicDefs.push(def);
+  const state: NeighborState = {
+    id: finalId,
+    affinity: 12,
+    drama: 'none',
+    debt: null,
+    homeOwner: 'player',
+    landlordId: null,
+    isPlayerTenant: false,
+    rentPolicy: null,
+    hiredAsWorkerId: null,
+    known: true,
+    vacated: false,
+    giftsGiven: 0,
+    debtPaidToward: 0,
+    homeless: false,
+    livelihoodFails: 0,
+    lastTalkAffinityMs: 0,
+    lastGiftAffinityMs: 0,
+    vendorOpen: false,
+    vendorEarned: 0,
+  };
+  L.neighbors.push(state);
+  return { def, state };
 }
 
 export function homeownerDefForDistrict(districtId: string): NeighborDef | undefined {
@@ -497,8 +612,10 @@ export function dramaLabel(d: DramaKind): string {
 }
 
 export function emptyNeighborLife(): NeighborLifeState {
+  clearDynamicNeighborDefs();
   return {
     neighbors: NEIGHBOR_DEFS.map(seedNeighborState),
+    dynamicDefs: [],
     rentTickAcc: 0,
     pendingTenantOffers: [],
   };
@@ -574,7 +691,10 @@ export function ensureNeighborLife(life: NeighborLifeState | null | undefined): 
   if (!life || !Array.isArray(life.neighbors) || life.neighbors.length === 0) {
     return emptyNeighborLife();
   }
-  // Merge any new defs not in save
+  if (!Array.isArray(life.dynamicDefs)) life.dynamicDefs = [];
+  // Re-register procedural residents for neighborDef()
+  registerDynamicNeighborDefs(life.dynamicDefs);
+  // Merge any new static defs not in save
   const byId = new Map(life.neighbors.map((n) => [n.id, n]));
   for (const def of NEIGHBOR_DEFS) {
     if (!byId.has(def.id)) {
@@ -594,6 +714,30 @@ export function ensureNeighborLife(life: NeighborLifeState | null | undefined): 
         n.debt.landlordName =
           landlordById(n.debt.landlordId)?.name ?? n.debt.landlordName;
       }
+    }
+  }
+  // Ensure dynamic def neighbors exist as states
+  for (const def of life.dynamicDefs) {
+    if (!byId.has(def.id)) {
+      life.neighbors.push({
+        id: def.id,
+        affinity: 10,
+        drama: 'none',
+        debt: null,
+        homeOwner: def.startHomeOwner,
+        landlordId: def.startLandlordId ?? null,
+        isPlayerTenant: false,
+        rentPolicy: null,
+        hiredAsWorkerId: null,
+        known: true,
+        vacated: false,
+        giftsGiven: 0,
+        debtPaidToward: 0,
+        homeless: false,
+        livelihoodFails: 0,
+        vendorOpen: false,
+        vendorEarned: 0,
+      });
     }
   }
   life.rentTickAcc = typeof life.rentTickAcc === 'number' ? life.rentTickAcc : 0;
@@ -667,6 +811,20 @@ export function neighborLifeToSave(life: NeighborLifeState) {
   const L = ensureNeighborLife(life);
   return {
     rentTickAcc: L.rentTickAcc,
+    dynamicDefs: (L.dynamicDefs ?? []).map((d) => ({
+      id: d.id,
+      name: d.name,
+      homeDistrictId: d.homeDistrictId,
+      jobLabel: d.jobLabel,
+      chatLines: [...d.chatLines],
+      dramaLines: { ...d.dramaLines },
+      startDrama: d.startDrama,
+      startHomeOwner: d.startHomeOwner,
+      startLandlordId: d.startLandlordId,
+      startDebt: d.startDebt,
+      basePrice: d.basePrice,
+      priceTierLabel: d.priceTierLabel,
+    })),
     pendingTenantOffers: (L.pendingTenantOffers ?? []).map((o) => ({
       id: o.id,
       applicantId: o.applicantId,
@@ -761,6 +919,96 @@ export function neighborLifeFromSave(raw: unknown): NeighborLifeState {
     }
   }
   base.rentTickAcc = typeof o.rentTickAcc === 'number' ? o.rentTickAcc : 0;
+  base.dynamicDefs = [];
+  if (Array.isArray(o.dynamicDefs)) {
+    for (const row of o.dynamicDefs as Record<string, unknown>[]) {
+      if (!row || typeof row.id !== 'string' || typeof row.name !== 'string') continue;
+      const def: NeighborDef = {
+        id: row.id,
+        name: row.name,
+        homeDistrictId: String(row.homeDistrictId ?? 'residential'),
+        jobLabel: String(row.jobLabel ?? 'Resident'),
+        chatLines: Array.isArray(row.chatLines)
+          ? (row.chatLines as string[])
+          : ['New pad. Ready to work.'],
+        dramaLines:
+          row.dramaLines && typeof row.dramaLines === 'object'
+            ? (row.dramaLines as NeighborDef['dramaLines'])
+            : {},
+        startDrama: 'none',
+        startHomeOwner: 'player',
+        basePrice: typeof row.basePrice === 'number' ? row.basePrice : 12_000,
+        priceTierLabel: String(row.priceTierLabel ?? 'Migrant · new pad'),
+      };
+      base.dynamicDefs.push(def);
+      registerDynamicNeighborDef(def);
+      // State may already be in saved neighbors map
+      if (!saved.has(def.id)) {
+        base.neighbors.push({
+          id: def.id,
+          affinity: 10,
+          drama: 'none',
+          debt: null,
+          homeOwner: 'player',
+          landlordId: null,
+          isPlayerTenant: false,
+          rentPolicy: null,
+          hiredAsWorkerId: null,
+          known: true,
+          vacated: false,
+          giftsGiven: 0,
+          debtPaidToward: 0,
+          homeless: false,
+          livelihoodFails: 0,
+          vendorOpen: false,
+          vendorEarned: 0,
+        });
+      } else {
+        // Apply saved state for migrant id
+        const s = saved.get(def.id)!;
+        const n: NeighborState = {
+          id: def.id,
+          affinity: typeof s.affinity === 'number' ? s.affinity : 10,
+          drama: typeof s.drama === 'string' ? (s.drama as DramaKind) : 'none',
+          debt: null,
+          homeOwner:
+            typeof s.homeOwner === 'string'
+              ? (s.homeOwner as HomeOwnerKind)
+              : 'player',
+          landlordId: typeof s.landlordId === 'string' ? s.landlordId : null,
+          isPlayerTenant: !!s.isPlayerTenant,
+          rentPolicy:
+            s.rentPolicy === 'cheap' ||
+            s.rentPolicy === 'fair' ||
+            s.rentPolicy === 'predatory'
+              ? s.rentPolicy
+              : null,
+          hiredAsWorkerId:
+            typeof s.hiredAsWorkerId === 'string' ? s.hiredAsWorkerId : null,
+          known: s.known !== false,
+          vacated: !!s.vacated,
+          giftsGiven: typeof s.giftsGiven === 'number' ? s.giftsGiven : 0,
+          debtPaidToward: typeof s.debtPaidToward === 'number' ? s.debtPaidToward : 0,
+          homeless: !!s.homeless,
+          livelihoodFails:
+            typeof s.livelihoodFails === 'number' ? s.livelihoodFails : 0,
+          vendorOpen: s.vendorOpen !== false && !s.homeless,
+          vendorEarned: typeof s.vendorEarned === 'number' ? s.vendorEarned : 0,
+        };
+        if (s.debt && typeof s.debt === 'object') {
+          const d = s.debt as Record<string, unknown>;
+          n.debt = {
+            landlordId: String(d.landlordId ?? 'landlord_city'),
+            landlordName: String(d.landlordName ?? 'Landlord'),
+            amount: typeof d.amount === 'number' ? Math.max(0, d.amount) : 0,
+            plotKey: String(d.plotKey ?? `home_${n.id}`),
+          };
+          if (n.debt.amount <= 0) n.debt = null;
+        }
+        base.neighbors.push(n);
+      }
+    }
+  }
   base.pendingTenantOffers = [];
   if (Array.isArray(o.pendingTenantOffers)) {
     for (const raw of o.pendingTenantOffers as Record<string, unknown>[]) {
