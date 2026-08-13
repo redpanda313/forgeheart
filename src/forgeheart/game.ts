@@ -346,6 +346,8 @@ import {
 import { generateBackstory, type Backstory } from './backstory';
 import { WorkerAgent, createWorkerAgents } from './workerAgent';
 import { NavGrid, pointInBayBounds, getBayBuildBounds } from './navGrid';
+import { mpClient, type MpSession } from './mpClient';
+import { makeSignSprite } from './signLabel';
 import {
   STALL_TIERS,
   STALL_COLOR_NAMES,
@@ -549,6 +551,11 @@ export class ForgeHeartGame {
   /** Phase 3 true sky city */
   private megaCityActive = false;
   private skyCity: SkyCityBuilt | null = null;
+  /** Layer N presence — remote player meshes */
+  private mpRemotesRoot: THREE.Group | null = null;
+  private mpRemoteMeshes = new Map<string, THREE.Group>();
+  private mpPoseAcc = 0;
+  private mpEnabled = false;
   /** Plaza leash for empire city robots (helpers + rogues). */
   private cityRogueLeash = new Map<
     RobotUnit,
@@ -4908,6 +4915,8 @@ export class ForgeHeartGame {
       this.aoiAcc = 0;
       this.tickAoiPresence(focus.x, focus.z);
     }
+
+    this.tickMpPresence(dt);
     if (this.harvestOpen) {
       this.tickHarvestMinigame(dt);
       this.renderer.render(this.scene, this.camera);
@@ -5009,10 +5018,14 @@ export class ForgeHeartGame {
       }
     }
 
+    // Layer N presence
+    this.tickMpPresence(dt);
+
     if (this.board?.mounted) {
       this.tickMarketBoard(dt);
       // Crew keeps working while you board between plazas
       if (this.workerAgents.length > 0) this.tickWorkers(dt);
+      this.tickMpPresence(dt);
       this.syncEconomyHud();
       this.audio.setWind(0.35 + this.board.speedNorm * 0.4);
       return;
@@ -14896,5 +14909,105 @@ export class ForgeHeartGame {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
+  }
+
+  /** Call after joining an MP room — enables pose send + remote avatars. */
+  enableMultiplayerPresence(session?: MpSession | null) {
+    this.mpEnabled = !!(session || mpClient.session);
+    if (!this.mpRemotesRoot) {
+      this.mpRemotesRoot = new THREE.Group();
+      this.mpRemotesRoot.name = 'MpRemotes';
+      this.scene.add(this.mpRemotesRoot);
+    }
+    if (session?.code) {
+      this.toast(`Multiplayer room ${session.code} · friends appear as cyan pilots`, 5);
+    }
+    mpClient.setListeners({
+      onPlayers: () => this.syncMpRemoteMeshes(),
+      onPose: (id, x, y, z, yaw) => this.applyMpRemotePose(id, x, y, z, yaw),
+      onChat: (name, text) => this.toast(`${name}: ${text}`, 3.5),
+      onError: (_c, msg) => this.toast(msg, 4),
+    });
+    this.syncMpRemoteMeshes();
+  }
+
+  disableMultiplayerPresence() {
+    this.mpEnabled = false;
+    for (const g of this.mpRemoteMeshes.values()) {
+      this.mpRemotesRoot?.remove(g);
+    }
+    this.mpRemoteMeshes.clear();
+  }
+
+  private tickMpPresence(dt: number) {
+    if (!this.mpEnabled || !mpClient.session) return;
+    this.mpPoseAcc += dt;
+    if (this.mpPoseAcc < 0.1) return;
+    this.mpPoseAcc = 0;
+    const pos = this.board?.mounted ? this.board.position : this.camera.position;
+    let yaw = 0;
+    if (this.board?.mounted) yaw = this.board.yaw;
+    else {
+      const dir = new THREE.Vector3();
+      this.camera.getWorldDirection(dir);
+      yaw = Math.atan2(dir.x, dir.z);
+    }
+    mpClient.sendPose(pos.x, pos.y, pos.z, yaw);
+  }
+
+  private syncMpRemoteMeshes() {
+    if (!this.mpRemotesRoot || !mpClient.session) return;
+    const remotes = mpClient.remotes;
+    const seen = new Set(remotes.map((r) => r.id));
+    for (const [id, g] of this.mpRemoteMeshes) {
+      if (!seen.has(id)) {
+        this.mpRemotesRoot.remove(g);
+        this.mpRemoteMeshes.delete(id);
+      }
+    }
+    for (const p of remotes) {
+      let g = this.mpRemoteMeshes.get(p.id);
+      if (!g) {
+        g = this.makeMpRemoteMesh(p.name);
+        this.mpRemotesRoot.add(g);
+        this.mpRemoteMeshes.set(p.id, g);
+      }
+      g.position.set(p.x, p.y, p.z);
+      g.rotation.y = p.yaw;
+    }
+  }
+
+  private applyMpRemotePose(id: string, x: number, y: number, z: number, yaw: number) {
+    if (!this.mpRemotesRoot || id === mpClient.session?.you) return;
+    let g = this.mpRemoteMeshes.get(id);
+    if (!g) {
+      const p = mpClient.session?.players.get(id);
+      g = this.makeMpRemoteMesh(p?.name ?? 'Pilot');
+      this.mpRemotesRoot.add(g);
+      this.mpRemoteMeshes.set(id, g);
+    }
+    g.position.set(x, y, z);
+    g.rotation.y = yaw;
+  }
+
+  private makeMpRemoteMesh(name: string): THREE.Group {
+    const g = new THREE.Group();
+    g.name = `MpRemote_${name}`;
+    const body = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.35, 0.9, 4, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0x44aacc,
+        emissive: 0x113344,
+        emissiveIntensity: 0.45,
+        metalness: 0.35,
+        roughness: 0.45,
+      }),
+    );
+    body.position.y = 0.95;
+    g.add(body);
+    const label = makeSignSprite(name.slice(0, 16), { worldWidth: 1.8, maxWidth: 280 });
+    label.position.set(0, 2.15, 0);
+    g.add(label);
+    return g;
   }
 }

@@ -644,6 +644,46 @@
             <p id="account-msg" class="account-msg"></p>
           </div>
 
+          <div id="mp-panel" class="account-panel mp-panel">
+            <p class="account-heading">
+              Multiplayer <span class="account-status">(presence beta)</span>
+              <span id="mp-status-pill" class="account-server-pill">idle</span>
+            </p>
+            <p class="account-advanced-hint">
+              Layer N slice: create/join a room (code), see friends in the city. Shared economy authority comes next (co-op Path A).
+            </p>
+            <div class="account-row">
+              <label class="account-field">
+                <span>Display name</span>
+                <input id="mp-name" type="text" maxlength="24" placeholder="Pilot" autocomplete="nickname" />
+              </label>
+              <label class="account-field">
+                <span>Join code</span>
+                <input id="mp-code" type="text" maxlength="8" placeholder="ABCD2" spellcheck="false" />
+              </label>
+            </div>
+            <div class="account-row">
+              <label class="account-field">
+                <span>Mode</span>
+                <select id="mp-mode">
+                  <option value="coop" selected>Co-op (shared later)</option>
+                  <option value="comp">Competitive (private later)</option>
+                </select>
+              </label>
+              <label class="account-field account-field-wide">
+                <span>MP server URL (ws / wss tunnel)</span>
+                <input id="mp-url" type="url" spellcheck="false" placeholder="ws://127.0.0.1:8790 or wss://…" />
+              </label>
+            </div>
+            <div class="account-actions">
+              <button type="button" id="btn-mp-create">Create room</button>
+              <button type="button" id="btn-mp-join">Join room</button>
+              <button type="button" id="btn-mp-play" class="hidden">Enter city (with room)</button>
+              <button type="button" id="btn-mp-leave" class="hidden account-secondary">Leave room</button>
+            </div>
+            <p id="mp-msg" class="account-msg"></p>
+          </div>
+
           <div class="save-slots" id="save-slots">
             <!-- filled by main.ts -->
           </div>

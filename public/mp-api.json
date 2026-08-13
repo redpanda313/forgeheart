@@ -1,0 +1,4 @@
+{
+  "url": "",
+  "comment": "Set to your cloudflared wss:// URL for the mp-server (e.g. wss://xxxx.trycloudflare.com). Empty = use localStorage or ws://127.0.0.1:8790"
+}

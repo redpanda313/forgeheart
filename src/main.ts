@@ -27,6 +27,14 @@ import {
   pingAccountServer,
   migrateLocalSlotsToEmptyCloud,
 } from './forgeheart/accounts';
+import {
+  mpClient,
+  getMpUrl,
+  setMpUrl,
+  loadMpApiConfig,
+  type MpStatus,
+} from './forgeheart/mpClient';
+import type { GameMode } from './forgeheart/sim/mode';
 
 const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
 const titleScreen = document.getElementById('title-screen')!;
@@ -238,9 +246,124 @@ async function startGame(opts: { slot: number; save: ForgeSaveData | null }) {
   game = new ForgeHeartGame(canvas, { slot: opts.slot, save: opts.save });
   wireMouse();
   await game.start();
+  if (mpClient.session) {
+    game.enableMultiplayerPresence(mpClient.session);
+  }
   running = true;
   requestAnimationFrame(loop);
 }
+
+// ——— Multiplayer title panel (Layer N presence) ———
+const mpStatusPill = document.getElementById('mp-status-pill');
+const mpMsg = document.getElementById('mp-msg');
+const mpName = document.getElementById('mp-name') as HTMLInputElement | null;
+const mpCode = document.getElementById('mp-code') as HTMLInputElement | null;
+const mpMode = document.getElementById('mp-mode') as HTMLSelectElement | null;
+const mpUrl = document.getElementById('mp-url') as HTMLInputElement | null;
+const btnMpCreate = document.getElementById('btn-mp-create') as HTMLButtonElement | null;
+const btnMpJoin = document.getElementById('btn-mp-join') as HTMLButtonElement | null;
+const btnMpPlay = document.getElementById('btn-mp-play') as HTMLButtonElement | null;
+const btnMpLeave = document.getElementById('btn-mp-leave') as HTMLButtonElement | null;
+
+function setMpMsg(text: string, kind: '' | 'ok' | 'error' = '') {
+  if (!mpMsg) return;
+  mpMsg.textContent = text;
+  mpMsg.classList.remove('ok', 'error');
+  if (kind) mpMsg.classList.add(kind);
+}
+
+function syncMpChrome(status: MpStatus, detail?: string) {
+  if (mpStatusPill) {
+    mpStatusPill.classList.remove('up', 'down');
+    if (status === 'joined') {
+      mpStatusPill.classList.add('up');
+      mpStatusPill.textContent = detail ? `room ${detail}` : 'joined';
+    } else if (status === 'error') {
+      mpStatusPill.classList.add('down');
+      mpStatusPill.textContent = 'error';
+    } else if (status === 'connecting') {
+      mpStatusPill.textContent = 'connecting…';
+    } else {
+      mpStatusPill.textContent = 'idle';
+    }
+  }
+  const joined = status === 'joined' && !!mpClient.session;
+  btnMpPlay?.classList.toggle('hidden', !joined);
+  btnMpLeave?.classList.toggle('hidden', !joined);
+  if (joined && mpClient.session && mpCode) {
+    mpCode.value = mpClient.session.code;
+  }
+}
+
+mpClient.setListeners({
+  onStatus: (s, d) => {
+    syncMpChrome(s, d);
+    if (s === 'error' && d) setMpMsg(d, 'error');
+  },
+  onRoom: (session) => {
+    setMpMsg(
+      `Room ${session.code} · mode ${session.mode} · ${session.players.size} pilot(s). Share the code, then Enter city.`,
+      'ok',
+    );
+    syncMpChrome('joined', session.code);
+  },
+  onPlayers: (players) => {
+    if (mpClient.session) {
+      setMpMsg(
+        `Room ${mpClient.session.code} · ${players.length} pilot(s) connected.`,
+        'ok',
+      );
+    }
+  },
+  onError: (_c, msg) => setMpMsg(msg, 'error'),
+});
+
+function readMpForm() {
+  if (mpUrl?.value) setMpUrl(mpUrl.value);
+  const name =
+    (mpName?.value || accountUsername?.value || 'Pilot').trim().slice(0, 24) || 'Pilot';
+  const code = (mpCode?.value || '').trim().toUpperCase();
+  const mode = (mpMode?.value === 'comp' ? 'comp' : 'coop') as GameMode;
+  return { name, code, mode, url: getMpUrl() };
+}
+
+btnMpCreate?.addEventListener('click', () => {
+  const f = readMpForm();
+  setMpMsg(`Creating ${f.mode} room…`);
+  mpClient.connectAndJoin({ create: true, mode: f.mode, name: f.name, url: f.url });
+});
+
+btnMpJoin?.addEventListener('click', () => {
+  const f = readMpForm();
+  if (!f.code) {
+    setMpMsg('Enter a join code from your host.', 'error');
+    return;
+  }
+  setMpMsg(`Joining ${f.code}…`);
+  mpClient.connectAndJoin({ create: false, code: f.code, name: f.name, url: f.url });
+});
+
+btnMpLeave?.addEventListener('click', () => {
+  mpClient.disconnect();
+  game?.disableMultiplayerPresence();
+  setMpMsg('Left multiplayer room.');
+  syncMpChrome('idle');
+});
+
+btnMpPlay?.addEventListener('click', () => {
+  if (!mpClient.session) {
+    setMpMsg('Join or create a room first.', 'error');
+    return;
+  }
+  // Sandbox empire for presence tests (no tutorial required)
+  void startGame({ slot: selectedSlot, save: null });
+});
+
+// Prefill MP URL
+if (mpUrl) mpUrl.value = getMpUrl();
+void loadMpApiConfig().then((u) => {
+  if (u && mpUrl) mpUrl.value = u;
+});
 
 /**
  * Fetch cloud slots, migrate any local device saves into empty account slots,

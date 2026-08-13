@@ -2599,6 +2599,18 @@ h1 {
   background: rgba(12, 22, 34, 0.72);
   text-align: left;
 }
+.mp-panel {
+  border-color: rgba(100, 180, 220, 0.4);
+}
+.mp-panel select {
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid #3a5068;
+  background: #0c1622;
+  color: #e8dcc0;
+  font: inherit;
+}
 .account-heading {
   margin: 0 0 0.55rem;
   font-size: 0.78rem;

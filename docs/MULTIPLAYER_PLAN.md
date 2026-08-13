@@ -23,12 +23,16 @@ What differs by mode is **who owns brass/stock/property** and **who you compete 
 
 | Layer | State |
 |-------|--------|
-| SP empire loop | Soft goals, neighbors, plaza plots, stalls, invent, workers — **on main** |
-| Market sim (current) | Abstract stall ticks / demand multipliers — **not** deep customers or NPC rent failure |
-| Client world | Three.js mega city; AOI helpers (`aoiPresence.ts`) for future presence |
+| SP empire loop | Soft goals, neighbors, plaza plots, stalls, invent, workers, labor/housing market — **on main** |
+| Market sim (Layer M) | Under/over-serve, standing→sales, NPC livelihood/homeless, rate limits, sales HUD — **SP live** |
+| Labor / housing | ~30 human baseline; housing beds expand hire supply; migrant tenants on rent accept |
+| Client world | Three.js mega city; AOI helpers; **MP presence avatars (beta)** |
 | Accounts | Home-PC username/password + 3 cloud slots; **save sync**, not full economy authority |
-| Multiplayer runtime | **None** |
+| Multiplayer runtime | **Presence rooms** (`tools/mp-server.mjs`) — join codes, poses; **not** shared inv yet |
+| Sim extract | `src/forgeheart/sim/` mode + protocol + re-exports pure market/labor |
 | Roblox | Plan only — rebuild, not port |
+
+**Living status doc:** `docs/MP_IMPLEMENTATION_STATUS.md`
 
 **Implication:**  
 1. **Market depth** is a **SP + MP shared systems** epic (build once).  
