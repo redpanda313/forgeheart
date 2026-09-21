@@ -1,6 +1,6 @@
 # ForgeHeart on Roblox — agent-executed migration
 
-**Status:** Ready to start. This plan supersedes the 2026-07-16 tutorial-only note.  
+**Status:** In progress. Slice 0 and the workshop through waking Elias live in `roblox/`. The place file builds in CI. Publishing onto the private Forge Heart place waits until Roblox is not holding the place open. This plan supersedes the 2026-07-16 tutorial-only note.  
 **Product:** ForgeHeart: Gift of the Brass Gods (this repo).  
 **Goal:** A published Roblox experience of the game that exists today: workshop story, sky-market training, then the home sky city.  
 **Who builds it:** The agent writes, tests, and uploads the Roblox game. You handle the account gates Roblox will only accept from a person.

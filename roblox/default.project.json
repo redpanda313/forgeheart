@@ -1,0 +1,42 @@
+{
+  "name": "ForgeHeart",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "ForgeHeart": {
+        "$path": "src/shared"
+      }
+    },
+    "ServerScriptService": {
+      "ForgeHeart": {
+        "$path": "src/server"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "ForgeHeart": {
+          "$path": "src/client"
+        }
+      }
+    },
+    "Workspace": {
+      "$properties": {
+        "Gravity": 112,
+        "StreamingEnabled": false,
+        "FallenPartsDestroyHeight": -200
+      }
+    },
+    "Lighting": {
+      "$properties": {
+        "ClockTime": 17.4,
+        "Brightness": 2,
+        "Ambient": [0.72, 0.64, 0.52],
+        "OutdoorAmbient": [0.55, 0.46, 0.34],
+        "FogColor": [0.62, 0.5, 0.34],
+        "FogStart": 80,
+        "FogEnd": 420,
+        "GlobalShadows": true
+      }
+    }
+  }
+}
