@@ -1,0 +1,42 @@
+name: roblox
+
+on:
+  push:
+    paths:
+      - "roblox/**"
+      - "tools/roblox/**"
+      - "src/forgeheart/robot.ts"
+      - ".github/workflows/roblox.yml"
+  pull_request:
+    paths:
+      - "roblox/**"
+      - "tools/roblox/**"
+      - "src/forgeheart/robot.ts"
+      - ".github/workflows/roblox.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Rojo and Lune
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o /tmp/rojo.zip https://github.com/rojo-rbx/rojo/releases/download/v7.7.0/rojo-7.7.0-linux-x86_64.zip
+          unzip -o /tmp/rojo.zip -d "$HOME/.local/bin"
+          curl -fsSL -o /tmp/lune.zip https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-linux-x86_64.zip
+          unzip -o /tmp/lune.zip -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/rojo" "$HOME/.local/bin/lune"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Golden numbers match the browser game
+        run: |
+          node tools/roblox/dump-golden.mjs
+          git diff --exit-code -- roblox/tests/golden/robot.json
+          cd roblox && lune run tests/robot_config
+      - name: Build the place
+        run: |
+          mkdir -p roblox/build
+          rojo build roblox/default.project.json -o roblox/build/ForgeHeart.rbxl

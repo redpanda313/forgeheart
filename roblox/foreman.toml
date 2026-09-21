@@ -1,0 +1,4 @@
+# Pins for the Roblox toolchain. CI downloads these versions directly.
+[tools]
+rojo = { github = "rojo-rbx/rojo", version = "7.7.0" }
+lune = { github = "lune-org/lune", version = "0.10.5" }
