@@ -1,6 +1,9 @@
--- Objective line and the lore card opened by workshop prompts.
+-- Objective line, bay office, empire map, and the lore card.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local Districts = require(ReplicatedStorage:WaitForChild("ForgeHeart"):WaitForChild("Districts"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -218,3 +221,114 @@ if showLore:IsA("RemoteEvent") then
 		card.Visible = true
 	end)
 end
+
+local function officeCard(name: string, titleText: string): (Frame, TextLabel)
+	local frame = Instance.new("Frame")
+	frame.Name = name
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.Size = UDim2.fromOffset(520, 420)
+	frame.BackgroundColor3 = Color3.fromRGB(24, 18, 12)
+	frame.BackgroundTransparency = 0.04
+	frame.BorderSizePixel = 0
+	frame.Visible = false
+	frame.Parent = gui
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = frame
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(184, 146, 58)
+	stroke.Thickness = 1.5
+	stroke.Parent = frame
+	local heading = Instance.new("TextLabel")
+	heading.BackgroundTransparency = 1
+	heading.Position = UDim2.fromOffset(16, 10)
+	heading.Size = UDim2.new(1, -120, 0, 28)
+	heading.Font = Enum.Font.Antique
+	heading.TextXAlignment = Enum.TextXAlignment.Left
+	heading.TextColor3 = Color3.fromRGB(232, 206, 140)
+	heading.TextSize = 22
+	heading.Text = titleText
+	heading.Parent = frame
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.AnchorPoint = Vector2.new(1, 0)
+	closeBtn.Position = UDim2.new(1, -12, 0, 10)
+	closeBtn.Size = UDim2.fromOffset(72, 28)
+	closeBtn.BackgroundColor3 = Color3.fromRGB(122, 96, 40)
+	closeBtn.Font = Enum.Font.GothamMedium
+	closeBtn.Text = "Close"
+	closeBtn.TextColor3 = Color3.fromRGB(245, 236, 214)
+	closeBtn.TextSize = 14
+	closeBtn.Parent = frame
+	local closeCorner = Instance.new("UICorner")
+	closeCorner.CornerRadius = UDim.new(0, 6)
+	closeCorner.Parent = closeBtn
+	closeBtn.MouseButton1Click:Connect(function()
+		frame.Visible = false
+	end)
+	local body = Instance.new("TextLabel")
+	body.Name = "Body"
+	body.BackgroundTransparency = 1
+	body.Position = UDim2.fromOffset(16, 48)
+	body.Size = UDim2.new(1, -32, 1, -64)
+	body.Font = Enum.Font.Gotham
+	body.TextXAlignment = Enum.TextXAlignment.Left
+	body.TextYAlignment = Enum.TextYAlignment.Top
+	body.TextWrapped = true
+	body.TextColor3 = Color3.fromRGB(236, 228, 210)
+	body.TextSize = 16
+	body.Text = ""
+	body.Parent = frame
+	return frame, body
+end
+
+local bay, bayBody = officeCard("BayOffice", "Bay office")
+local mapCard, mapBody = officeCard("EmpireMap", "Empire map")
+
+local function refreshBay()
+	local lines = {
+		"Inventory, crew, and the work in front of you.",
+		"",
+		`Brass  {player:GetAttribute("Brass") or 0}`,
+		`Crew  {player:GetAttribute("Crew") or "No crew yet"}`,
+		"",
+		"Stock",
+		player:GetAttribute("Stock") or "Empty",
+		"",
+		"Objective",
+		player:GetAttribute("Objective") or "",
+		"",
+		"I closes this office. M opens the empire map. E uses whatever is in front of you.",
+	}
+	bayBody.Text = table.concat(lines, "\n")
+end
+
+local mapLines = { "Wind skyways join the islands. Walk the cyan lanes.", "" }
+for _, district in Districts.LIST do
+	table.insert(
+		mapLines,
+		`{district.name}  ·  {district.role}  ·  stall {district.stallCost} brass`
+	)
+end
+mapBody.Text = table.concat(mapLines, "\n")
+
+local function toggle(frame: Frame)
+	local open = not frame.Visible
+	bay.Visible = false
+	mapCard.Visible = false
+	frame.Visible = open
+	if frame == bay and open then
+		refreshBay()
+	end
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then
+		return
+	end
+	if input.KeyCode == Enum.KeyCode.I then
+		toggle(bay)
+	elseif input.KeyCode == Enum.KeyCode.M then
+		toggle(mapCard)
+	end
+end)
