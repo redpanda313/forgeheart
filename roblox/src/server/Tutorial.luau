@@ -472,8 +472,7 @@ local function goCity(player: Player)
 	end
 	profile.phase = "city"
 	profile.eliasAwake = true
-	CityRules.ensure(profile.inv)
-	CityRules.ensureElias(profile.inv, story.companionName)
+	CityRules.onDeed(profile.inv, story.companionName)
 	sync(player)
 	save(player)
 	local character = player.Character
