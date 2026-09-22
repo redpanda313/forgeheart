@@ -55,6 +55,9 @@ export type Built = {
 	broker: ProximityPrompt,
 	apartment: ProximityPrompt,
 	boardShop: ProximityPrompt,
+	hire: ProximityPrompt,
+	lease: ProximityPrompt,
+	expand: ProximityPrompt,
 	trades: { [string]: ProximityPrompt },
 	recipes: { [string]: ProximityPrompt },
 	spawn: SpawnLocation,
@@ -133,6 +136,11 @@ function Market.build(parent: Instance): Built
 	local reefPrompt = prompt(reef, "Extract", "Cloud reef", nil, 0)
 
 	disc("Bay", 9, 0.4, 0, 0.2, -36, Palette.ironDark, Enum.Material.Metal)
+	-- Plaza → starter bay (marketHub.ts bay bridge).
+	local pathColor = Color3.fromRGB(90, 86, 76)
+	local padColor = Color3.fromRGB(90, 83, 72)
+	slab("BayBridge", 7, 0.28, 14, 0, 0.16, -26, pathColor, Enum.Material.Slate)
+	slab("BayApproach", 6, 0.28, 6, 0, 0.16, -20, padColor, Enum.Material.Slate)
 	slab("BayChest", 1.4, 0.8, 1, 0, 0.7, -36, Palette.brass, Enum.Material.Metal)
 	local bench = slab("CraftBench", 3.2, 1, 1.4, -3, 0.65, -34, Palette.woodDark, Enum.Material.Wood)
 	local recipes = {}
@@ -147,13 +155,63 @@ function Market.build(parent: Instance): Built
 		recipes[spec[1]] = prompt(anchor, spec[2], "Bench", 6)
 	end
 
+	-- Plaza → apartment real-estate office (marketHub.ts RE plank).
+	slab("RePath1", 16, 0.28, 5, 18, 0.16, 0, pathColor, Enum.Material.Slate)
+	slab("RePath2", 12, 0.28, 6, 32, 0.16, 0, pathColor, Enum.Material.Slate)
 	slab("RealEstatePad", 14, 0.3, 12, 42, 0.2, 0, Palette.brassDark, Enum.Material.Slate)
 	slab("RealEstateWall", 1, 7, 10, 47, 3.6, 0, Palette.brass, Enum.Material.Metal)
 	local desk = slab("RealEstate", 5, 1.6, 2, 42, 1.1, 0, Palette.brass, Enum.Material.Metal)
 	local apartment = prompt(desk, "Buy apartment", `{Economy.APARTMENT_COST} brass`)
 	NpcKit.make(folder, "shopkeeper", 0, "Clerk", at(42, 0.4, 2))
 
-	slab("HireBoard", 2.2, 2.8, 0.15, 22, 1.8, 14, Palette.paper, Enum.Material.Wood)
+	-- Plaza → hire board pad (marketHub.ts work post).
+	slab("HirePath1", 8, 0.28, 5, 16, 0.16, 12, pathColor, Enum.Material.Slate)
+	slab("HirePath2", 6, 0.28, 5, 24, 0.16, 12, pathColor, Enum.Material.Slate)
+	slab("HirePad", 6, 0.28, 6, 22, 0.16, 14, padColor, Enum.Material.Slate)
+	local hireBoard = slab("HireBoard", 2.2, 2.8, 0.15, 22, 1.8, 14, Palette.paper, Enum.Material.Wood)
+	local hire = prompt(hireBoard, "Hire crew", "Work post", 12, 0)
+	local hireGui = Instance.new("BillboardGui")
+	hireGui.Name = "HireLabel"
+	hireGui.Size = UDim2.fromOffset(240, 40)
+	hireGui.StudsOffset = Vector3.new(0, Scale.studs(1.8), 0)
+	hireGui.Parent = hireBoard
+	local hireLabel = Instance.new("TextLabel")
+	hireLabel.Size = UDim2.fromScale(1, 1)
+	hireLabel.BackgroundTransparency = 1
+	hireLabel.Font = Enum.Font.Antique
+	hireLabel.Text = "WORK POST · HIRE"
+	hireLabel.TextColor3 = Palette.paper
+	hireLabel.TextScaled = true
+	hireLabel.Parent = hireGui
+
+	-- Plaza → starter-bay lease office (25 brass).
+	slab("LeasePath1", 10, 0.28, 5, 18, 0.16, 6, pathColor, Enum.Material.Slate)
+	slab("LeasePath2", 8, 0.28, 5, 24, 0.16, 8, pathColor, Enum.Material.Slate)
+	slab("LeaseApproach", 8, 0.28, 4, 28, 0.16, 5, padColor, Enum.Material.Slate)
+	slab("LeaseOffice", 8, 0.28, 8, 28, 0.18, 8, Color3.fromRGB(106, 95, 78), Enum.Material.Slate)
+	slab("LeaseWallN", 8, 3, 0.3, 28, 1.7, 12, Palette.brass, Enum.Material.Metal)
+	slab("LeaseWallW", 0.3, 3, 8, 24, 1.7, 8, Palette.brass, Enum.Material.Metal)
+	slab("LeaseWallE", 0.3, 3, 8, 32, 1.7, 8, Palette.brass, Enum.Material.Metal)
+	local leaseDesk = slab("LeaseDesk", 3, 0.9, 1.2, 28, 0.7, 9, Palette.wood, Enum.Material.Wood)
+	local lease = prompt(leaseDesk, "Lease bay", "25 brass", 10, 0)
+	NpcKit.make(folder, "shopkeeper", 1, "Lease clerk", at(28, 0.4, 10.2))
+	local leaseGui = Instance.new("BillboardGui")
+	leaseGui.Name = "LeaseLabel"
+	leaseGui.Size = UDim2.fromOffset(260, 40)
+	leaseGui.StudsOffset = Vector3.new(0, Scale.studs(2.2), 0)
+	leaseGui.Parent = leaseDesk
+	local leaseLabel = Instance.new("TextLabel")
+	leaseLabel.Size = UDim2.fromScale(1, 1)
+	leaseLabel.BackgroundTransparency = 1
+	leaseLabel.Font = Enum.Font.Antique
+	leaseLabel.Text = "LEASE OFFICE · 25 brass"
+	leaseLabel.TextColor3 = Palette.paper
+	leaseLabel.TextScaled = true
+	leaseLabel.Parent = leaseGui
+
+	local expandPad = slab("ExpandPad", 4, 0.28, 4, 4, 0.16, -32, Color3.fromRGB(70, 110, 70), Enum.Material.Slate)
+	local expand = prompt(expandPad, "Expand bay", "Workshop wing", 10, 0)
+
 	slab("BoardShop", 7, 0.3, 7, 12, 0.2, 28, Palette.wood, Enum.Material.Wood)
 	local boardRack = slab("BoardRack", 2.2, 1.2, 0.5, 12, 0.9, 28, Palette.iron, Enum.Material.Metal)
 	local boardShop = prompt(boardRack, "Board shop", "Buy once, ride forever")
@@ -182,6 +240,9 @@ function Market.build(parent: Instance): Built
 		broker = broker,
 		apartment = apartment,
 		boardShop = boardShop,
+		hire = hire,
+		lease = lease,
+		expand = expand,
 		trades = trades,
 		recipes = recipes,
 		spawn = spawn,

@@ -20,6 +20,7 @@ local Districts = require(Shared:WaitForChild("Districts"))
 local Frame = require(Shared:WaitForChild("Frame"))
 local Economy = require(Shared:WaitForChild("Economy"))
 local MarketRules = require(Shared:WaitForChild("Market"))
+local Programs = require(Shared:WaitForChild("Programs"))
 local Romance = require(Shared:WaitForChild("Romance"))
 local RobotConfig = require(Shared:WaitForChild("RobotConfig"))
 local Scale = require(Shared:WaitForChild("Scale"))
@@ -62,6 +63,7 @@ local neighborAct = ensureRemote("NeighborAct")
 local openProgram = ensureRemote("OpenProgram")
 local requestProgram = ensureRemote("RequestProgram")
 local setJob = ensureRemote("SetJob")
+local programAct = ensureRemote("ProgramAct")
 local openLease = ensureRemote("OpenLease")
 local leaseAct = ensureRemote("LeaseAct")
 local slotList = ensureRemote("SlotList")
@@ -154,6 +156,7 @@ local function profileToPayload(profile, story)
 		districtStanding = profile.inv.districtStanding,
 		metNeighbor = profile.inv.metNeighbor,
 		workers = profile.inv.workers,
+		programs = profile.inv.programs,
 		home = profile.inv.home,
 		stalls = profile.inv.stalls,
 		knownNeighbors = profile.inv.knownNeighbors,
@@ -245,6 +248,9 @@ local function applyPayload(data)
 		if type(data.workers) == "table" then
 			inv.workers = data.workers
 		end
+		if type(data.programs) == "table" then
+			inv.programs = data.programs
+		end
 		if type(data.home) == "table" then
 			inv.home = data.home
 		end
@@ -322,6 +328,7 @@ local function applyPayload(data)
 	end
 	Board.ensure(inv)
 	Storage.ensure(inv)
+	Programs.ensure(inv)
 	local savedSpawn = if type(data) == "table" then data.spawn else nil
 	local spawn = SpawnProgress.resolve(savedSpawn, phase, inv.apartment)
 	-- A market visit or an old siege overwrite does not resume behind the checkpoint.
@@ -845,6 +852,7 @@ local function romancePayload(inv, npcId: string, worldSeed: number, log: string
 end
 
 function Tutorial.start()
+	local sendPrograms: (Player, string?, string?) -> ()
 	StarterPlayer.CameraMode = Enum.CameraMode.Classic
 	StarterPlayer.CameraMinZoomDistance = 6
 	StarterPlayer.CameraMaxZoomDistance = 20
@@ -1105,6 +1113,51 @@ function Tutorial.start()
 		end)
 	end
 
+	market.hire.Triggered:Connect(function(player)
+		local profile = profileOf(player)
+		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		local ok, message = CityRules.hireHuman(profile.inv)
+		tell(player, "Hire board", message)
+		if ok then
+			sync(player)
+			save(player)
+		end
+		sendPrograms(player, message)
+	end)
+
+	market.lease.Triggered:Connect(function(player)
+		local profile = profileOf(player)
+		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		local ok, message = CityRules.leaseParcel(profile.inv)
+		tell(player, "Lease office", message)
+		if ok then
+			sync(player)
+			save(player)
+		end
+	end)
+
+	market.expand.Triggered:Connect(function(player)
+		local profile = profileOf(player)
+		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		local ok, message
+		if not profile.inv.parcelLeased or profile.inv.bayLevel < 1 then
+			ok, message = CityRules.leaseParcel(profile.inv)
+		else
+			ok, message = CityRules.expandBay(profile.inv)
+		end
+		tell(player, "Workshop wing", message)
+		if ok then
+			sync(player)
+			save(player)
+		end
+	end)
+
 	market.apartment.Triggered:Connect(function(player)
 		local profile = profileOf(player)
 		local story = storyOf(player)
@@ -1174,6 +1227,7 @@ function Tutorial.start()
 		tell(player, "Hire board", message)
 		sync(player)
 		save(player)
+		sendPrograms(player, message)
 	end)
 
 	city.expand.Triggered:Connect(function(player)
@@ -1445,21 +1499,25 @@ function Tutorial.start()
 		openNeighbor:FireClient(player, neighborId, neighborId, `{message}\n\nAffinity {CityRules.affinity(profile.inv, neighborId)}.`)
 	end)
 
-	local function sendPrograms(player: Player)
+	sendPrograms = function(player: Player, log: string?, activeId: string?)
 		local profile = profileOf(player)
 		if not profile then
 			return
 		end
-		local crew = {}
-		for _, worker in profile.inv.workers or {} do
-			table.insert(crew, { id = worker.id, name = worker.name, job = worker.job or "harvest" })
-		end
-		openProgram:FireClient(player, crew)
+		Programs.ensure(profile.inv)
+		local payload = Programs.payload(profile.inv, log, activeId)
+		payload.hireCost = CityRules.hireCost(profile.inv)
+		openProgram:FireClient(player, payload)
 	end
-	requestProgram.OnServerEvent:Connect(sendPrograms)
+	requestProgram.OnServerEvent:Connect(function(player: Player)
+		sendPrograms(player)
+	end)
 	setJob.OnServerEvent:Connect(function(player: Player, workerId: string, job: string)
 		local profile = profileOf(player)
 		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		if type(workerId) ~= "string" or type(job) ~= "string" then
 			return
 		end
 		local ok, message = CityRules.setJob(profile.inv, workerId, job)
@@ -1468,7 +1526,64 @@ function Tutorial.start()
 			sync(player)
 			save(player)
 		end
-		sendPrograms(player)
+		sendPrograms(player, message)
+	end)
+	programAct.OnServerEvent:Connect(function(player: Player, action: string, a: any, b: any, c: any)
+		local profile = profileOf(player)
+		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		if type(action) ~= "string" then
+			return
+		end
+		Programs.ensure(profile.inv)
+		local ok, message, extra = false, "Nothing happens.", nil
+		local activeId = if type(a) == "string" then a else nil
+		if action == "hire" then
+			ok, message = CityRules.hireHuman(profile.inv)
+		elseif action == "fire" and type(a) == "string" then
+			ok, message = Programs.fire(profile.inv, a)
+		elseif action == "raise" and type(a) == "string" then
+			ok, message = Programs.raisePay(profile.inv, a)
+		elseif action == "job" and type(a) == "string" and type(b) == "string" then
+			ok, message = Programs.setJob(profile.inv, a, b)
+		elseif action == "new" then
+			ok, message, extra = Programs.create(profile.inv)
+			if extra then
+				activeId = extra.id
+			end
+		elseif action == "template" and type(a) == "string" then
+			ok, message, extra = Programs.createFromTemplate(profile.inv, a)
+			if extra then
+				activeId = extra.id
+			end
+		elseif action == "add" and type(a) == "string" and type(b) == "string" then
+			ok, message = Programs.addNode(profile.inv, a, b)
+		elseif action == "remove" and type(a) == "string" then
+			local index = if type(b) == "number" then b elseif type(c) == "number" then c else nil
+			if type(index) ~= "number" then
+				return
+			end
+			ok, message = Programs.removeNode(profile.inv, a, index)
+		elseif action == "move" and type(a) == "string" then
+			local index = if type(b) == "number" then b else nil
+			local delta = if type(c) == "number" then c else 0
+			if type(index) ~= "number" then
+				return
+			end
+			ok, message = Programs.moveNode(profile.inv, a, index, delta)
+		elseif action == "assign" and type(a) == "string" and type(b) == "string" then
+			ok, message = Programs.assign(profile.inv, a, b)
+			activeId = b
+		else
+			return
+		end
+		tell(player, "Programs", message)
+		if ok then
+			sync(player)
+			save(player)
+		end
+		sendPrograms(player, message, activeId)
 	end)
 
 	leaseAct.OnServerEvent:Connect(function(player: Player, cellX: number, cellY: number)
@@ -1890,27 +2005,9 @@ function Tutorial.start()
 							)
 						end
 					end
+					Programs.ensure(profile.inv)
 					for _, worker in profile.inv.workers or {} do
-						if not worker.unpaid then
-							local job = worker.job or "harvest"
-							if job == "harvest" then
-								Economy.harvest(profile.inv, math.random)
-							elseif job == "craft" then
-								for _, recipe in Economy.RECIPES do
-									local crafted = Economy.craft(profile.inv, recipe.id)
-									if crafted then
-										break
-									end
-								end
-							elseif job == "stock" then
-								for districtId in CityRules.STALLS do
-									local stocked = CityRules.stockStall(profile.inv, districtId)
-									if stocked then
-										break
-									end
-								end
-							end
-						end
+						Programs.runWorker(profile.inv, worker)
 					end
 					sync(player)
 					save(player)
