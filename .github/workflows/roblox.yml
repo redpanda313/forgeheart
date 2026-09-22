@@ -39,7 +39,7 @@ jobs:
           node tools/roblox/emit-backstory-data.mjs
           node --experimental-strip-types tools/roblox/dump-backstory.mjs
           git diff --exit-code -- roblox/tests/golden/robot.json roblox/tests/golden/backstories.json roblox/src/shared/BackstoryData.luau
-          cd roblox && lune run tests/robot_config && lune run tests/backstory && lune run tests/economy && lune run tests/city
+          cd roblox && lune run tests/robot_config && lune run tests/backstory && lune run tests/economy && lune run tests/city && lune run tests/spawn
       - name: Build the place
         run: |
           mkdir -p roblox/build

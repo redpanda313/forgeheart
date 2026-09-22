@@ -71,6 +71,7 @@ export type Built = {
 	trays: { ProximityPrompt },
 	doors: { BasePart },
 	sign: TextLabel,
+	spawn: SpawnLocation,
 }
 
 function Workshop.build(parent: Instance): Built
@@ -244,6 +245,7 @@ function Workshop.build(parent: Instance): Built
 		trays = trays,
 		doors = { doorLeft, doorRight, doorSeam, seal },
 		sign = signText,
+		spawn = spawn,
 	}
 end
 

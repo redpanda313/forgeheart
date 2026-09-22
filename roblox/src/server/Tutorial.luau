@@ -17,6 +17,7 @@ local CityRules = require(Shared:WaitForChild("CityRules"))
 local Economy = require(Shared:WaitForChild("Economy"))
 local RobotConfig = require(Shared:WaitForChild("RobotConfig"))
 local Scale = require(Shared:WaitForChild("Scale"))
+local SpawnProgress = require(Shared:WaitForChild("SpawnProgress"))
 
 local Tutorial = {}
 local store = DataStoreService:GetDataStore("ForgeHeartProfile_v1")
@@ -77,6 +78,9 @@ local world = {
 local built: any = nil
 local market: any = nil
 local elias: Model? = nil
+local workshopPad: SpawnLocation? = nil
+local marketPad: SpawnLocation? = nil
+local cityPad: SpawnLocation? = nil
 
 local function storyOf(player: Player)
 	return stories[player]
@@ -97,9 +101,10 @@ local function save(player: Player)
 		return
 	end
 	local payload = {
-		version = 3,
+		version = 4,
 		backstorySeed = story.seed,
 		phase = profile.phase,
+		spawn = profile.spawn,
 		eliasAwake = profile.eliasAwake,
 		brass = profile.inv.brass,
 		items = profile.inv.items,
@@ -217,8 +222,19 @@ local function load(player: Player)
 			inv.rogueId = data.rogueId
 		end
 	end
+	local savedSpawn = if ok and type(data) == "table" then data.spawn else nil
+	local spawn = SpawnProgress.resolve(savedSpawn, phase, inv.apartment)
+	-- A market visit or an old siege overwrite does not resume behind the checkpoint.
+	if spawn == SpawnProgress.CITY then
+		phase = "city"
+		awake = true
+	elseif spawn == SpawnProgress.MARKET then
+		phase = "market"
+		awake = true
+	end
 	return seed, {
 		phase = phase,
+		spawn = spawn,
 		eliasAwake = awake,
 		inv = inv,
 	}
@@ -329,11 +345,15 @@ local function eachStory(callback: (Player, any) -> ())
 	end
 end
 
+local function stillInWorkshop(profile): boolean
+	return profile ~= nil and not SpawnProgress.locked(profile.spawn)
+end
+
 local function setPhase(phase: string)
 	world.phase = phase
 	for _, player in Players:GetPlayers() do
 		local profile = profileOf(player)
-		if profile and profile.phase ~= "market" then
+		if stillInWorkshop(profile) then
 			profile.phase = phase
 			sync(player)
 			save(player)
@@ -487,13 +507,29 @@ swing = function(player: Player)
 	end
 end
 
+local function applyRespawn(player: Player)
+	local profile = profileOf(player)
+	local checkpoint = if profile then profile.spawn else SpawnProgress.WORKSHOP
+	local pad = workshopPad
+	if checkpoint == SpawnProgress.CITY then
+		pad = cityPad
+	elseif checkpoint == SpawnProgress.MARKET then
+		pad = marketPad
+	end
+	if pad then
+		player.RespawnLocation = pad
+	end
+end
+
 local function goMarket(player: Player)
 	local profile = profileOf(player)
 	if not profile then
 		return
 	end
 	profile.phase = "market"
+	profile.spawn = SpawnProgress.advance(profile.spawn, SpawnProgress.MARKET)
 	profile.eliasAwake = true
+	applyRespawn(player)
 	sync(player)
 	save(player)
 	local character = player.Character
@@ -513,8 +549,10 @@ local function goCity(player: Player)
 		return
 	end
 	profile.phase = "city"
+	profile.spawn = SpawnProgress.advance(profile.spawn, SpawnProgress.CITY)
 	profile.eliasAwake = true
 	CityRules.onDeed(profile.inv, story.companionName)
+	applyRespawn(player)
 	sync(player)
 	save(player)
 	local character = player.Character
@@ -538,15 +576,22 @@ local function placeCharacter(player: Player, character: Model)
 		humanoid.Health = 100
 	end
 	local profile = profileOf(player)
+	-- Dying on a ferry visit, or rejoining after one, resumes at the cottage.
+	if profile and profile.spawn == SpawnProgress.CITY and profile.phase ~= "city" then
+		profile.phase = "city"
+		sync(player)
+		save(player)
+	end
 	if root and root:IsA("BasePart") then
-		if profile and profile.phase == "city" then
+		if profile and profile.spawn == SpawnProgress.CITY then
 			root.CFrame = SkyCity.spawnCFrame()
-		elseif profile and profile.phase == "market" then
+		elseif profile and profile.spawn == SpawnProgress.MARKET then
 			root.CFrame = Market.spawnCFrame()
 		else
 			root.CFrame = Workshop.spawnCFrame()
 		end
 	end
+	applyRespawn(player)
 	player:SetAttribute("Health", 100)
 	if profile and (profile.phase == "siege" or profile.phase == "breach" or profile.phase == "escape") then
 		giveWrench(player)
@@ -561,6 +606,9 @@ function Tutorial.start()
 	built = Workshop.build(workspace)
 	market = Market.build(workspace)
 	local city = SkyCity.build(workspace)
+	workshopPad = built.spawn
+	marketPad = market.spawn
+	cityPad = city.spawn
 	elias = Elias.create(built.folder, Workshop.brotherFeet())
 	local companion = elias :: Model
 
@@ -626,7 +674,7 @@ function Tutorial.start()
 				end
 				for _, other in Players:GetPlayers() do
 					local profile = profileOf(other)
-					if profile then
+					if stillInWorkshop(profile) then
 						profile.phase = "explore"
 					end
 				end
@@ -635,7 +683,7 @@ function Tutorial.start()
 			else
 				for _, other in Players:GetPlayers() do
 					local profile = profileOf(other)
-					if profile then
+					if stillInWorkshop(profile) then
 						profile.phase = "rebuild"
 						sync(other)
 					end
@@ -686,7 +734,7 @@ function Tutorial.start()
 			end
 			for _, other in Players:GetPlayers() do
 				local profile = profileOf(other)
-				if profile then
+				if stillInWorkshop(profile) then
 					profile.phase = "rebuild"
 					sync(other)
 				end
@@ -697,6 +745,10 @@ function Tutorial.start()
 
 	built.boat.Triggered:Connect(function(player)
 		local story = storyOf(player)
+		local profile = profileOf(player)
+		if profile and profile.spawn == SpawnProgress.CITY then
+			return
+		end
 		if world.phase ~= "escape" or not story then
 			tell(player, "Skiff", "The levers are cold. The dock is not yours yet.")
 			return
@@ -1033,7 +1085,9 @@ function Tutorial.start()
 		if not profile or not story or profile.phase ~= "city" then
 			return
 		end
+		-- A visit. The cottage stays the saved spawn.
 		profile.phase = "market"
+		applyRespawn(player)
 		sync(player)
 		save(player)
 		local character = player.Character
@@ -1041,7 +1095,7 @@ function Tutorial.start()
 		if root and root:IsA("BasePart") then
 			root.CFrame = Market.spawnCFrame()
 		end
-		tell(player, "Ferry", "Back at the training market. The real-estate desk still knows the way home.")
+		tell(player, "Ferry", "Back at the training market. If you fall, you wake at the cottage. The real-estate desk still knows the way home.")
 	end)
 
 	local function onPlayer(player: Player)
@@ -1050,6 +1104,7 @@ function Tutorial.start()
 		stories[player] = story
 		profiles[player] = profile
 		plasma[player] = plasma[player] or 100
+		applyRespawn(player)
 		applySign(story)
 		for index, notePrompt in { built.journal, built.theory, built.talisman } do
 			local note = story.tutorial.notes[index]
