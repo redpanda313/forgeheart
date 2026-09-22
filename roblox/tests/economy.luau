@@ -38,6 +38,26 @@ local gained = Economy.sellAll(inv)
 if gained ~= 19 or inv.brass ~= 59 then
 	fail("sell " .. tostring(gained) .. " brass " .. tostring(inv.brass))
 end
+
+local mira = Economy.VENDORS.mira
+if Economy.vendorBuyPrice(mira, "cloud_iron") ~= 4 or Economy.vendorSellPrice(mira, "cloud_iron") ~= 8 then
+	fail("mira prices")
+end
+local dock = Economy.VENDORS.dock
+if Economy.vendorBuyPrice(dock, "cloud_iron") ~= 4 then
+	fail("dock buy mul 0.9 of 4 rounds to 4")
+end
+if Economy.vendorSellPrice(dock, "cloud_iron") ~= 9 then
+	fail("dock sell " .. tostring(Economy.vendorSellPrice(dock, "cloud_iron")))
+end
+local okBuy = Economy.buyFromVendor(inv, "mira", "scrap_brass", 1)
+if not okBuy or inv.brass ~= 53 or Economy.count(inv, "scrap_brass") ~= 1 then
+	fail("buy from mira")
+end
+local okSell = Economy.sellToVendor(inv, "hark", "scrap_brass", 1)
+if not okSell then
+	fail("sell to hark")
+end
 local bought = Economy.buyApartment(inv)
 if bought then
 	fail("apartment should be too expensive")

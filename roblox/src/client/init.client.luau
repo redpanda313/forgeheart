@@ -3,7 +3,11 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
-local Districts = require(ReplicatedStorage:WaitForChild("ForgeHeart"):WaitForChild("Districts"))
+local Shared = ReplicatedStorage:WaitForChild("ForgeHeart")
+local Districts = require(Shared:WaitForChild("Districts"))
+local BoardRide = require(script:WaitForChild("BoardRide"))
+local Harvest = require(script:WaitForChild("Harvest"))
+local VendorUi = require(script:WaitForChild("VendorUi"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -174,46 +178,8 @@ close.MouseButton1Click:Connect(function()
 	card.Visible = false
 end)
 
-local newGame = Instance.new("TextButton")
-newGame.Name = "NewGame"
-newGame.AnchorPoint = Vector2.new(0, 1)
-newGame.Position = UDim2.new(0, 16, 1, -16)
-newGame.Size = UDim2.fromOffset(132, 34)
-newGame.BackgroundColor3 = Color3.fromRGB(62, 42, 24)
-newGame.Font = Enum.Font.Antique
-newGame.Text = "New game"
-newGame.TextColor3 = Color3.fromRGB(232, 206, 140)
-newGame.TextSize = 16
-newGame.Parent = gui
-local newGameCorner = Instance.new("UICorner")
-newGameCorner.CornerRadius = UDim.new(0, 6)
-newGameCorner.Parent = newGame
-local newGameStroke = Instance.new("UIStroke")
-newGameStroke.Color = Color3.fromRGB(184, 146, 58)
-newGameStroke.Parent = newGame
-
-local remotes = ReplicatedStorage:WaitForChild("ForgeHeart"):WaitForChild("Remotes")
+local remotes = Shared:WaitForChild("Remotes")
 local showLore = remotes:WaitForChild("ShowLore")
-local newGameRemote = remotes:WaitForChild("NewGame")
-local eraseArmed = false
-newGame.MouseButton1Click:Connect(function()
-	if not eraseArmed then
-		eraseArmed = true
-		newGame.Text = "Erase save?"
-		task.delay(6, function()
-			if eraseArmed then
-				eraseArmed = false
-				newGame.Text = "New game"
-			end
-		end)
-		return
-	end
-	eraseArmed = false
-	newGame.Text = "New game"
-	if newGameRemote:IsA("RemoteEvent") then
-		newGameRemote:FireServer()
-	end
-end)
 if showLore:IsA("RemoteEvent") then
 	showLore.OnClientEvent:Connect(function(titleText: string, body: string)
 		cardTitle.Text = titleText
@@ -303,7 +269,7 @@ local function refreshBay()
 	bayBody.Text = table.concat(lines, "\n")
 end
 
-local mapLines = { "Wind skyways join the islands. Walk the cyan lanes.", "" }
+local mapLines = { "No roads between islands — only wind skyways. Q board and ride the cyan lanes.", "" }
 for _, district in Districts.LIST do
 	table.insert(
 		mapLines,
@@ -332,3 +298,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		toggle(mapCard)
 	end
 end)
+
+BoardRide.start(gui)
+Harvest.start(gui)
+VendorUi.start(gui)

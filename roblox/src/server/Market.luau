@@ -2,6 +2,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("ForgeHeart")
+local BoardMesh = require(Shared:WaitForChild("BoardMesh"))
 local Economy = require(Shared:WaitForChild("Economy"))
 local Palette = require(Shared:WaitForChild("Palette"))
 local Scale = require(Shared:WaitForChild("Scale"))
@@ -53,6 +54,8 @@ export type Built = {
 	reef: ProximityPrompt,
 	broker: ProximityPrompt,
 	apartment: ProximityPrompt,
+	boardShop: ProximityPrompt,
+	trades: { [string]: ProximityPrompt },
 	recipes: { [string]: ProximityPrompt },
 	spawn: SpawnLocation,
 }
@@ -96,6 +99,8 @@ function Market.build(parent: Instance): Built
 
 	-- Four vendor stands on the r=12 ring. The broker uses the first counter.
 	local brokerPart: BasePart? = nil
+	local vendorIds = { "mira", "hark", "sela", "dock" }
+	local trades = {}
 	local angles = { -0.9, -0.3, 0.3, 0.9 }
 	for index, angle in angles do
 		local x = math.cos(angle) * 12
@@ -109,7 +114,10 @@ function Market.build(parent: Instance): Built
 		local counter = slab("Counter", 3.4, 1.0, 0.72, x, 0.62, z, Palette.woodDark, Enum.Material.Wood)
 		counter.CFrame = CFrame.new(at(x, 0.62, z)) * CFrame.Angles(0, yaw, 0)
 		counter.Parent = stand
-		NpcKit.make(stand, "vendor", index - 1, "Vendor", at(x * 1.12, 0.45, z * 1.12))
+		local vendorId = vendorIds[index]
+		local vendor = Economy.VENDORS[vendorId]
+		NpcKit.make(stand, "vendor", index - 1, vendor.name, at(x * 1.12, 0.45, z * 1.12))
+		trades[vendorId] = prompt(counter, "Trade", vendor.name)
 		if index == 1 then
 			brokerPart = counter
 		end
@@ -147,7 +155,10 @@ function Market.build(parent: Instance): Built
 
 	slab("HireBoard", 2.2, 2.8, 0.15, 22, 1.8, 14, Palette.paper, Enum.Material.Wood)
 	slab("BoardShop", 7, 0.3, 7, 12, 0.2, 28, Palette.wood, Enum.Material.Wood)
-	slab("BoardRack", 2.2, 1.2, 0.5, 12, 0.9, 28, Palette.iron, Enum.Material.Metal)
+	local boardRack = slab("BoardRack", 2.2, 1.2, 0.5, 12, 0.9, 28, Palette.iron, Enum.Material.Metal)
+	local boardShop = prompt(boardRack, "Board shop", "Buy once, ride forever")
+	local display = BoardMesh.make(folder, "ShopBoard")
+	display:PivotTo(CFrame.new(at(12, 1.35, 28)) * CFrame.Angles(0, math.rad(90), math.rad(18)))
 
 	local broker = prompt(brokerPart :: BasePart, "Sell all", "Broker")
 
@@ -168,6 +179,8 @@ function Market.build(parent: Instance): Built
 		reef = reefPrompt,
 		broker = broker,
 		apartment = apartment,
+		boardShop = boardShop,
+		trades = trades,
 		recipes = recipes,
 		spawn = spawn,
 	}

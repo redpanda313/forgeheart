@@ -3,8 +3,10 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("ForgeHeart")
+local BoardMesh = require(Shared:WaitForChild("BoardMesh"))
 local Districts = require(Shared:WaitForChild("Districts"))
 local Scale = require(Shared:WaitForChild("Scale"))
+local Skyways = require(Shared:WaitForChild("Skyways"))
 
 local NpcKit = require(script.Parent.NpcKit)
 
@@ -89,39 +91,61 @@ local function sign(parent: Instance, name: string, text: string, x: number, y: 
 	return board
 end
 
-local SKY = Color3.fromRGB(80, 200, 220)
+local SKY_CORE = Color3.fromRGB(70, 220, 245)
+local SKY_SOFT = Color3.fromRGB(90, 190, 220)
+local SKY_WHISP = Color3.fromRGB(160, 235, 255)
 
-local function span(parent: Instance, a: Vector3, b: Vector3, width: number)
+local function windPlank(parent: Instance, a: Vector3, b: Vector3, widthStuds: number, color: Color3, transparency: number)
 	local delta = b - a
 	local length = delta.Magnitude
-	if length < 0.5 then
+	if length < 0.4 then
 		return
 	end
 	local part = Instance.new("Part")
-	part.Name = "Skyway"
+	part.Name = "Wind"
 	part.Anchored = true
-	part.CanCollide = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CastShadow = false
 	part.Material = Enum.Material.Neon
-	part.Color = SKY
-	part.Transparency = 0.15
-	part.Size = Vector3.new(width, Scale.studs(0.28), length)
+	part.Color = color
+	part.Transparency = transparency
+	part.Size = Vector3.new(widthStuds, Scale.studs(0.06), length)
 	part.CFrame = CFrame.lookAt((a + b) / 2, b)
 	part.Parent = parent
 end
 
-local function skyway(parent: Instance, x1: number, z1: number, x2: number, z2: number, arch: number, width: number)
-	local dist = math.sqrt((x2 - x1) ^ 2 + (z2 - z1) ^ 2)
-	local segments = math.clamp(math.ceil(dist / 48), 2, 18)
-	local deck = 0.4
-	local function at(t: number): Vector3
-		local x = x1 + (x2 - x1) * t
-		local z = z1 + (z2 - z1) * t
-		local y = deck + math.sin(t * math.pi) * arch
-		return pos(x, y, z)
+local function ring(parent: Instance, x: number, y: number, z: number)
+	local disc = box(parent, "SkyEntry", 3.2, 0.08, 3.2, x, y, z, SKY_CORE, Enum.Material.Neon, false)
+	disc.Shape = Enum.PartType.Cylinder
+	disc.CFrame = CFrame.new(pos(x, y, z)) * CFrame.Angles(0, 0, math.rad(90))
+	disc.Transparency = 0.45
+	disc.CanCollide = false
+end
+
+-- Additive cyan ribbons. Walkers fall through; the board samples the same bezier.
+local function drawWind(parent: Instance, link)
+	local route = Skyways.curve(link.ax, link.az, link.bx, link.bz, link)
+	if not route then
+		return
 	end
-	for i = 0, segments - 1 do
-		span(parent, at(i / segments), at((i + 1) / segments), Scale.studs(width))
+	local pts = route.points
+	for i = 1, #pts - 1 do
+		local a = pos(pts[i].x, pts[i].y, pts[i].z)
+		local b = pos(pts[i + 1].x, pts[i + 1].y, pts[i + 1].z)
+		windPlank(parent, a, b, Scale.studs(route.width * 0.22), SKY_CORE, 0.28)
+		if i % 2 == 0 then
+			local right = Vector3.new(b.Z - a.Z, 0, a.X - b.X)
+			if right.Magnitude > 0.01 then
+				right = right.Unit * Scale.studs(route.width * 0.28)
+				windPlank(parent, a + right, b + right, Scale.studs(route.width * 0.14), SKY_SOFT, 0.52)
+				windPlank(parent, a - right, b - right, Scale.studs(route.width * 0.1), SKY_WHISP, 0.68)
+			end
+		end
 	end
+	ring(parent, route.a0.x, route.a0.y, route.a0.z)
+	ring(parent, route.b0.x, route.b0.y, route.b0.z)
 end
 
 local function tree(parent: Instance, x: number, z: number)
@@ -181,7 +205,6 @@ function CityLayout.build(folder: Folder)
 		local stall = box(island, "Stall", 3, 1.6, 2, stallX, 1.1, stallZ, Color3.fromRGB(120, 78, 42), Enum.Material.Wood, true)
 		stallParts[district.id] = stall
 		sign(island, "StallSign", `STALL · {district.stallCost}`, stallX, 2.9, stallZ + 1.4)
-		skyway(links, cx, cz, stallX, stallZ, 4, 6)
 		if district.role == "market" or district.role == "premium" or district.role == "mixed" then
 			NpcKit.make(island, "vendor", di, "Vendor", pos(stallX - 1.2, 0.55, stallZ))
 		end
@@ -195,23 +218,25 @@ function CityLayout.build(folder: Folder)
 		local standX = hx + math.cos(homeA + math.pi) * 2.2
 		local standZ = hz + math.sin(homeA + math.pi) * 2.2
 		NpcKit.make(island, "resident", di, "Resident", pos(standX, 0.55, standZ))
-		skyway(links, cx, cz, hx, hz, 4, 6)
 
 		if Districts.hasReef(district) then
-			local reefX = cx - sz * 0.55
-			local reefZ = cz + (if district.role == "premium" then 4 else 0)
+			local reefX, reefZ = Skyways.reefOffset(district)
 			disc(island, "Reef", 10, Districts.FLOOR_THICK, reefX, Districts.DECK_Y, reefZ, Color3.fromRGB(74, 106, 120), Enum.Material.Slate)
 			local node = box(island, "ReefNode", 2.2, 1.2, 2.2, reefX, 1.0, reefZ, Color3.fromRGB(90, 140, 150), Enum.Material.Slate, true)
 			reefParts[district.id] = node
-			skyway(links, cx, cz, reefX, reefZ, 6, 6.5)
 		end
 	end
 
-	for _, pair in Districts.SKYWAYS do
-		local a = Districts.byId(pair[1])
-		local b = Districts.byId(pair[2])
-		local dist = math.sqrt((a.x - b.x) ^ 2 + (a.z - b.z) ^ 2)
-		skyway(links, a.x, a.z, b.x, b.z, math.min(22, 6 + dist * 0.035), 8)
+	for _, link in Skyways.links() do
+		drawWind(links, link)
+	end
+	sign(links, "SkywaysHint", "SKYWAYS · Q BOARD · WIND PATHS ONLY · NO ROADS", 0, 8, 18)
+
+	local extras = Instance.new("Folder")
+	extras.Name = "WanderPads"
+	extras.Parent = folder
+	for index, pad in Skyways.extraPads() do
+		floorPad(extras, "Pad" .. index, pad.w, pad.d, pad.x, pad.z, Color3.fromRGB(74, 72, 68))
 	end
 
 	local residential = Districts.byId("residential")
@@ -221,7 +246,6 @@ function CityLayout.build(folder: Folder)
 	box(folder, "CottageRoof", 6.6, 0.35, 5.6, ax, 3.5, az, Color3.fromRGB(184, 146, 58), Enum.Material.Metal, true)
 	local homeMark = box(folder, "HomeMark", 1.2, 1.4, 0.3, ax + 2, 1.25, az + 6, Color3.fromRGB(232, 200, 120), Enum.Material.Neon, false)
 	sign(folder, "HomeSign", "YOUR HOME", ax, 5.2, az + 2)
-	skyway(links, ax, az, residential.x, residential.z, 4, 6.5)
 	tree(folder, ax + 10, az + 7)
 
 	local neighbors = {}
@@ -234,16 +258,18 @@ function CityLayout.build(folder: Folder)
 		NpcKit.make(folder, role, 0, spot.name, pos(nx + 3, 0.55, nz + 1.2))
 		local mark = box(folder, spot.id .. "Door", 1.1, 1.8, 0.2, nx + 3, 1.2, nz, Color3.fromRGB(216, 196, 154), Enum.Material.Wood, false)
 		sign(folder, spot.id .. "Sign", string.upper(spot.name), nx, 3.8, nz + 2)
-		skyway(links, nx, nz, residential.x, residential.z, 5, 6)
 		table.insert(neighbors, { id = spot.id, name = spot.name, part = mark })
 	end
 
 	floorPad(folder, "FerryPad", 12, 10, residential.x, residential.z + 36, Color3.fromRGB(74, 80, 96))
 	local ferry = box(folder, "Ferry", 3, 1.2, 2, residential.x, 1.2, residential.z + 38, Color3.fromRGB(120, 90, 52), Enum.Material.Wood, true)
 	sign(folder, "FerrySign", "FERRY · TRAINING MARKET", residential.x, 2.8, residential.z + 40)
-	skyway(links, residential.x, residential.z, residential.x, residential.z + 36, 5, 6.5)
 
-	box(folder, "BoardRack", 2.5, 1.2, 0.5, residential.x + 14, 1.0, residential.z - 12, Color3.fromRGB(74, 78, 85), Enum.Material.Metal, true)
+	local boardRack = box(folder, "BoardRack", 2.5, 1.2, 0.5, residential.x + 14, 1.0, residential.z - 12, Color3.fromRGB(74, 78, 85), Enum.Material.Metal, true)
+	local boardMark = box(folder, "BoardShop", 0.4, 0.4, 0.4, residential.x + 14, 1.2, residential.z - 10, Color3.fromRGB(102, 224, 255), Enum.Material.Neon, false)
+	boardMark.Shape = Enum.PartType.Ball
+	local display = BoardMesh.make(folder, "ShopBoard")
+	display:PivotTo(CFrame.new(pos(residential.x + 14, 1.35, residential.z - 12)) * CFrame.Angles(0, math.rad(90), math.rad(18)))
 	sign(folder, "BoardSign", "CITY BOARD SHOP", residential.x + 14, 2.8, residential.z - 10)
 
 	local industrial = Districts.byId("industrial")
@@ -255,7 +281,6 @@ function CityLayout.build(folder: Folder)
 	local expand = box(folder, "ExpandBay", 2.2, 1.4, 0.3, ix - 6, 1.2, iz, Color3.fromRGB(184, 146, 58), Enum.Material.Metal, true)
 	local invent = box(folder, "InventDesk", 2.4, 1.2, 1.2, ix, 0.9, iz + 6, Color3.fromRGB(184, 115, 51), Enum.Material.Metal, true)
 	local robot = box(folder, "RobotDock", 2, 1.2, 1.4, ix, 0.9, iz - 6, Color3.fromRGB(42, 46, 51), Enum.Material.Metal, true)
-	skyway(links, industrial.x, industrial.z, ix, iz, 4, 6.5)
 	sign(folder, "SlipSign", "INDUSTRIAL SLIPS", ix, 4.2, iz - 6)
 
 	local market = Districts.byId("grand_market")
@@ -305,6 +330,8 @@ function CityLayout.build(folder: Folder)
 		plotDressing = plotDressing,
 		plotX = px,
 		plotZ = pz,
+		boardShop = boardMark,
+		boardRack = boardRack,
 	}
 end
 

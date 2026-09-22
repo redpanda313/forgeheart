@@ -163,9 +163,32 @@ function Elias.wake(model: Model)
 	model:PivotTo(CFrame.new(feet.X, feet.Y, feet.Z))
 end
 
+local ridePos: Vector3? = nil
+local rideYaw = 0
+local boardVisual: Model? = nil
+
+function Elias.attachBoard(board: Model)
+	boardVisual = board
+	board:SetAttribute("Riding", false)
+	for _, part in board:GetDescendants() do
+		if part:IsA("BasePart") then
+			part.Transparency = 1
+		end
+	end
+end
+
 function Elias.step(model: Model, target: Vector3, dt: number)
 	if model:GetAttribute("Awake") ~= true then
 		return
+	end
+	ridePos = nil
+	if boardVisual then
+		boardVisual:SetAttribute("Riding", false)
+		for _, part in boardVisual:GetDescendants() do
+			if part:IsA("BasePart") then
+				part.Transparency = 1
+			end
+		end
 	end
 	local pivot = model:GetPivot()
 	local pos = pivot.Position
@@ -182,6 +205,46 @@ function Elias.step(model: Model, target: Vector3, dt: number)
 	local nextPos = pos + flat.Unit * stepDist
 	local look = Vector3.new(target.X, nextPos.Y, target.Z)
 	model:PivotTo(CFrame.lookAt(nextPos, look))
+end
+
+function Elias.stepBoard(model: Model, leader: CFrame, dt: number)
+	if model:GetAttribute("Awake") ~= true then
+		return
+	end
+	local look = Vector3.new(leader.LookVector.X, 0, leader.LookVector.Z)
+	if look.Magnitude < 0.05 then
+		look = Vector3.new(0, 0, -1)
+	else
+		look = look.Unit
+	end
+	local right = Vector3.new(look.Z, 0, -look.X)
+	local target = leader.Position - look * Scale.studs(4.8) - right * Scale.studs(1.1)
+	if ridePos == nil then
+		ridePos = target
+		rideYaw = math.atan2(look.X, look.Z)
+	end
+	ridePos = (ridePos :: Vector3):Lerp(target, 1 - math.exp(-5.5 * dt))
+	local goalYaw = math.atan2(look.X, look.Z)
+	local diff = goalYaw - rideYaw
+	while diff > math.pi do
+		diff -= math.pi * 2
+	end
+	while diff < -math.pi do
+		diff += math.pi * 2
+	end
+	rideYaw += diff * (1 - math.exp(-7 * dt))
+	local face = Vector3.new(math.sin(rideYaw), 0, math.cos(rideYaw))
+	local boardAt = Vector3.new(ridePos.X, leader.Position.Y - 2.2, ridePos.Z)
+	if boardVisual then
+		boardVisual:SetAttribute("Riding", true)
+		for _, part in boardVisual:GetDescendants() do
+			if part:IsA("BasePart") then
+				part.Transparency = if part.Name == "Keel" then 0.15 else 0
+			end
+		end
+		boardVisual:PivotTo(CFrame.lookAt(boardAt, boardAt + face))
+	end
+	model:PivotTo(CFrame.lookAt(boardAt + Vector3.new(0, Scale.studs(0.12), 0), boardAt + face + Vector3.new(0, Scale.studs(0.12), 0)))
 end
 
 return Elias

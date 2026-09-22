@@ -310,6 +310,7 @@ function SkyCity.build(parent: Instance)
 	local decorPrompt = prompt(layout.plot, "Place décor", "1,800", 0.4)
 	local gardenPrompt = prompt(layout.plot, "Plant garden", "5,500", 0.4)
 	local ferryPrompt = prompt(layout.ferry, "Training market", "Ferry", 0.5)
+	local boardShopPrompt = prompt(layout.boardShop, "Board shop", "Buy once, ride forever", 0.35)
 
 	local recipes = {}
 	local labels = {
@@ -399,6 +400,7 @@ function SkyCity.build(parent: Instance)
 		broker = brokerPrompt,
 		recipes = recipes,
 		ferry = ferryPrompt,
+		boardShop = boardShopPrompt,
 		spawn = spawn,
 		refreshHome = refreshHome,
 		rules = CityRules,

@@ -130,6 +130,110 @@ function Economy.craft(inv, recipeId: string): (boolean, string)
 	return true, `{recipe.name}: {recipe.output.n}× {outName}.`
 end
 
+Economy.VENDORS = {
+	mira = {
+		id = "mira",
+		name = "Mira Cole",
+		title = "General Goods",
+		buyMul = 1.0,
+		sellMul = 1.0,
+		stock = { "cloud_iron", "scrap_brass", "sky_salt", "wire" },
+		greeting = "Cloud iron’s steady today.",
+	},
+	hark = {
+		id = "hark",
+		name = "Hark Voss",
+		title = "Scrap & Gears",
+		buyMul = 1.15,
+		sellMul = 0.95,
+		stock = { "scrap_brass", "gear_blank", "wire", "repair_kit", "speed_tool" },
+		greeting = "Bring me scrap. I’ll pay fair — for scrap.",
+	},
+	sela = {
+		id = "sela",
+		name = "Sela Quinn",
+		title = "Silk & Soft Goods",
+		buyMul = 1.1,
+		sellMul = 1.05,
+		stock = { "spore_silk", "sky_salt", "haul_pack" },
+		greeting = "Spore silk from the reefs? I’ll take every spool.",
+	},
+	dock = {
+		id = "dock",
+		name = "Ferry Clerk Jon",
+		title = "Dock Exchange",
+		buyMul = 0.9,
+		sellMul = 1.1,
+		stock = { "cloud_iron", "scrap_brass", "sky_salt" },
+		greeting = "Quick trades for haulers. Prices favor the dock, not you.",
+	},
+}
+
+local function round(n: number): number
+	return math.floor(n + 0.5)
+end
+
+function Economy.vendorBuyPrice(vendor, id: string): number
+	local def = Economy.COMMODITIES[id]
+	return math.max(1, round(def.baseBuy * vendor.buyMul))
+end
+
+function Economy.vendorSellPrice(vendor, id: string): number
+	local def = Economy.COMMODITIES[id]
+	return math.max(1, round(def.baseSell * vendor.sellMul))
+end
+
+local function vendorHas(vendor, id: string): boolean
+	for _, stockId in vendor.stock do
+		if stockId == id then
+			return true
+		end
+	end
+	return false
+end
+
+function Economy.sellToVendor(inv, vendorId: string, id: string, qty: number): (boolean, number, string)
+	local vendor = Economy.VENDORS[vendorId]
+	if not vendor then
+		return false, 0, "No such stall."
+	end
+	if not vendorHas(vendor, id) then
+		return false, 0, "They don’t buy that."
+	end
+	if qty < 1 or Economy.count(inv, id) < qty then
+		return false, 0, "Not enough goods."
+	end
+	local unit = Economy.vendorBuyPrice(vendor, id)
+	local gained = unit * qty
+	inv.items[id] = Economy.count(inv, id) - qty
+	if inv.items[id] <= 0 then
+		inv.items[id] = nil
+	end
+	inv.brass += gained
+	return true, gained, `Sold {qty}× {Economy.COMMODITIES[id].name} for {gained} brass.`
+end
+
+function Economy.buyFromVendor(inv, vendorId: string, id: string, qty: number): (boolean, number, string)
+	local vendor = Economy.VENDORS[vendorId]
+	if not vendor then
+		return false, 0, "No such stall."
+	end
+	if not vendorHas(vendor, id) then
+		return false, 0, "Not in stock."
+	end
+	if qty < 1 then
+		return false, 0, "Invalid amount."
+	end
+	local unit = Economy.vendorSellPrice(vendor, id)
+	local spent = unit * qty
+	if inv.brass < spent then
+		return false, 0, "Not enough brass."
+	end
+	inv.brass -= spent
+	Economy.add(inv, id, qty)
+	return true, spent, `Bought {qty}× {Economy.COMMODITIES[id].name} for {spent} brass.`
+end
+
 function Economy.buyApartment(inv): (boolean, string)
 	if inv.apartment then
 		return false, "You already hold the sky apartment deed."

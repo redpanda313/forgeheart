@@ -173,6 +173,9 @@ function CityRules.ensure(inv)
 	if inv.rogueId == nil then
 		inv.rogueId = false
 	end
+	if type(inv.playerBoard) ~= "table" then
+		inv.playerBoard = { owned = false, thruster = false, rails = false, deck = false }
+	end
 	return inv
 end
 
