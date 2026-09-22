@@ -303,6 +303,7 @@ function SkyCity.build(parent: Instance)
 	local expandPrompt = prompt(layout.expand, "Expand bay", "Workshop", 0.4)
 	local inventPrompt = prompt(layout.invent, "Invent", "Desk", 0.5)
 	local craftPrompt = prompt(layout.invent, "Craft invention", "Latest recipe", 0.35)
+	local assemblePrompt = prompt(peg("Assemble", layout.invent, 4, 0), "Assemble frame", "Five slots", 0.4)
 	local robotPrompt = prompt(layout.robot, "Buy chassis", "120 brass", 0.45)
 	local reefPrompt = prompt(layout.reefs.grand_market, "Extract", "Cloud reef", 0.3)
 	local brokerPrompt = prompt(layout.broker, "Sell all", "Broker", 0.3)
@@ -385,6 +386,7 @@ function SkyCity.build(parent: Instance)
 		industrialStall = industrialStallPrompt,
 		invent = inventPrompt,
 		craft = craftPrompt,
+		assemble = assemblePrompt,
 		robot = robotPrompt,
 		plot = plotPrompt,
 		decor = decorPrompt,

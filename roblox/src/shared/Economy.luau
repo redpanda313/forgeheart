@@ -14,6 +14,17 @@ Economy.COMMODITIES = {
 	repair_kit = { name = "Repair Kit", baseBuy = 6, baseSell = 14 },
 	speed_tool = { name = "Rivet Spanner", baseBuy = 12, baseSell = 28 },
 	haul_pack = { name = "Haul Pack", baseBuy = 10, baseSell = 24 },
+	glass_pane = { name = "Glass Pane", baseBuy = 7, baseSell = 14 },
+	fuel_cell = { name = "Fuel Cell", baseBuy = 10, baseSell = 20 },
+	flower_gift = { name = "Cloud Blooms", baseBuy = 2, baseSell = 5 },
+	brass_charm = { name = "Brass Charm", baseBuy = 35, baseSell = 12 },
+	silk_scarf = { name = "Spore-Silk Scarf", baseBuy = 55, baseSell = 22 },
+	polished_wire = { name = "Polished Wire", baseBuy = 11, baseSell = 22 },
+	bloom_brass = { name = "Brass Petals", baseBuy = 2, baseSell = 5 },
+	bloom_sky = { name = "Skyblooms", baseBuy = 2, baseSell = 5 },
+	bloom_spore = { name = "Spore Lilies", baseBuy = 2, baseSell = 5 },
+	bloom_harbor = { name = "Harbor Roses", baseBuy = 2, baseSell = 5 },
+	bloom_aether = { name = "Aether Orchids", baseBuy = 2, baseSell = 5 },
 }
 
 Economy.HARVEST_POOL = { "cloud_iron", "scrap_brass", "spore_silk", "sky_salt" }
@@ -137,7 +148,7 @@ Economy.VENDORS = {
 		title = "General Goods",
 		buyMul = 1.0,
 		sellMul = 1.0,
-		stock = { "cloud_iron", "scrap_brass", "sky_salt", "wire" },
+		stock = { "cloud_iron", "scrap_brass", "sky_salt", "wire", "flower_gift", "brass_charm" },
 		greeting = "Cloud iron’s steady today.",
 	},
 	hark = {
@@ -146,7 +157,7 @@ Economy.VENDORS = {
 		title = "Scrap & Gears",
 		buyMul = 1.15,
 		sellMul = 0.95,
-		stock = { "scrap_brass", "gear_blank", "wire", "repair_kit", "speed_tool" },
+		stock = { "scrap_brass", "gear_blank", "wire", "repair_kit", "speed_tool", "fuel_cell" },
 		greeting = "Bring me scrap. I’ll pay fair — for scrap.",
 	},
 	sela = {
@@ -155,7 +166,7 @@ Economy.VENDORS = {
 		title = "Silk & Soft Goods",
 		buyMul = 1.1,
 		sellMul = 1.05,
-		stock = { "spore_silk", "sky_salt", "haul_pack" },
+		stock = { "spore_silk", "sky_salt", "haul_pack", "flower_gift", "silk_scarf" },
 		greeting = "Spore silk from the reefs? I’ll take every spool.",
 	},
 	dock = {

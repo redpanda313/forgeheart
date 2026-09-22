@@ -176,6 +176,12 @@ function CityRules.ensure(inv)
 	if type(inv.playerBoard) ~= "table" then
 		inv.playerBoard = { owned = false, thruster = false, rails = false, deck = false }
 	end
+	if type(inv.neighborAff) ~= "table" then
+		inv.neighborAff = {}
+	end
+	if type(inv.assembledFrames) ~= "table" then
+		inv.assembledFrames = {}
+	end
 	return inv
 end
 
@@ -662,6 +668,17 @@ function EconomyCommodity(id: string)
 		gear_blank = { name = "Gear Blank", baseBuy = 8 },
 		repair_kit = { name = "Repair Kit", baseBuy = 6 },
 		haul_pack = { name = "Haul Pack", baseBuy = 10 },
+		fuel_cell = { name = "Fuel Cell", baseBuy = 10 },
+		glass_pane = { name = "Glass Pane", baseBuy = 7 },
+		flower_gift = { name = "Cloud Blooms", baseBuy = 2 },
+		brass_charm = { name = "Brass Charm", baseBuy = 35 },
+		silk_scarf = { name = "Spore-Silk Scarf", baseBuy = 55 },
+		polished_wire = { name = "Polished Wire", baseBuy = 11 },
+		bloom_brass = { name = "Brass Petals", baseBuy = 2 },
+		bloom_sky = { name = "Skyblooms", baseBuy = 2 },
+		bloom_spore = { name = "Spore Lilies", baseBuy = 2 },
+		bloom_harbor = { name = "Harbor Roses", baseBuy = 2 },
+		bloom_aether = { name = "Aether Orchids", baseBuy = 2 },
 	}
 	return commodities[id]
 end
@@ -1052,6 +1069,65 @@ function CityRules.hireNeighbor(inv, neighborId: string): (boolean, string)
 	inv.metNeighbor = true
 	CityRules.applyStanding(inv, 2)
 	return true, `Hired {def.name} (−{cost} brass).`
+end
+
+function CityRules.affinity(inv, neighborId: string): number
+	CityRules.ensure(inv)
+	return inv.neighborAff[neighborId] or 0
+end
+
+function CityRules.giftBrass(inv, neighborId: string): (boolean, string)
+	CityRules.ensure(inv)
+	local def = CityRules.neighborDef(neighborId)
+	if not def then
+		return false, "Nobody home."
+	end
+	if inv.brass < 10 then
+		return false, "Need 10 brass for a small gift."
+	end
+	inv.brass -= 10
+	inv.neighborAff[neighborId] = math.min(120, CityRules.affinity(inv, neighborId) + 3)
+	inv.metNeighbor = true
+	inv.knownNeighbors[neighborId] = true
+	CityRules.applyStanding(inv, 1, "residential", 1)
+	return true, `{def.name} pockets 10b · +affinity ({inv.neighborAff[neighborId]}).`
+end
+
+function CityRules.giftGood(inv, neighborId: string, itemId: string): (boolean, string)
+	CityRules.ensure(inv)
+	local def = CityRules.neighborDef(neighborId)
+	if not def then
+		return false, "Nobody home."
+	end
+	local qty = inv.items[itemId] or 0
+	if qty < 1 then
+		return false, "You don’t have that gift."
+	end
+	inv.items[itemId] -= 1
+	if inv.items[itemId] <= 0 then
+		inv.items[itemId] = nil
+	end
+	local bump = if itemId == "flower_gift" or string.find(itemId, "bloom", 1, true) then 8 elseif itemId == "brass_charm" or itemId == "silk_scarf" then 10 else 4
+	inv.neighborAff[neighborId] = math.min(120, CityRules.affinity(inv, neighborId) + bump)
+	inv.metNeighbor = true
+	inv.knownNeighbors[neighborId] = true
+	CityRules.applyStanding(inv, 1, "residential", 1)
+	local name = CityRules.itemName(itemId)
+	return true, `{def.name} takes the {name} · +{bump} affinity ({inv.neighborAff[neighborId]}).`
+end
+
+function CityRules.setJob(inv, workerId: string, job: string): (boolean, string)
+	CityRules.ensure(inv)
+	if job ~= "harvest" and job ~= "craft" and job ~= "stock" then
+		return false, "Jobs: harvest, craft, stock."
+	end
+	for _, worker in inv.workers do
+		if worker.id == workerId then
+			worker.job = job
+			return true, `{worker.name} assigned to {job}.`
+		end
+	end
+	return false, "No such worker."
 end
 
 function CityRules.buyRobot(inv): (boolean, string)

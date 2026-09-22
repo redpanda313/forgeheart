@@ -6,7 +6,11 @@ local UserInputService = game:GetService("UserInputService")
 local Shared = ReplicatedStorage:WaitForChild("ForgeHeart")
 local Districts = require(Shared:WaitForChild("Districts"))
 local BoardRide = require(script:WaitForChild("BoardRide"))
+local FrameUi = require(script:WaitForChild("FrameUi"))
 local Harvest = require(script:WaitForChild("Harvest"))
+local LeaseUi = require(script:WaitForChild("LeaseUi"))
+local NeighborUi = require(script:WaitForChild("NeighborUi"))
+local ProgramUi = require(script:WaitForChild("ProgramUi"))
 local VendorUi = require(script:WaitForChild("VendorUi"))
 
 local player = Players.LocalPlayer
@@ -264,7 +268,7 @@ local function refreshBay()
 		"Objective",
 		player:GetAttribute("Objective") or "",
 		"",
-		"I closes this office. M opens the empire map. E uses whatever is in front of you.",
+		"I closes this office. M opens the empire map. P assigns harvest/craft/stock programs. E uses whatever is in front of you. Q rides the board.",
 	}
 	bayBody.Text = table.concat(lines, "\n")
 end
@@ -296,9 +300,18 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		toggle(bay)
 	elseif input.KeyCode == Enum.KeyCode.M then
 		toggle(mapCard)
+	elseif input.KeyCode == Enum.KeyCode.P then
+		local request = remotes:FindFirstChild("RequestProgram")
+		if request and request:IsA("RemoteEvent") then
+			request:FireServer()
+		end
 	end
 end)
 
 BoardRide.start(gui)
 Harvest.start(gui)
 VendorUi.start(gui)
+FrameUi.start(gui)
+NeighborUi.start(gui)
+ProgramUi.start(gui)
+LeaseUi.start(gui)
