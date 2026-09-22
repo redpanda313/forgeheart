@@ -307,6 +307,36 @@ function Frame.assemble(inv, fill): (boolean, string, any)
 	return true, `Assembled {frame.name} · sell ~{frame.sellValue}b · Q{string.format("%.2f", frame.quality)}`, frame
 end
 
+function Frame.pickerState(inv)
+	Frame.ensure(inv)
+	if type(inv.frameFill) ~= "table" then
+		inv.frameFill = {}
+	end
+	local parts = {}
+	local fillLabels = {}
+	local lines = { "Fill each space, then assemble. Chassis · mechanisms · power · wiring · personality." }
+	for _, slot in Frame.SLOTS do
+		local list = {}
+		for _, ref in Frame.listForSlot(inv, slot) do
+			table.insert(list, { id = ref, label = Frame.partLabel(inv, ref) })
+		end
+		parts[slot] = list
+		local filled = inv.frameFill[slot]
+		local label = if filled then Frame.partLabel(inv, filled) else "empty"
+		fillLabels[slot] = label
+		table.insert(lines, `{slot}: {label}`)
+	end
+	table.insert(lines, `Frames owned: {#inv.assembledFrames}`)
+	return {
+		fill = inv.frameFill,
+		fillLabels = fillLabels,
+		parts = parts,
+		canAssemble = Frame.canAssemble(inv, inv.frameFill),
+		assembled = #inv.assembledFrames,
+		text = table.concat(lines, "\n"),
+	}
+end
+
 function Frame.autoFill(inv)
 	local fill = {}
 	local reserved = {}

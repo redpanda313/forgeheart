@@ -59,6 +59,7 @@ Economy.RECIPES = {
 function Economy.empty(brass: number?)
 	return {
 		brass = brass or Economy.STARTER_BRASS,
+		aether = 0,
 		items = {},
 		harvestRuns = 0,
 		apartment = false,

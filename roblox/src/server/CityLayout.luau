@@ -5,8 +5,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("ForgeHeart")
 local BoardMesh = require(Shared:WaitForChild("BoardMesh"))
 local Districts = require(Shared:WaitForChild("Districts"))
+local Romance = require(Shared:WaitForChild("Romance"))
 local Scale = require(Shared:WaitForChild("Scale"))
 local Skyways = require(Shared:WaitForChild("Skyways"))
+local Storage = require(Shared:WaitForChild("Storage"))
 
 local NpcKit = require(script.Parent.NpcKit)
 
@@ -301,6 +303,36 @@ function CityLayout.build(folder: Folder)
 	plotDressing.Name = "PlotDressing"
 	plotDressing.Parent = folder
 
+	local romance = {}
+	for index, id in Romance.IDS do
+		local distId = Romance.districtFor(id)
+		local d = Districts.byId(distId)
+		local def = Romance.generate(id, 1)
+		local gx = d.x + 10
+		local gz = d.z - 12
+		local model = NpcKit.make(folder, "girl", index, def.name, pos(gx, 0.55, gz))
+		local torso = model:FindFirstChild("Torso")
+		romance[id] = {
+			id = id,
+			name = def.name,
+			model = model,
+			part = if torso and torso:IsA("BasePart") then torso else model.PrimaryPart,
+		}
+	end
+
+	local vaults = {}
+	for _, track in { "resources", "crafted", "inventions" } do
+		local distId = Storage.officeDistrict(track)
+		local d = Districts.byId(distId)
+		local color = if track == "inventions"
+			then Color3.fromRGB(80, 70, 130)
+			elseif track == "crafted" then Color3.fromRGB(90, 70, 50)
+			else Color3.fromRGB(50, 70, 90)
+		local part = box(folder, track .. "Vault", 3.2, 2.2, 2.4, d.x - 14, 1.4, d.z + 10, color, Enum.Material.Metal, true)
+		sign(folder, track .. "VaultSign", string.upper(Storage.trackLabel(track) .. " VAULT"), d.x - 14, 3.4, d.z + 12)
+		vaults[track] = part
+	end
+
 	-- Cloud under the empire, tiled so no part exceeds Roblox's size limit.
 	local sea = Instance.new("Folder")
 	sea.Name = "CloudSea"
@@ -332,6 +364,8 @@ function CityLayout.build(folder: Folder)
 		plotZ = pz,
 		boardShop = boardMark,
 		boardRack = boardRack,
+		romance = romance,
+		vaults = vaults,
 	}
 end
 

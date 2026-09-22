@@ -8,6 +8,15 @@ end
 if Romance.STAGE_NAMES[1] ~= "stranger" or Romance.STAGE_NAMES[5] ~= "sweetheart" then
 	fail("stage names")
 end
+if Romance.districtFor("girl_lira") ~= "grand_market" then
+	fail("lira plaza")
+end
+if Romance.districtFor("girl_mira") ~= "clocktower" then
+	fail("mira plaza " .. Romance.districtFor("girl_mira"))
+end
+if Romance.districtFor("girl_nova") ~= "brass_arcade" or Romance.districtFor("girl_sage") ~= "mid_ring_east" then
+	fail("nova/sage plazas")
+end
 
 local lira = Romance.generate("girl_lira", 1)
 if not lira or not string.find(lira.name, "Lira", 1, true) then
