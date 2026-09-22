@@ -1,0 +1,717 @@
+{
+  "space": 99723342407270400,
+  "stories": [
+    {
+      "seed": 0,
+      "whoId": "child",
+      "who": "child",
+      "whoOf": "your child",
+      "companionName": "Daria",
+      "playerSurname": "Underbay",
+      "gender": "n",
+      "pronouns": {
+        "subject": "they",
+        "object": "them",
+        "possessive": "their",
+        "possessiveNoun": "theirs",
+        "reflexive": "themselves",
+        "was": "were",
+        "is": "are",
+        "has": "have",
+        "s": ""
+      },
+      "how": "a plasma fire in the night shift",
+      "remains": "a braid of copper wire worn every day",
+      "why": "to grow rich enough that loss never finds you unready",
+      "moral": "a maker who believes personhood can cling to metal",
+      "scar": "a limp from the night you tried to pull them free",
+      "personality": "brave in small rooms, shy in grand halls",
+      "season": "a winter of ash-rain",
+      "place": "along Foundry Span’s lower walk",
+      "lastWords": "“I am not scrap. Remember that.”",
+      "workshopTone": "keeps their notes in the exact same stacks",
+      "summary": "You lost your child to a plasma fire in the night shift. All that remains is a braid of copper wire worn every day. You build to grow rich enough that loss never finds you unready. They call you a maker who believes personhood can cling to metal — and you carry a limp from the night you tried to pull them free.",
+      "lines": [
+        "You lost your child to a plasma fire in the night shift.",
+        "All that remains is a braid of copper wire worn every day.",
+        "You build to grow rich enough that loss never finds you unready.",
+        "They call you a maker who believes personhood can cling to metal — and you carry a limp from the night you tried to pull them free."
+      ],
+      "tutorial": {
+        "workshopName": "Underbay Workshop",
+        "flashTitle": "The Workshop — Daria waits on the bench",
+        "openingToast": "Your child is gone — lost to a plasma fire in the night shift. The frame holds a braid of copper wire worn every day. Walk the lab. Read. Then use the Hand (1) to wake Daria — not scrap (E).",
+        "objectiveExplore": "Read the lab. Wake Daria with the Hand (1) — do not scrap them.",
+        "photoTitle": "Photograph — Daria Underbay",
+        "photoText": "Your child. Someone wrote in careful ink on the reverse: “Taken a winter of ash-rain. They were brave in small rooms, shy in grand halls.” You laid them to rest along Foundry Span’s lower walk. The lab keeps their notes in the exact same stacks.",
+        "notes": [
+          {
+            "title": "Journal — Seating a Soul",
+            "text": "Grandfather’s notes called it a “guest pattern.” Plasma sings; brass remembers. If any spark remains between stars and steam, the right seat will know them. I build because to grow rich enough that loss never finds you unready."
+          },
+          {
+            "title": "Notes — Demons and Guests",
+            "text": "I no longer believe the automata are empty. Something looks out of their eyes when the plasma sings. Demons wear scrap like coats. But love is a beacon too — if I can call your child home, they will know my voice."
+          },
+          {
+            "title": "Bench Note — Do Not Scrap",
+            "text": "Last words I keep: “I am not scrap. Remember that.” I obeyed as far as craft allows. The frame on the bench is their only chance. Hand (1). Not E. Not yet."
+          }
+        ],
+        "trayLabels": [
+          "Core Frame",
+          "Beacon Coil",
+          "Recall Cogs"
+        ],
+        "wrenchText": "An arc wrench from the family rack — plasma teeth for rogue frames. Press E to take it. Protect Daria.",
+        "boatText": "Brass levers and a plasma throttle. Press E to cast off — escape with Daria.",
+        "wakeFlash": "DARIA — plasma seats a guest. They knows you.",
+        "wakeToast": "Speak soft if you must. They is listening through iron. Guard the workshop together.",
+        "siegeToast": "Demon-ridden frames. Hold the workshop for Daria — or take the Arc Wrench and force the door open early.",
+        "scrapFlash": "The talisman frame is scrap —",
+        "scrapToast": "Grief made your hands cruel. Fix it: reclaim the trays, reseat a braid of copper wire worn every day, wake Daria properly.",
+        "rebuildObjectiveBase": "Rebuild Daria",
+        "rebuildFlash": "A new shell stands — a braid of copper wire worn every day reseated",
+        "rebuildToast": "Stand close. Hand weapon. Click to reprogram. Speak the name Daria in the plasma.",
+        "surviveObjective": "Survive — arc the demons, keep Daria close",
+        "breachToastFight": "They wear scrap like coats. Arc wrench for combat. Daria will fight beside you.",
+        "breachToastFlee": "They wear scrap like coats. Fight with Daria or run for the skiff.",
+        "doorAlmostToast": "Almost through — stand ready with Daria.",
+        "winFlash": "SKIFF AWAY — Daria is with you",
+        "winToast": "Next: Sky City Market training — earn 1000 brass and buy a sky apartment. Daria rides the next chapter with you.",
+        "marketLines": [
+          "You lost your child to a plasma fire in the night shift.",
+          "All that remains is a braid of copper wire worn every day.",
+          "You build to grow rich enough that loss never finds you unready.",
+          "They call you a maker who believes personhood can cling to metal — and you carry a limp from the night you tried to pull them free.",
+          "Daria walks with you now in brass and green light."
+        ],
+        "trayPartFlashSample": "Part recovered — Core Frame (2/3)",
+        "trayObjectiveSample": "Rebuild Daria — trays 2/3"
+      }
+    },
+    {
+      "seed": 1,
+      "whoId": "child",
+      "who": "child",
+      "whoOf": "your child",
+      "companionName": "Daria",
+      "playerSurname": "Underbay",
+      "gender": "n",
+      "pronouns": {
+        "subject": "they",
+        "object": "them",
+        "possessive": "their",
+        "possessiveNoun": "theirs",
+        "reflexive": "themselves",
+        "was": "were",
+        "is": "are",
+        "has": "have",
+        "s": ""
+      },
+      "how": "a plasma fire in the night shift",
+      "remains": "a braid of copper wire worn every day",
+      "why": "to grow rich enough that loss never finds you unready",
+      "moral": "a maker who believes personhood can cling to metal",
+      "scar": "a limp from the night you tried to pull them free",
+      "personality": "brave in small rooms, shy in grand halls",
+      "season": "a winter of ash-rain",
+      "place": "along Foundry Span’s lower walk",
+      "lastWords": "“I am not scrap. Remember that.”",
+      "workshopTone": "keeps their notes in the exact same stacks",
+      "summary": "You lost your child to a plasma fire in the night shift. All that remains is a braid of copper wire worn every day. You build to grow rich enough that loss never finds you unready. They call you a maker who believes personhood can cling to metal — and you carry a limp from the night you tried to pull them free.",
+      "lines": [
+        "You lost your child to a plasma fire in the night shift.",
+        "All that remains is a braid of copper wire worn every day.",
+        "You build to grow rich enough that loss never finds you unready.",
+        "They call you a maker who believes personhood can cling to metal — and you carry a limp from the night you tried to pull them free."
+      ],
+      "tutorial": {
+        "workshopName": "Underbay Workshop",
+        "flashTitle": "The Workshop — Daria waits on the bench",
+        "openingToast": "Your child is gone — lost to a plasma fire in the night shift. The frame holds a braid of copper wire worn every day. Walk the lab. Read. Then use the Hand (1) to wake Daria — not scrap (E).",
+        "objectiveExplore": "Read the lab. Wake Daria with the Hand (1) — do not scrap them.",
+        "photoTitle": "Photograph — Daria Underbay",
+        "photoText": "Your child. Someone wrote in careful ink on the reverse: “Taken a winter of ash-rain. They were brave in small rooms, shy in grand halls.” You laid them to rest along Foundry Span’s lower walk. The lab keeps their notes in the exact same stacks.",
+        "notes": [
+          {
+            "title": "Journal — Seating a Soul",
+            "text": "Grandfather’s notes called it a “guest pattern.” Plasma sings; brass remembers. If any spark remains between stars and steam, the right seat will know them. I build because to grow rich enough that loss never finds you unready."
+          },
+          {
+            "title": "Notes — Demons and Guests",
+            "text": "I no longer believe the automata are empty. Something looks out of their eyes when the plasma sings. Demons wear scrap like coats. But love is a beacon too — if I can call your child home, they will know my voice."
+          },
+          {
+            "title": "Bench Note — Do Not Scrap",
+            "text": "Last words I keep: “I am not scrap. Remember that.” I obeyed as far as craft allows. The frame on the bench is their only chance. Hand (1). Not E. Not yet."
+          }
+        ],
+        "trayLabels": [
+          "Core Frame",
+          "Beacon Coil",
+          "Recall Cogs"
+        ],
+        "wrenchText": "An arc wrench from the family rack — plasma teeth for rogue frames. Press E to take it. Protect Daria.",
+        "boatText": "Brass levers and a plasma throttle. Press E to cast off — escape with Daria.",
+        "wakeFlash": "DARIA — plasma seats a guest. They knows you.",
+        "wakeToast": "Speak soft if you must. They is listening through iron. Guard the workshop together.",
+        "siegeToast": "Demon-ridden frames. Hold the workshop for Daria — or take the Arc Wrench and force the door open early.",
+        "scrapFlash": "The talisman frame is scrap —",
+        "scrapToast": "Grief made your hands cruel. Fix it: reclaim the trays, reseat a braid of copper wire worn every day, wake Daria properly.",
+        "rebuildObjectiveBase": "Rebuild Daria",
+        "rebuildFlash": "A new shell stands — a braid of copper wire worn every day reseated",
+        "rebuildToast": "Stand close. Hand weapon. Click to reprogram. Speak the name Daria in the plasma.",
+        "surviveObjective": "Survive — arc the demons, keep Daria close",
+        "breachToastFight": "They wear scrap like coats. Arc wrench for combat. Daria will fight beside you.",
+        "breachToastFlee": "They wear scrap like coats. Fight with Daria or run for the skiff.",
+        "doorAlmostToast": "Almost through — stand ready with Daria.",
+        "winFlash": "SKIFF AWAY — Daria is with you",
+        "winToast": "Next: Sky City Market training — earn 1000 brass and buy a sky apartment. Daria rides the next chapter with you.",
+        "marketLines": [
+          "You lost your child to a plasma fire in the night shift.",
+          "All that remains is a braid of copper wire worn every day.",
+          "You build to grow rich enough that loss never finds you unready.",
+          "They call you a maker who believes personhood can cling to metal — and you carry a limp from the night you tried to pull them free.",
+          "Daria walks with you now in brass and green light."
+        ],
+        "trayPartFlashSample": "Part recovered — Core Frame (2/3)",
+        "trayObjectiveSample": "Rebuild Daria — trays 2/3"
+      }
+    },
+    {
+      "seed": 2,
+      "whoId": "mentor",
+      "who": "mentor",
+      "whoOf": "your mentor",
+      "companionName": "Delia",
+      "playerSurname": "Jasper",
+      "gender": "f",
+      "pronouns": {
+        "subject": "she",
+        "object": "her",
+        "possessive": "her",
+        "possessiveNoun": "hers",
+        "reflexive": "herself",
+        "was": "was",
+        "is": "is",
+        "has": "has",
+        "s": "s"
+      },
+      "how": "a patent duel that went farther than ink",
+      "remains": "a blank patent form with their seal",
+      "why": "to turn grief into craft instead of silence",
+      "moral": "a careful scrapper who still asks before dismantling",
+      "scar": "nightmares of green eyes turning red in the dark",
+      "personality": "tender with apprentices and merciless with shoddy work",
+      "season": "the week the docks celebrated Founders",
+      "place": "where the sky-lane dips toward Industrial",
+      "lastWords": "“Don’t scrap the frame. Not this one.”",
+      "workshopTone": "keeps her notes in the exact same stacks",
+      "summary": "You lost your mentor to a patent duel that went farther than ink. All that remains is a blank patent form with their seal. You build to turn grief into craft instead of silence. They call you a careful scrapper who still asks before dismantling — and you carry nightmares of green eyes turning red in the dark.",
+      "lines": [
+        "You lost your mentor to a patent duel that went farther than ink.",
+        "All that remains is a blank patent form with their seal.",
+        "You build to turn grief into craft instead of silence.",
+        "They call you a careful scrapper who still asks before dismantling — and you carry nightmares of green eyes turning red in the dark."
+      ],
+      "tutorial": {
+        "workshopName": "Jasper Workshop",
+        "flashTitle": "The Workshop — Delia waits on the bench",
+        "openingToast": "Your mentor is gone — lost to a patent duel that went farther than ink. The frame holds a blank patent form with their seal. Walk the lab. Read. Then use the Hand (1) to wake Delia — not scrap (E).",
+        "objectiveExplore": "Read the lab. Wake Delia with the Hand (1) — do not scrap her.",
+        "photoTitle": "Photograph — Delia Jasper",
+        "photoText": "Your mentor. The frame glass still has a fingerprint you refuse to wipe: “Taken the week the docks celebrated Founders. She was tender with apprentices and merciless with shoddy work.” You laid her to rest where the sky-lane dips toward Industrial. The lab keeps her notes in the exact same stacks.",
+        "notes": [
+          {
+            "title": "Journal — Consciousness Imprint",
+            "text": "I found the coil pattern in a sealed folio: plasma laced through brass can hold a pattern of mind. Not a program — a guest. When the frame is quiet and the remains are true, a soul may take seat. I write this for your mentor."
+          },
+          {
+            "title": "Essay — Personhood in Metal",
+            "text": "They said personhood cannot cling to metal. I have seen the opposite: fear in red eyes, loyalty in green. Your mentor taught me that. She was tender with apprentices and merciless with shoddy work. I will not scrap what still might listen."
+          },
+          {
+            "title": "Last Rule of the Frame",
+            "text": "A blank patent form with their seal sits over the heart gear. Your mentor, lost to a patent duel that went farther than ink. I build to turn grief into craft instead of silence. Wake her gently."
+          }
+        ],
+        "trayLabels": [
+          "Keeper Chassis",
+          "Warmth Coil",
+          "Remembrance Gears"
+        ],
+        "wrenchText": "An arc wrench from the family rack — plasma teeth for rogue frames. Press E to take it. Protect Delia.",
+        "boatText": "Brass levers and a plasma throttle. Press E to cast off — escape with Delia.",
+        "wakeFlash": "DELIA — the talisman finds her. Green eyes. Your mentor.",
+        "wakeToast": "She will fight beside you. Keep her in sight — the grid is fragile.",
+        "siegeToast": "Something outside wants empty hulls. Protect Delia. Grab the Arc Wrench (E) or wait out the bangs.",
+        "scrapFlash": "The talisman frame is scrap —",
+        "scrapToast": "No. The trays still hold her parts. Gather all three (E), then rebuild. You can still call Delia home.",
+        "rebuildObjectiveBase": "Rebuild Delia",
+        "rebuildFlash": "A new shell stands — a blank patent form with their seal reseated",
+        "rebuildToast": "Stand close. Hand weapon. Click to reprogram. Speak the name Delia in the plasma.",
+        "surviveObjective": "Survive — arc the demons, keep Delia close",
+        "breachToastFight": "They wear scrap like coats. Arc wrench for combat. Delia will fight beside you.",
+        "breachToastFlee": "They wear scrap like coats. Fight with Delia or run for the skiff.",
+        "doorAlmostToast": "Almost through — stand ready with Delia.",
+        "winFlash": "SKIFF AWAY — Delia is with you",
+        "winToast": "Next: Sky City Market training — earn 1000 brass and buy a sky apartment. Delia rides the next chapter with you.",
+        "marketLines": [
+          "You lost your mentor to a patent duel that went farther than ink.",
+          "All that remains is a blank patent form with their seal.",
+          "You build to turn grief into craft instead of silence.",
+          "They call you a careful scrapper who still asks before dismantling — and you carry nightmares of green eyes turning red in the dark.",
+          "Delia walks with you now in brass and green light."
+        ],
+        "trayPartFlashSample": "Part recovered — Keeper Chassis (2/3)",
+        "trayObjectiveSample": "Rebuild Delia — trays 2/3"
+      }
+    },
+    {
+      "seed": 7,
+      "whoId": "guardian",
+      "who": "guardian",
+      "whoOf": "your guardian",
+      "companionName": "Nadia",
+      "playerSurname": "Anvil",
+      "gender": "f",
+      "pronouns": {
+        "subject": "she",
+        "object": "her",
+        "possessive": "her",
+        "possessiveNoun": "hers",
+        "reflexive": "herself",
+        "was": "was",
+        "is": "is",
+        "has": "has",
+        "s": "s"
+      },
+      "how": "a patent duel that went farther than ink",
+      "remains": "a voice cylinder",
+      "why": "to finish the work they left open on the bench",
+      "moral": "a stubborn healer of broken automata",
+      "scar": "an enemy house still watching your smoke",
+      "personality": "quick to laugh, slower to forgive a bad weld",
+      "season": "the eclipse over Grand Market",
+      "place": "on the ferry steps to Residential Ring",
+      "lastWords": "“Keep the tea tin. You’ll need the bolts.”",
+      "workshopTone": "echoes when you walk as if expecting two sets of boots",
+      "summary": "You lost your guardian to a patent duel that went farther than ink. All that remains is a voice cylinder. You build to finish the work they left open on the bench. They call you a stubborn healer of broken automata — and you carry an enemy house still watching your smoke.",
+      "lines": [
+        "You lost your guardian to a patent duel that went farther than ink.",
+        "All that remains is a voice cylinder.",
+        "You build to finish the work they left open on the bench.",
+        "They call you a stubborn healer of broken automata — and you carry an enemy house still watching your smoke."
+      ],
+      "tutorial": {
+        "workshopName": "Anvil Workshop",
+        "flashTitle": "The Workshop — Nadia waits on the bench",
+        "openingToast": "Your guardian is gone — lost to a patent duel that went farther than ink. The frame holds a voice cylinder. Walk the lab. Read. Then use the Hand (1) to wake Nadia — not scrap (E).",
+        "objectiveExplore": "Read the lab. Wake Nadia with the Hand (1) — do not scrap her.",
+        "photoTitle": "Photograph — Nadia Anvil",
+        "photoText": "Your guardian. Someone wrote in careful ink on the reverse: “She was quick to laugh, slower to forgive a bad weld. I keep this where I can see her.” You laid her to rest on the ferry steps to Residential Ring. The lab echoes when you walk as if expecting two sets of boots.",
+        "notes": [
+          {
+            "title": "Journal — Consciousness Imprint",
+            "text": "I found the coil pattern in a sealed folio: plasma laced through brass can hold a pattern of mind. Not a program — a guest. When the frame is quiet and the remains are true, a soul may take seat. I write this for your guardian."
+          },
+          {
+            "title": "Theory — Love as Beacon",
+            "text": "They said personhood cannot cling to metal. I have seen the opposite: fear in red eyes, loyalty in green. Your guardian taught me that. She was quick to laugh, slower to forgive a bad weld. I will not scrap what still might listen."
+          },
+          {
+            "title": "Last Rule of the Frame",
+            "text": "Wired a voice cylinder into the chest plate. If any spark of your guardian remains, it will know this weight. Do not scrap the frame. Reprogram with the Hand. Speak her name."
+          }
+        ],
+        "trayLabels": [
+          "Chest Plate",
+          "Voice Resonator",
+          "Name Gears"
+        ],
+        "wrenchText": "An arc wrench from the family rack — plasma teeth for rogue frames. Press E to take it. Protect Nadia.",
+        "boatText": "Brass levers and a plasma throttle. Press E to cast off — escape with Nadia.",
+        "wakeFlash": "GREEN EYES — Nadia answers. Your guardian is home in brass.",
+        "wakeToast": "She will fight beside you. Keep her in sight — the grid is fragile.",
+        "siegeToast": "Something outside wants empty hulls. Protect Nadia. Grab the Arc Wrench (E) or wait out the bangs.",
+        "scrapFlash": "The talisman frame is scrap —",
+        "scrapToast": "Grief made your hands cruel. Fix it: reclaim the trays, reseat a voice cylinder, wake Nadia properly.",
+        "rebuildObjectiveBase": "Rebuild Nadia",
+        "rebuildFlash": "A new shell stands — a voice cylinder reseated",
+        "rebuildToast": "Stand close. Hand weapon. Click to reprogram. Speak the name Nadia in the plasma.",
+        "surviveObjective": "Survive — arc the demons, keep Nadia close",
+        "breachToastFight": "They wear scrap like coats. Arc wrench for combat. Nadia will fight beside you.",
+        "breachToastFlee": "They wear scrap like coats. Fight with Nadia or run for the skiff.",
+        "doorAlmostToast": "Almost through — stand ready with Nadia.",
+        "winFlash": "SKIFF AWAY — Nadia is with you",
+        "winToast": "Next: Sky City Market training — earn 1000 brass and buy a sky apartment. Nadia rides the next chapter with you.",
+        "marketLines": [
+          "You lost your guardian to a patent duel that went farther than ink.",
+          "All that remains is a voice cylinder.",
+          "You build to finish the work they left open on the bench.",
+          "They call you a stubborn healer of broken automata — and you carry an enemy house still watching your smoke.",
+          "Nadia walks with you now in brass and green light."
+        ],
+        "trayPartFlashSample": "Part recovered — Chest Plate (2/3)",
+        "trayObjectiveSample": "Rebuild Nadia — trays 2/3"
+      }
+    },
+    {
+      "seed": 42,
+      "whoId": "cousin",
+      "who": "cousin",
+      "whoOf": "your cousin",
+      "companionName": "Tessa",
+      "playerSurname": "Forge",
+      "gender": "f",
+      "pronouns": {
+        "subject": "she",
+        "object": "her",
+        "possessive": "her",
+        "possessiveNoun": "hers",
+        "reflexive": "herself",
+        "was": "was",
+        "is": "is",
+        "has": "has",
+        "s": "s"
+      },
+      "how": "a reef vanishing that swallowed the salvage team",
+      "remains": "a prayer card from St. Brass",
+      "why": "to give every worker a name and a choice",
+      "moral": "a free-market purist who hates empty promises",
+      "scar": "an enemy house still watching your smoke",
+      "personality": "fond of tea gone cold beside the bench",
+      "season": "the feast-day skipped to finish a chassis",
+      "place": "at the reef edge where the salvage bells ring",
+      "lastWords": "“Keep the tea tin. You’ll need the bolts.”",
+      "workshopTone": "feels too large for one living engineer",
+      "summary": "You lost your cousin to a reef vanishing that swallowed the salvage team. All that remains is a prayer card from St. Brass. You build to give every worker a name and a choice. They call you a free-market purist who hates empty promises — and you carry an enemy house still watching your smoke.",
+      "lines": [
+        "You lost your cousin to a reef vanishing that swallowed the salvage team.",
+        "All that remains is a prayer card from St. Brass.",
+        "You build to give every worker a name and a choice.",
+        "They call you a free-market purist who hates empty promises — and you carry an enemy house still watching your smoke."
+      ],
+      "tutorial": {
+        "workshopName": "Forge Workshop",
+        "flashTitle": "The Workshop — Tessa waits on the bench",
+        "openingToast": "Your cousin is gone — lost to a reef vanishing that swallowed the salvage team. The frame holds a prayer card from St. Brass. Walk the lab. Read. Then use the Hand (1) to wake Tessa — not scrap (E).",
+        "objectiveExplore": "Read the lab. Wake Tessa with the Hand (1) — do not scrap her.",
+        "photoTitle": "Photograph — Tessa Forge",
+        "photoText": "Your cousin. The frame glass still has a fingerprint you refuse to wipe: “Taken the feast-day skipped to finish a chassis. She was fond of tea gone cold beside the bench.” Afterward you came back here alone. The workshop feels too large for one living engineer.",
+        "notes": [
+          {
+            "title": "Journal — Consciousness Imprint",
+            "text": "I found the coil pattern in a sealed folio: plasma laced through brass can hold a pattern of mind. Not a program — a guest. When the frame is quiet and the remains are true, a soul may take seat. I write this for your cousin."
+          },
+          {
+            "title": "Theory — Souls in Steel",
+            "text": "I no longer believe the automata are empty. Something looks out of their eyes when the plasma sings. Demons wear scrap like coats. But love is a beacon too — if I can call your cousin home, she will know my voice."
+          },
+          {
+            "title": "Last Rule of the Frame",
+            "text": "Last words I keep: “Keep the tea tin. You’ll need the bolts.” I obeyed as far as craft allows. The frame on the bench is her only chance. Hand (1). Not E. Not yet."
+          }
+        ],
+        "trayLabels": [
+          "Keeper Chassis",
+          "Warmth Coil",
+          "Remembrance Gears"
+        ],
+        "wrenchText": "An arc wrench from the family rack — plasma teeth for rogue frames. Press E to take it. Protect Tessa.",
+        "boatText": "Brass levers and a plasma throttle. Press E to cast off — escape with Tessa.",
+        "wakeFlash": "TESSA — the talisman finds her. Green eyes. Your cousin.",
+        "wakeToast": "Plasma will settle near three-quarters with one ally. Stay close to her.",
+        "siegeToast": "The door shudders. Tessa just woke into a siege. Arc Wrench on the rack — stand ready.",
+        "scrapFlash": "The talisman frame is scrap —",
+        "scrapToast": "You dismantled the seat — not the soul. Three trays. Then the Hand. Tessa is not finished.",
+        "rebuildObjectiveBase": "Rebuild Tessa",
+        "rebuildFlash": "A new shell stands — a prayer card from St. Brass reseated",
+        "rebuildToast": "Stand close. Hand weapon. Click to reprogram. Speak the name Tessa in the plasma.",
+        "surviveObjective": "Survive — arc the demons, keep Tessa close",
+        "breachToastFight": "They wear scrap like coats. Arc wrench for combat. Tessa will fight beside you.",
+        "breachToastFlee": "They wear scrap like coats. Fight with Tessa or run for the skiff.",
+        "doorAlmostToast": "Almost through — stand ready with Tessa.",
+        "winFlash": "SKIFF AWAY — Tessa is with you",
+        "winToast": "Next: Sky City Market training — earn 1000 brass and buy a sky apartment. Tessa rides the next chapter with you.",
+        "marketLines": [
+          "You lost your cousin to a reef vanishing that swallowed the salvage team.",
+          "All that remains is a prayer card from St. Brass.",
+          "You build to give every worker a name and a choice.",
+          "They call you a free-market purist who hates empty promises — and you carry an enemy house still watching your smoke.",
+          "Tessa walks with you now in brass and green light."
+        ],
+        "trayPartFlashSample": "Part recovered — Keeper Chassis (2/3)",
+        "trayObjectiveSample": "Rebuild Tessa — trays 2/3"
+      }
+    },
+    {
+      "seed": 1000,
+      "whoId": "crewmate",
+      "who": "crewmate",
+      "whoOf": "your crewmate",
+      "companionName": "Ash",
+      "playerSurname": "Bolt",
+      "gender": "n",
+      "pronouns": {
+        "subject": "they",
+        "object": "them",
+        "possessive": "their",
+        "possessiveNoun": "theirs",
+        "reflexive": "themselves",
+        "was": "were",
+        "is": "are",
+        "has": "have",
+        "s": ""
+      },
+      "how": "a willing husk transformation they never returned from",
+      "remains": "an incomplete chassis",
+      "why": "to turn grief into craft instead of silence",
+      "moral": "a stubborn healer of broken automata",
+      "scar": "a workshop lease in your name alone — too quiet now",
+      "personality": "quick to laugh, slower to forgive a bad weld",
+      "season": "the first frost on the workshop glass",
+      "place": "on the ferry steps to Residential Ring",
+      "lastWords": "“Don’t scrap the frame. Not this one.”",
+      "workshopTone": "still smells like their coats",
+      "summary": "You lost your crewmate to a willing husk transformation they never returned from. All that remains is an incomplete chassis. You build to turn grief into craft instead of silence. They call you a stubborn healer of broken automata — and you carry a workshop lease in your name alone — too quiet now.",
+      "lines": [
+        "You lost your crewmate to a willing husk transformation they never returned from.",
+        "All that remains is an incomplete chassis.",
+        "You build to turn grief into craft instead of silence.",
+        "They call you a stubborn healer of broken automata — and you carry a workshop lease in your name alone — too quiet now."
+      ],
+      "tutorial": {
+        "workshopName": "Bolt Workshop",
+        "flashTitle": "The Workshop — Ash waits on the bench",
+        "openingToast": "Your crewmate is gone — lost to a willing husk transformation they never returned from. The frame holds an incomplete chassis. Walk the lab. Read. Then use the Hand (1) to wake Ash — not scrap (E).",
+        "objectiveExplore": "Read the lab. Wake Ash with the Hand (1) — do not scrap them.",
+        "photoTitle": "Photograph — Ash Bolt",
+        "photoText": "Your crewmate. Someone wrote in careful ink on the reverse: “The first frost on the workshop glass. I still hear them humming at the bench.” There is a place on the ferry steps to Residential Ring with their name — and this room, which still expects them.",
+        "notes": [
+          {
+            "title": "Journal — Guest in the Brass",
+            "text": "I found the coil pattern in a sealed folio: plasma laced through brass can hold a pattern of mind. Not a program — a guest. When the frame is quiet and the remains are true, a soul may take seat. I write this for your crewmate."
+          },
+          {
+            "title": "Theory — Souls in Steel",
+            "text": "I no longer believe the automata are empty. Something looks out of their eyes when the plasma sings. Demons wear scrap like coats. But love is a beacon too — if I can call your crewmate home, they will know my voice."
+          },
+          {
+            "title": "Medallion Rite",
+            "text": "An incomplete chassis sits over the heart gear. Your crewmate, lost to a willing husk transformation they never returned from. I build to turn grief into craft instead of silence. Wake them gently."
+          }
+        ],
+        "trayLabels": [
+          "Chest Plate",
+          "Voice Resonator",
+          "Name Gears"
+        ],
+        "wrenchText": "An arc wrench from the family rack — plasma teeth for rogue frames. Press E to take it. Protect Ash.",
+        "boatText": "Brass levers and a plasma throttle. Press E to cast off — escape with Ash.",
+        "wakeFlash": "GREEN EYES — Ash answers. Your crewmate is home in brass.",
+        "wakeToast": "They will fight beside you. Keep them in sight — the grid is fragile.",
+        "siegeToast": "The door shudders. Ash just woke into a siege. Arc Wrench on the rack — stand ready.",
+        "scrapFlash": "The talisman frame is scrap —",
+        "scrapToast": "You dismantled the seat — not the soul. Three trays. Then the Hand. Ash is not finished.",
+        "rebuildObjectiveBase": "Rebuild Ash",
+        "rebuildFlash": "A new shell stands — an incomplete chassis reseated",
+        "rebuildToast": "Stand close. Hand weapon. Click to reprogram. Speak the name Ash in the plasma.",
+        "surviveObjective": "Survive — arc the demons, keep Ash close",
+        "breachToastFight": "They wear scrap like coats. Arc wrench for combat. Ash will fight beside you.",
+        "breachToastFlee": "They wear scrap like coats. Fight with Ash or run for the skiff.",
+        "doorAlmostToast": "Almost through — stand ready with Ash.",
+        "winFlash": "SKIFF AWAY — Ash is with you",
+        "winToast": "Next: Sky City Market training — earn 1000 brass and buy a sky apartment. Ash rides the next chapter with you.",
+        "marketLines": [
+          "You lost your crewmate to a willing husk transformation they never returned from.",
+          "All that remains is an incomplete chassis.",
+          "You build to turn grief into craft instead of silence.",
+          "They call you a stubborn healer of broken automata — and you carry a workshop lease in your name alone — too quiet now.",
+          "Ash walks with you now in brass and green light."
+        ],
+        "trayPartFlashSample": "Part recovered — Chest Plate (2/3)",
+        "trayObjectiveSample": "Rebuild Ash — trays 2/3"
+      }
+    },
+    {
+      "seed": 99991,
+      "whoId": "crewmate",
+      "who": "crewmate",
+      "whoOf": "your crewmate",
+      "companionName": "Celia",
+      "playerSurname": "Hearth",
+      "gender": "f",
+      "pronouns": {
+        "subject": "she",
+        "object": "her",
+        "possessive": "her",
+        "possessiveNoun": "hers",
+        "reflexive": "herself",
+        "was": "was",
+        "is": "is",
+        "has": "has",
+        "s": "s"
+      },
+      "how": "a bridge collapse on Foundry Span",
+      "remains": "a worn talisman",
+      "why": "to build safety no storm can take from you again",
+      "moral": "a city loyalist who pays every dock tax on time",
+      "scar": "heavy debt from the funeral and the failed rescue",
+      "personality": "loyal past the point of sense",
+      "season": "the long rain that flooded the lower markets",
+      "place": "in the night market’s steam alleys",
+      "lastWords": "“Your hands already know the way home.”",
+      "workshopTone": "holds her tools where muscle memory left them",
+      "summary": "You lost your crewmate to a bridge collapse on Foundry Span. All that remains is a worn talisman. You build to build safety no storm can take from you again. They call you a city loyalist who pays every dock tax on time — and you carry heavy debt from the funeral and the failed rescue.",
+      "lines": [
+        "You lost your crewmate to a bridge collapse on Foundry Span.",
+        "All that remains is a worn talisman.",
+        "You build to build safety no storm can take from you again.",
+        "They call you a city loyalist who pays every dock tax on time — and you carry heavy debt from the funeral and the failed rescue."
+      ],
+      "tutorial": {
+        "workshopName": "Hearth Workshop",
+        "flashTitle": "The Workshop — Celia waits on the bench",
+        "openingToast": "Your crewmate is gone — lost to a bridge collapse on Foundry Span. The frame holds a worn talisman. Walk the lab. Read. Then use the Hand (1) to wake Celia — not scrap (E).",
+        "objectiveExplore": "Read the lab. Wake Celia with the Hand (1) — do not scrap her.",
+        "photoTitle": "Photograph — Celia Hearth",
+        "photoText": "Your crewmate. The card on the back is water-stained: “The long rain that flooded the lower markets. I still hear her humming at the bench.” You laid her to rest in the night market’s steam alleys. The lab holds her tools where muscle memory left them.",
+        "notes": [
+          {
+            "title": "Journal — Consciousness Imprint",
+            "text": "Grandfather’s notes called it a “guest pattern.” Plasma sings; brass remembers. If any spark remains between stars and steam, the right seat will know her. I build because to build safety no storm can take from you again."
+          },
+          {
+            "title": "Theory — Love as Beacon",
+            "text": "Rogue frames prove the worst can take a body. Then the best must be possible too. I am a city loyalist who pays every dock tax on time — and I carry heavy debt from the funeral and the failed rescue. Still I reach for your crewmate with the Hand, not the wrench."
+          },
+          {
+            "title": "Wire-In Instructions",
+            "text": "Wired a worn talisman into the chest plate. If any spark of your crewmate remains, it will know this weight. Do not scrap the frame. Reprogram with the Hand. Speak her name."
+          }
+        ],
+        "trayLabels": [
+          "Anchor Hull",
+          "Plasma Seat",
+          "Story Gears"
+        ],
+        "wrenchText": "An arc wrench from the family rack — plasma teeth for rogue frames. Press E to take it. Protect Celia.",
+        "boatText": "Brass levers and a plasma throttle. Press E to cast off — escape with Celia.",
+        "wakeFlash": "GREEN EYES — Celia answers. Your crewmate is home in brass.",
+        "wakeToast": "Plasma will settle near three-quarters with one ally. Stay close to her.",
+        "siegeToast": "Something outside wants empty hulls. Protect Celia. Grab the Arc Wrench (E) or wait out the bangs.",
+        "scrapFlash": "The talisman frame is scrap —",
+        "scrapToast": "You dismantled the seat — not the soul. Three trays. Then the Hand. Celia is not finished.",
+        "rebuildObjectiveBase": "Rebuild Celia",
+        "rebuildFlash": "A new shell stands — a worn talisman reseated",
+        "rebuildToast": "Stand close. Hand weapon. Click to reprogram. Speak the name Celia in the plasma.",
+        "surviveObjective": "Survive — arc the demons, keep Celia close",
+        "breachToastFight": "They wear scrap like coats. Arc wrench for combat. Celia will fight beside you.",
+        "breachToastFlee": "They wear scrap like coats. Fight with Celia or run for the skiff.",
+        "doorAlmostToast": "Almost through — stand ready with Celia.",
+        "winFlash": "SKIFF AWAY — Celia is with you",
+        "winToast": "Next: Sky City Market training — earn 1000 brass and buy a sky apartment. Celia rides the next chapter with you.",
+        "marketLines": [
+          "You lost your crewmate to a bridge collapse on Foundry Span.",
+          "All that remains is a worn talisman.",
+          "You build to build safety no storm can take from you again.",
+          "They call you a city loyalist who pays every dock tax on time — and you carry heavy debt from the funeral and the failed rescue.",
+          "Celia walks with you now in brass and green light."
+        ],
+        "trayPartFlashSample": "Part recovered — Anchor Hull (2/3)",
+        "trayObjectiveSample": "Rebuild Celia — trays 2/3"
+      }
+    },
+    {
+      "seed": 4294967295,
+      "whoId": "crewmate",
+      "who": "crewmate",
+      "whoOf": "your crewmate",
+      "companionName": "Ivy",
+      "playerSurname": "Forge",
+      "gender": "n",
+      "pronouns": {
+        "subject": "they",
+        "object": "them",
+        "possessive": "their",
+        "possessiveNoun": "theirs",
+        "reflexive": "themselves",
+        "was": "were",
+        "is": "are",
+        "has": "have",
+        "s": ""
+      },
+      "how": "a sabotage they tried to stop alone",
+      "remains": "a scuffed workshop glove",
+      "why": "to prove the academy wrong about souls in steel",
+      "moral": "a maker who believes personhood can cling to metal",
+      "scar": "a promise to their mother you have not kept yet",
+      "personality": "quick to laugh, slower to forgive a bad weld",
+      "season": "the morning after the debt papers arrived",
+      "place": "at the family plot above the cloud line",
+      "lastWords": "“I’m still in here — somewhere.”",
+      "workshopTone": "guards a silence you both used to fill with talk",
+      "summary": "You lost your crewmate to a sabotage they tried to stop alone. All that remains is a scuffed workshop glove. You build to prove the academy wrong about souls in steel. They call you a maker who believes personhood can cling to metal — and you carry a promise to their mother you have not kept yet.",
+      "lines": [
+        "You lost your crewmate to a sabotage they tried to stop alone.",
+        "All that remains is a scuffed workshop glove.",
+        "You build to prove the academy wrong about souls in steel.",
+        "They call you a maker who believes personhood can cling to metal — and you carry a promise to their mother you have not kept yet."
+      ],
+      "tutorial": {
+        "workshopName": "Forge Workshop",
+        "flashTitle": "The Workshop — Ivy waits on the bench",
+        "openingToast": "Your crewmate is gone — lost to a sabotage they tried to stop alone. The frame holds a scuffed workshop glove. Walk the lab. Read. Then use the Hand (1) to wake Ivy — not scrap (E).",
+        "objectiveExplore": "Read the lab. Wake Ivy with the Hand (1) — do not scrap them.",
+        "photoTitle": "Photograph — Ivy Forge",
+        "photoText": "Your crewmate. The frame glass still has a fingerprint you refuse to wipe: “They were quick to laugh, slower to forgive a bad weld. I keep this where I can see them.” There is a place at the family plot above the cloud line with their name — and this room, which still expects them.",
+        "notes": [
+          {
+            "title": "Folio — Pattern of Mind",
+            "text": "I found the coil pattern in a sealed folio: plasma laced through brass can hold a pattern of mind. Not a program — a guest. When the frame is quiet and the remains are true, a soul may take seat. I write this for your crewmate."
+          },
+          {
+            "title": "Theory — Souls in Steel",
+            "text": "They said personhood cannot cling to metal. I have seen the opposite: fear in red eyes, loyalty in green. Your crewmate taught me that. They were quick to laugh, slower to forgive a bad weld. I will not scrap what still might listen."
+          },
+          {
+            "title": "Bench Note — Do Not Scrap",
+            "text": "Wired a scuffed workshop glove into the chest plate. If any spark of your crewmate remains, it will know this weight. Do not scrap the frame. Reprogram with the Hand. Speak their name."
+          }
+        ],
+        "trayLabels": [
+          "Home Frame",
+          "Talisman Seat",
+          "Echo Gears"
+        ],
+        "wrenchText": "An arc wrench from the family rack — plasma teeth for rogue frames. Press E to take it. Protect Ivy.",
+        "boatText": "Brass levers and a plasma throttle. Press E to cast off — escape with Ivy.",
+        "wakeFlash": "IVY — the talisman finds them. Green eyes. Your crewmate.",
+        "wakeToast": "They will fight beside you. Keep them in sight — the grid is fragile.",
+        "siegeToast": "Demon-ridden frames. Hold the workshop for Ivy — or take the Arc Wrench and force the door open early.",
+        "scrapFlash": "The talisman frame is scrap —",
+        "scrapToast": "You dismantled the seat — not the soul. Three trays. Then the Hand. Ivy is not finished.",
+        "rebuildObjectiveBase": "Rebuild Ivy",
+        "rebuildFlash": "A new shell stands — a scuffed workshop glove reseated",
+        "rebuildToast": "Stand close. Hand weapon. Click to reprogram. Speak the name Ivy in the plasma.",
+        "surviveObjective": "Survive — arc the demons, keep Ivy close",
+        "breachToastFight": "They wear scrap like coats. Arc wrench for combat. Ivy will fight beside you.",
+        "breachToastFlee": "They wear scrap like coats. Fight with Ivy or run for the skiff.",
+        "doorAlmostToast": "Almost through — stand ready with Ivy.",
+        "winFlash": "SKIFF AWAY — Ivy is with you",
+        "winToast": "Next: Sky City Market training — earn 1000 brass and buy a sky apartment. Ivy rides the next chapter with you.",
+        "marketLines": [
+          "You lost your crewmate to a sabotage they tried to stop alone.",
+          "All that remains is a scuffed workshop glove.",
+          "You build to prove the academy wrong about souls in steel.",
+          "They call you a maker who believes personhood can cling to metal — and you carry a promise to their mother you have not kept yet.",
+          "Ivy walks with you now in brass and green light."
+        ],
+        "trayPartFlashSample": "Part recovered — Home Frame (2/3)",
+        "trayObjectiveSample": "Rebuild Ivy — trays 2/3"
+      }
+    }
+  ]
+}

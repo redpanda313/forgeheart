@@ -15,7 +15,7 @@ local panel = Instance.new("Frame")
 panel.Name = "Panel"
 panel.AnchorPoint = Vector2.new(0, 0)
 panel.Position = UDim2.fromOffset(16, 16)
-panel.Size = UDim2.fromOffset(360, 118)
+panel.Size = UDim2.fromOffset(400, 156)
 panel.BackgroundColor3 = Color3.fromRGB(28, 22, 14)
 panel.BackgroundTransparency = 0.18
 panel.BorderSizePixel = 0
@@ -52,11 +52,25 @@ stats.TextSize = 14
 stats.Text = "Health 100    Plasma 100"
 stats.Parent = panel
 
+local stock = Instance.new("TextLabel")
+stock.Name = "Stock"
+stock.BackgroundTransparency = 1
+stock.Position = UDim2.fromOffset(14, 52)
+stock.Size = UDim2.new(1, -28, 0, 32)
+stock.Font = Enum.Font.Gotham
+stock.TextXAlignment = Enum.TextXAlignment.Left
+stock.TextYAlignment = Enum.TextYAlignment.Top
+stock.TextWrapped = true
+stock.TextColor3 = Color3.fromRGB(196, 176, 120)
+stock.TextSize = 13
+stock.Text = "E interact · R scrap a quiet frame"
+stock.Parent = panel
+
 local objective = Instance.new("TextLabel")
 objective.Name = "Objective"
 objective.BackgroundTransparency = 1
-objective.Position = UDim2.fromOffset(14, 56)
-objective.Size = UDim2.new(1, -28, 0, 50)
+objective.Position = UDim2.fromOffset(14, 88)
+objective.Size = UDim2.new(1, -28, 0, 58)
 objective.Font = Enum.Font.GothamMedium
 objective.TextXAlignment = Enum.TextXAlignment.Left
 objective.TextYAlignment = Enum.TextYAlignment.Top
@@ -70,19 +84,27 @@ local function refreshObjective()
 	objective.Text = player:GetAttribute("Objective") or "Read the photograph on the south wall."
 	local health = player:GetAttribute("Health") or 100
 	local plasma = player:GetAttribute("Plasma") or 100
-	stats.Text = string.format("Health %d    Plasma %d", health, plasma)
+	stats.Text = string.format("Health %d    Plasma %d    Brass %d", health, plasma, player:GetAttribute("Brass") or 0)
+	local carried = player:GetAttribute("Stock")
+	if type(carried) == "string" and carried ~= "" then
+		stock.Text = carried
+	else
+		stock.Text = "E interact · R scrap a quiet frame"
+	end
 end
 
 refreshObjective()
 player:GetAttributeChangedSignal("Objective"):Connect(refreshObjective)
 player:GetAttributeChangedSignal("Health"):Connect(refreshObjective)
 player:GetAttributeChangedSignal("Plasma"):Connect(refreshObjective)
+player:GetAttributeChangedSignal("Brass"):Connect(refreshObjective)
+player:GetAttributeChangedSignal("Stock"):Connect(refreshObjective)
 
 local card = Instance.new("Frame")
 card.Name = "Lore"
 card.AnchorPoint = Vector2.new(0.5, 1)
 card.Position = UDim2.new(0.5, 0, 1, -24)
-card.Size = UDim2.fromOffset(520, 150)
+card.Size = UDim2.fromOffset(560, 240)
 card.BackgroundColor3 = Color3.fromRGB(24, 18, 12)
 card.BackgroundTransparency = 0.08
 card.BorderSizePixel = 0
@@ -108,10 +130,21 @@ cardTitle.TextSize = 20
 cardTitle.Text = ""
 cardTitle.Parent = card
 
+local scroll = Instance.new("ScrollingFrame")
+scroll.Name = "BodyScroll"
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0
+scroll.Position = UDim2.fromOffset(16, 40)
+scroll.Size = UDim2.new(1, -32, 1, -84)
+scroll.ScrollBarThickness = 6
+scroll.CanvasSize = UDim2.new()
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.Parent = card
+
 local cardBody = Instance.new("TextLabel")
 cardBody.BackgroundTransparency = 1
-cardBody.Position = UDim2.fromOffset(16, 40)
-cardBody.Size = UDim2.new(1, -32, 0, 64)
+cardBody.Size = UDim2.new(1, -8, 0, 0)
+cardBody.AutomaticSize = Enum.AutomaticSize.Y
 cardBody.Font = Enum.Font.Gotham
 cardBody.TextXAlignment = Enum.TextXAlignment.Left
 cardBody.TextYAlignment = Enum.TextYAlignment.Top
@@ -119,7 +152,7 @@ cardBody.TextWrapped = true
 cardBody.TextColor3 = Color3.fromRGB(236, 228, 210)
 cardBody.TextSize = 16
 cardBody.Text = ""
-cardBody.Parent = card
+cardBody.Parent = scroll
 
 local close = Instance.new("TextButton")
 close.AnchorPoint = Vector2.new(1, 1)

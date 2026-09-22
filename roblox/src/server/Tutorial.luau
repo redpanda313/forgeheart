@@ -1,30 +1,30 @@
--- Workshop session: lore prompts, waking Elias, and a per-player flag.
+-- Per-player starter story, workshop siege, then the brass market.
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local StarterPlayer = game:GetService("StarterPlayer")
 
+local Combat = require(script.Parent.Combat)
 local Elias = require(script.Parent.Elias)
+local Market = require(script.Parent.Market)
 local Workshop = require(script.Parent.Workshop)
 
-local Scale = require(ReplicatedStorage:WaitForChild("ForgeHeart"):WaitForChild("Scale"))
+local Shared = ReplicatedStorage:WaitForChild("ForgeHeart")
+local Backstory = require(Shared:WaitForChild("Backstory"))
+local Economy = require(Shared:WaitForChild("Economy"))
+local RobotConfig = require(Shared:WaitForChild("RobotConfig"))
+local Scale = require(Shared:WaitForChild("Scale"))
 
 local Tutorial = {}
-
-local OBJECTIVE_READ = "Read the photograph on the south wall."
-local OBJECTIVE_WAKE = "Wake Elias at the bench. Hold E."
-local OBJECTIVE_WITH = "Elias walks with you. The doors stay shut until the siege."
-
 local store = DataStoreService:GetDataStore("ForgeHeartProfile_v1")
 
-local function loreFolder(): RemoteEvent
-	local shared = ReplicatedStorage:WaitForChild("ForgeHeart")
-	local remotes = shared:FindFirstChild("Remotes")
+local function loreRemote(): RemoteEvent
+	local remotes = Shared:FindFirstChild("Remotes")
 	if not remotes then
 		remotes = Instance.new("Folder")
 		remotes.Name = "Remotes"
-		remotes.Parent = shared
+		remotes.Parent = Shared
 	end
 	local existing = remotes:FindFirstChild("ShowLore")
 	if existing and existing:IsA("RemoteEvent") then
@@ -36,35 +36,406 @@ local function loreFolder(): RemoteEvent
 	return remote
 end
 
-local showLore = loreFolder()
+local showLore = loreRemote()
 
-local function tell(player: Player, title: string, body: string)
-	showLore:FireClient(player, title, body)
+-- The generator keeps the browser's Hand (1) / scrap (E) wording so seeds still match.
+-- Shown copy uses this place's keys: E interacts, R scraps the quiet frame.
+local function forRoblox(text: string): string
+	text = string.gsub(text, "Hand %(1%)%. Not E%. Not yet%.", "Press E to wake. Scrap is R. Not yet.")
+	text = string.gsub(text, "use the Hand %(1%) to wake", "press E to wake")
+	text = string.gsub(text, "with the Hand %(1%)", "with E")
+	text = string.gsub(text, "not scrap %(E%)", "not scrap (R)")
+	text = string.gsub(text, "Hand %(1%)", "E")
+	text = string.gsub(text, "Hand weapon%. Click to reprogram%.", "Press E to wake them.")
+	text = string.gsub(text, "Reprogram with the Hand", "Wake with E")
+	text = string.gsub(text, "with the Hand, not the wrench", "with E, not the wrench")
+	return text
 end
 
-local function saveAwake(player: Player)
+local function tell(player: Player, title: string, body: string)
+	showLore:FireClient(player, forRoblox(title), forRoblox(body))
+end
+
+local stories: { [Player]: any } = {}
+local profiles: { [Player]: any } = {}
+local plasma: { [Player]: number } = {}
+local nextSwing: { [Player]: number } = {}
+
+local world = {
+	phase = "explore",
+	bangs = 0,
+	bangTimer = 0,
+	doorHp = 4,
+	demons = {} :: { Model },
+	trays = 0,
+	scrapped = false,
+	allyHit = 0,
+}
+
+local built: any = nil
+local market: any = nil
+local elias: Model? = nil
+
+local function storyOf(player: Player)
+	return stories[player]
+end
+
+local function profileOf(player: Player)
+	return profiles[player]
+end
+
+local function newSeed(): number
+	return bit32.bor(math.floor(math.random() * 4294967295), 0)
+end
+
+local function save(player: Player)
+	local profile = profileOf(player)
+	local story = storyOf(player)
+	if not profile or not story then
+		return
+	end
+	local payload = {
+		version = 2,
+		backstorySeed = story.seed,
+		phase = profile.phase,
+		eliasAwake = profile.eliasAwake,
+		brass = profile.inv.brass,
+		items = profile.inv.items,
+		apartment = profile.inv.apartment,
+		harvestRuns = profile.inv.harvestRuns,
+	}
 	pcall(function()
-		store:SetAsync("u_" .. player.UserId, { eliasAwake = true, version = 1 })
+		store:SetAsync("u_" .. player.UserId, payload)
 	end)
 end
 
-local function loadAwake(player: Player): boolean
+local function load(player: Player)
 	local ok, data = pcall(function()
 		return store:GetAsync("u_" .. player.UserId)
 	end)
-	return ok and type(data) == "table" and data.eliasAwake == true
+	local seed = newSeed()
+	local phase = "explore"
+	local awake = false
+	local inv = Economy.empty(Economy.STARTER_BRASS)
+	if ok and type(data) == "table" then
+		if type(data.backstorySeed) == "number" then
+			seed = data.backstorySeed
+		end
+		if type(data.phase) == "string" then
+			phase = data.phase
+		elseif data.eliasAwake == true then
+			phase = "siege"
+		end
+		awake = data.eliasAwake == true or phase ~= "explore"
+		if type(data.brass) == "number" then
+			inv.brass = data.brass
+		end
+		if type(data.items) == "table" then
+			inv.items = data.items
+		end
+		inv.apartment = data.apartment == true
+		inv.harvestRuns = data.harvestRuns or 0
+	end
+	return seed, {
+		phase = phase,
+		eliasAwake = awake,
+		inv = inv,
+	}
 end
 
-local function placeCharacter(character: Model)
+local function stockText(inv): string
+	local parts = {}
+	for id, qty in inv.items do
+		local def = Economy.COMMODITIES[id]
+		if def and type(qty) == "number" and qty > 0 then
+			table.insert(parts, `{def.name} {qty}`)
+		end
+	end
+	table.sort(parts)
+	if #parts == 0 then
+		return ""
+	end
+	return table.concat(parts, " · ")
+end
+
+local function sync(player: Player)
+	local profile = profileOf(player)
+	local story = storyOf(player)
+	if not profile or not story then
+		return
+	end
+	player:SetAttribute("Brass", profile.inv.brass)
+	player:SetAttribute("Plasma", math.floor(plasma[player] or 100))
+	player:SetAttribute("Stock", stockText(profile.inv))
+	player:SetAttribute("EliasAwake", profile.eliasAwake)
+	local tutorial = story.tutorial
+	local text = tutorial.objectiveExplore
+	if profile.phase == "rebuild" then
+		text = tutorial.trayObjective(world.trays)
+	elseif profile.phase == "siege" then
+		local bashed = 4 - world.doorHp
+		text = `Door {world.bangs}/10 · bash {bashed}/4`
+	elseif profile.phase == "breach" then
+		text = tutorial.surviveObjective
+	elseif profile.phase == "escape" then
+		text = `Cast off with {story.companionName}.`
+	elseif profile.phase == "market" then
+		if profile.inv.apartment then
+			text = `Sky apartment deed held. {story.companionName} stays with you.`
+		else
+			text = `Harvest the reef, sell at the broker, earn {Economy.APARTMENT_COST} brass.`
+		end
+	end
+	player:SetAttribute("Objective", forRoblox(text))
+end
+
+local function applySign(story)
+	if built and built.sign then
+		built.sign.Text = string.upper(story.tutorial.workshopName)
+	end
+	if elias then
+		Elias.setName(elias, story.companionName)
+	end
+end
+
+local function openDoor()
+	if not built then
+		return
+	end
+	for _, door in built.doors do
+		door.CanCollide = false
+		door.Transparency = 1
+	end
+end
+
+local function spawnDemons()
+	if not built or #world.demons > 0 then
+		return
+	end
+	local feetY = Workshop.brotherFeet().Y
+	local spots = { Vector3.new(Scale.studs(-2), feetY, Scale.studs(11)), Vector3.new(Scale.studs(2), feetY, Scale.studs(11.4)) }
+	for index, spot in spots do
+		table.insert(world.demons, Combat.spawnDemon(built.folder, spot, "Demon" .. index))
+	end
+end
+
+local function hostilesLeft(): number
+	local left = 0
+	for _, demon in world.demons do
+		if demon.Parent and demon:GetAttribute("Phase") == "active" then
+			left += 1
+		end
+	end
+	return left
+end
+
+local function eachStory(callback: (Player, any) -> ())
+	for _, player in Players:GetPlayers() do
+		local story = storyOf(player)
+		if story then
+			callback(player, story)
+		end
+	end
+end
+
+local function setPhase(phase: string)
+	world.phase = phase
+	for _, player in Players:GetPlayers() do
+		local profile = profileOf(player)
+		if profile and profile.phase ~= "market" then
+			profile.phase = phase
+			sync(player)
+			save(player)
+		end
+	end
+end
+
+local function beginSiege()
+	if world.phase ~= "explore" and world.phase ~= "rebuild" then
+		return
+	end
+	world.bangs = 0
+	world.bangTimer = 1.2
+	world.doorHp = 4
+	setPhase("siege")
+	if built then
+		built.wrench.Enabled = true
+	end
+	eachStory(function(player, story)
+		tell(player, "A BANG at the lab door —", story.tutorial.siegeToast)
+	end)
+end
+
+local function breach(forced: boolean)
+	if world.phase == "breach" or world.phase == "escape" or world.phase == "market" then
+		return
+	end
+	openDoor()
+	spawnDemons()
+	setPhase("breach")
+	eachStory(function(player, story)
+		local title = if forced then "DOOR BREACHED — you forced it open!" else "The door gives —"
+		tell(player, title, story.tutorial.breachToastFight)
+	end)
+end
+
+local function beginEscape()
+	if world.phase ~= "breach" then
+		return
+	end
+	setPhase("escape")
+	if built then
+		built.boat.Enabled = true
+	end
+	eachStory(function(player, story)
+		tell(player, "The dock is clear", `Reach the skiff. Cast off with {story.companionName}.`)
+	end)
+end
+
+local swing: (Player) -> ()
+
+local function makeWrench(): Tool
+	local tool = Instance.new("Tool")
+	tool.Name = "Arc Wrench"
+	tool.RequiresHandle = true
+	tool.ToolTip = "Arc a frame or the sealed door"
+	local handle = Instance.new("Part")
+	handle.Name = "Handle"
+	handle.Size = Vector3.new(0.35, 1.5, 0.35)
+	handle.Color = Color3.fromRGB(184, 146, 58)
+	handle.Material = Enum.Material.Metal
+	handle.Parent = tool
+	return tool
+end
+
+local function giveWrench(player: Player)
+	local function holding(): boolean
+		local backpack = player:FindFirstChildOfClass("Backpack")
+		local character = player.Character
+		return (backpack and backpack:FindFirstChild("Arc Wrench") ~= nil)
+			or (character and character:FindFirstChild("Arc Wrench") ~= nil)
+	end
+	if holding() then
+		return
+	end
+	local tool = makeWrench()
+	tool.Activated:Connect(function()
+		swing(player)
+	end)
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	if not backpack then
+		local waited = player:WaitForChild("Backpack", 4)
+		if waited and waited:IsA("Backpack") then
+			backpack = waited
+		end
+	end
+	if backpack then
+		tool.Parent = backpack
+	end
+end
+
+swing = function(player: Player)
+	local now = os.clock()
+	if (nextSwing[player] or 0) > now then
+		return
+	end
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root or not root:IsA("BasePart") then
+		return
+	end
+	local profile = profileOf(player)
+	if not profile then
+		return
+	end
+	if world.phase ~= "siege" and world.phase ~= "breach" then
+		return
+	end
+	local pool = plasma[player] or 100
+	if pool < RobotConfig.arcPlasmaCost then
+		nextSwing[player] = now + 0.36
+		tell(player, "Arc wrench", "Plasma too thin — let it settle.")
+		return
+	end
+	nextSwing[player] = now + 0.36
+	plasma[player] = pool - RobotConfig.arcPlasmaCost
+	sync(player)
+	if world.phase == "siege" then
+		local door = Vector3.new(0, root.Position.Y, Scale.studs(8))
+		if root.Position.Z < door.Z and (root.Position - door).Magnitude < Scale.studs(4) then
+			world.doorHp -= 1
+			if world.doorHp <= 0 then
+				tell(player, "DOOR BREACHED — you forced it open!", "The seal yields to the arc. Whatever was banging is coming through.")
+				breach(true)
+			else
+				tell(player, "The iron rings", if world.doorHp == 1 then "Door almost broken — one more arc!" else `{world.doorHp} hits left.`)
+				sync(player)
+			end
+			return
+		end
+	end
+	local best: Model? = nil
+	local bestDist = Combat.arcRange()
+	for _, demon in world.demons do
+		if demon.Parent and demon:GetAttribute("Phase") == "active" then
+			local dist = (demon:GetPivot().Position - root.Position).Magnitude
+			if dist < bestDist then
+				best = demon
+				bestDist = dist
+			end
+		end
+	end
+	if best then
+		local result = Combat.hit(best)
+		if result == "disabled" or result == "scrambled" then
+			tell(player, "Frame down", if result == "scrambled" then "Eyes dark. The pattern broke." else "Integrity gone.")
+		end
+		if hostilesLeft() == 0 then
+			beginEscape()
+		end
+	end
+end
+
+local function goMarket(player: Player)
+	local profile = profileOf(player)
+	if not profile then
+		return
+	end
+	profile.phase = "market"
+	profile.eliasAwake = true
+	sync(player)
+	save(player)
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		root.CFrame = Market.spawnCFrame()
+	end
+	if elias and elias:GetAttribute("Awake") == true then
+		elias:PivotTo(CFrame.new(Market.spawnCFrame().Position + Vector3.new(4, -3, 2)))
+	end
+end
+
+local function placeCharacter(player: Player, character: Model)
 	local root = character:WaitForChild("HumanoidRootPart", 8)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		humanoid.WalkSpeed = Scale.studs(7)
 		humanoid.UseJumpPower = false
 		humanoid.JumpHeight = Scale.studs(1.6)
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
 	end
+	local profile = profileOf(player)
 	if root and root:IsA("BasePart") then
-		root.CFrame = Workshop.spawnCFrame()
+		if profile and profile.phase == "market" then
+			root.CFrame = Market.spawnCFrame()
+		else
+			root.CFrame = Workshop.spawnCFrame()
+		end
+	end
+	player:SetAttribute("Health", 100)
+	if profile and (profile.phase == "siege" or profile.phase == "breach" or profile.phase == "escape") then
+		giveWrench(player)
 	end
 end
 
@@ -73,118 +444,376 @@ function Tutorial.start()
 	StarterPlayer.CameraMinZoomDistance = 6
 	StarterPlayer.CameraMaxZoomDistance = 20
 
-	local built = Workshop.build(workspace)
-	local elias = Elias.create(built.folder, Workshop.brotherFeet())
-
-	local function setObjective(player: Player, text: string)
-		player:SetAttribute("Objective", text)
-	end
-
-	local function markAwake(player: Player)
-		player:SetAttribute("EliasAwake", true)
-		setObjective(player, OBJECTIVE_WITH)
-		saveAwake(player)
-	end
+	built = Workshop.build(workspace)
+	market = Market.build(workspace)
+	elias = Elias.create(built.folder, Workshop.brotherFeet())
+	local companion = elias :: Model
 
 	built.photo.Triggered:Connect(function(player)
-		tell(
-			player,
-			"Photograph",
-			"Elias, in the light of this lab. A tragedy took him. The frame by the bench can hold a soul."
-		)
-		if player:GetAttribute("EliasAwake") ~= true then
-			setObjective(player, OBJECTIVE_WAKE)
+		local story = storyOf(player)
+		if not story then
+			return
+		end
+		tell(player, story.tutorial.photoTitle, story.tutorial.photoText)
+	end)
+	local notes = { built.journal, built.theory, built.talisman }
+	for index, notePrompt in notes do
+		notePrompt.Triggered:Connect(function(player)
+			local story = storyOf(player)
+			if not story then
+				return
+			end
+			local note = story.tutorial.notes[index]
+			if note then
+				notePrompt.ObjectText = note.title
+				tell(player, note.title, note.text)
+			end
+		end)
+	end
+
+	built.wrench.Triggered:Connect(function(player)
+		local story = storyOf(player)
+		if world.phase ~= "siege" and world.phase ~= "breach" and world.phase ~= "escape" then
+			tell(player, "Arc wrench", "The rack is quiet. Wake your frame first.")
+			return
+		end
+		giveWrench(player)
+		if story then
+			tell(player, "Arc wrench", story.tutorial.wrenchText)
 		end
 	end)
 
-	built.journal.Triggered:Connect(function(player)
-		tell(player, "Journal", "The Hand seats a soul. The wrench only breaks a frame. Elias comes first.")
-	end)
-
-	built.theory.Triggered:Connect(function(player)
-		tell(
-			player,
-			"Theory",
-			"Integrity falls to rapid blows. Scramble stays. When the eyes go dark, the Hand can bring someone home."
-		)
-	end)
-
-	built.talisman.Triggered:Connect(function(player)
-		tell(player, "Talisman note", "His talisman is in the chassis. Stand close to Elias and wake him.")
-	end)
-
-	built.wrench.Triggered:Connect(function(player)
-		tell(player, "Arc wrench", "The rack is quiet. The siege has not started. Wake Elias first.")
-	end)
-
-	local wakePrompt = elias:FindFirstChild("WakePrompt", true)
-	if wakePrompt and wakePrompt:IsA("ProximityPrompt") then
-		wakePrompt.Triggered:Connect(function(player)
-			if elias:GetAttribute("Awake") == true then
+	for index, trayPrompt in built.trays do
+		trayPrompt.Triggered:Connect(function(player)
+			local story = storyOf(player)
+			if not story or not world.scrapped or trayPrompt:GetAttribute("Taken") == true then
 				return
 			end
-			Elias.wake(elias)
-			markAwake(player)
-			for _, other in Players:GetPlayers() do
-				other:SetAttribute("EliasAwake", true)
-				setObjective(other, OBJECTIVE_WITH)
+			trayPrompt:SetAttribute("Taken", true)
+			trayPrompt.Enabled = false
+			local trayPart = trayPrompt.Parent
+			if trayPart and trayPart:IsA("BasePart") then
+				trayPart.Transparency = 0.35
 			end
-			tell(player, "Elias", "The eyes light. He knows you. Stay close. He will follow.")
+			world.trays += 1
+			local label = story.tutorial.trayLabels[index]
+			tell(player, label, story.tutorial.trayPartFlash(label, world.trays))
+			if world.trays >= 3 then
+				world.scrapped = false
+				Elias.setVisible(companion, true)
+				local wake = companion:FindFirstChild("WakePrompt", true)
+				local scrap = companion:FindFirstChild("ScrapPrompt", true)
+				if wake and wake:IsA("ProximityPrompt") then
+					wake.Enabled = true
+				end
+				if scrap and scrap:IsA("ProximityPrompt") then
+					scrap.Enabled = true
+				end
+				for _, other in Players:GetPlayers() do
+					local profile = profileOf(other)
+					if profile then
+						profile.phase = "explore"
+					end
+				end
+				setPhase("explore")
+				tell(player, story.tutorial.rebuildFlash, story.tutorial.rebuildToast)
+			else
+				for _, other in Players:GetPlayers() do
+					local profile = profileOf(other)
+					if profile then
+						profile.phase = "rebuild"
+						sync(other)
+					end
+				end
+			end
 		end)
 	end
 
-	local function onPlayer(player: Player)
-		setObjective(player, OBJECTIVE_READ)
-		player:SetAttribute("Health", 100)
-		player:SetAttribute("Plasma", 100)
-		task.spawn(function()
-			if loadAwake(player) and elias:GetAttribute("Awake") ~= true then
-				Elias.wake(elias)
+	local wakePrompt = companion:FindFirstChild("WakePrompt", true)
+	if wakePrompt and wakePrompt:IsA("ProximityPrompt") then
+		wakePrompt.Triggered:Connect(function(player)
+			local story = storyOf(player)
+			local profile = profileOf(player)
+			if not story or not profile or companion:GetAttribute("Awake") == true or world.scrapped then
+				return
 			end
-			if elias:GetAttribute("Awake") == true then
-				markAwake(player)
+			Elias.wake(companion)
+			profile.eliasAwake = true
+			for _, other in Players:GetPlayers() do
+				local otherProfile = profileOf(other)
+				if otherProfile then
+					otherProfile.eliasAwake = true
+				end
+			end
+			tell(player, story.tutorial.wakeFlash, story.tutorial.wakeToast)
+			beginSiege()
+		end)
+	end
+
+	local scrapPrompt = companion:FindFirstChild("ScrapPrompt", true)
+	if scrapPrompt and scrapPrompt:IsA("ProximityPrompt") then
+		scrapPrompt.Triggered:Connect(function(player)
+			local story = storyOf(player)
+			if not story or companion:GetAttribute("Awake") == true or world.phase ~= "explore" or world.scrapped then
+				return
+			end
+			world.scrapped = true
+			world.trays = 0
+			Elias.setVisible(companion, false)
+			for index, trayPrompt in built.trays do
+				trayPrompt:SetAttribute("Taken", false)
+				trayPrompt.Enabled = true
+				trayPrompt.ObjectText = story.tutorial.trayLabels[index]
+				local trayPart = trayPrompt.Parent
+				if trayPart and trayPart:IsA("BasePart") then
+					trayPart.Transparency = 0
+				end
+			end
+			for _, other in Players:GetPlayers() do
+				local profile = profileOf(other)
+				if profile then
+					profile.phase = "rebuild"
+					sync(other)
+				end
+			end
+			tell(player, story.tutorial.scrapFlash, story.tutorial.scrapToast)
+		end)
+	end
+
+	built.boat.Triggered:Connect(function(player)
+		local story = storyOf(player)
+		if world.phase ~= "escape" or not story then
+			tell(player, "Skiff", "The levers are cold. The dock is not yours yet.")
+			return
+		end
+		tell(player, story.tutorial.winFlash, story.tutorial.winToast)
+		local lines = table.concat(story.tutorial.marketLines, " ")
+		task.delay(1.2, function()
+			if player.Parent then
+				tell(player, story.tutorial.workshopName, lines)
 			end
 		end)
-		player.CharacterAdded:Connect(placeCharacter)
+		goMarket(player)
+	end)
+
+	market.reef.Triggered:Connect(function(player)
+		local profile = profileOf(player)
+		local story = storyOf(player)
+		if not profile or profile.phase ~= "market" then
+			return
+		end
+		local _, _, message = Economy.harvest(profile.inv, math.random)
+		tell(player, "Cloud reef", message)
+		sync(player)
+		save(player)
+		if story then
+			player:SetAttribute("Objective", profile.inv.apartment and player:GetAttribute("Objective") or `Harvest the reef, sell at the broker, earn {Economy.APARTMENT_COST} brass.`)
+		end
+	end)
+
+	market.broker.Triggered:Connect(function(player)
+		local profile = profileOf(player)
+		if not profile or profile.phase ~= "market" then
+			return
+		end
+		local _, message = Economy.sellAll(profile.inv)
+		tell(player, "Broker", message)
+		sync(player)
+		save(player)
+	end)
+
+	for recipeId, recipePrompt in market.recipes do
+		recipePrompt.Triggered:Connect(function(player)
+			local profile = profileOf(player)
+			if not profile or profile.phase ~= "market" then
+				return
+			end
+			local _, message = Economy.craft(profile.inv, recipeId)
+			tell(player, "Bench", message)
+			sync(player)
+			save(player)
+		end)
+	end
+
+	market.apartment.Triggered:Connect(function(player)
+		local profile = profileOf(player)
+		local story = storyOf(player)
+		if not profile or not story or profile.phase ~= "market" then
+			return
+		end
+		local ok, message = Economy.buyApartment(profile.inv)
+		tell(player, "Real estate", message)
+		if ok then
+			tell(player, story.companionName, story.summary)
+		end
+		sync(player)
+		save(player)
+	end)
+
+	local function onPlayer(player: Player)
+		local seed, profile = load(player)
+		local story = Backstory.generate(seed)
+		stories[player] = story
+		profiles[player] = profile
+		plasma[player] = plasma[player] or 100
+		applySign(story)
+		for index, notePrompt in { built.journal, built.theory, built.talisman } do
+			local note = story.tutorial.notes[index]
+			if note then
+				notePrompt.ObjectText = note.title
+			end
+		end
+		if profile.phase == "market" then
+			if companion:GetAttribute("Awake") ~= true then
+				Elias.wake(companion)
+			end
+			tell(player, "Brass Market", table.concat(story.lines, " "))
+		elseif profile.phase == "breach" or profile.phase == "escape" then
+			if companion:GetAttribute("Awake") ~= true then
+				Elias.wake(companion)
+			end
+			if world.phase == "explore" or world.phase == "siege" then
+				openDoor()
+				spawnDemons()
+				world.phase = profile.phase
+				if built then
+					built.wrench.Enabled = true
+					built.boat.Enabled = profile.phase == "escape"
+				end
+			end
+			giveWrench(player)
+			tell(player, story.tutorial.flashTitle, story.tutorial.openingToast)
+		elseif profile.eliasAwake and (world.phase == "explore" or world.phase == "rebuild") then
+			if companion:GetAttribute("Awake") ~= true then
+				Elias.wake(companion)
+			end
+			beginSiege()
+			giveWrench(player)
+			tell(player, story.tutorial.flashTitle, story.tutorial.openingToast)
+		else
+			tell(player, story.tutorial.flashTitle, story.tutorial.openingToast)
+		end
+		sync(player)
+		player.CharacterAdded:Connect(function(character)
+			placeCharacter(player, character)
+		end)
 		if player.Character then
-			placeCharacter(player.Character)
+			placeCharacter(player, player.Character)
 		end
 	end
 
 	Players.PlayerAdded:Connect(onPlayer)
+	Players.PlayerRemoving:Connect(function(player)
+		save(player)
+		stories[player] = nil
+		profiles[player] = nil
+		plasma[player] = nil
+		nextSwing[player] = nil
+	end)
 	for _, player in Players:GetPlayers() do
 		onPlayer(player)
 	end
 
 	RunService.Heartbeat:Connect(function(dt)
-		if elias:GetAttribute("Awake") ~= true then
-			return
-		end
-		local closest: BasePart? = nil
-		local closestDist = math.huge
-		for _, player in Players:GetPlayers() do
-			local character = player.Character
-			local root = character and character:FindFirstChild("HumanoidRootPart")
-			if root and root:IsA("BasePart") then
-				local dist = (root.Position - elias:GetPivot().Position).Magnitude
-				if dist < closestDist then
-					closestDist = dist
-					closest = root
+		if world.phase == "siege" then
+			world.bangTimer -= dt
+			if world.bangTimer <= 0 then
+				world.bangs += 1
+				world.bangTimer = 3
+				for _, door in built.doors do
+					door.Color = if world.bangs % 2 == 0 then Color3.fromRGB(90, 70, 40) else Color3.fromRGB(42, 46, 51)
+				end
+				if world.bangs == 1 then
+					eachStory(function(player)
+						tell(player, "BANG", "The iron door shudders.")
+					end)
+				elseif world.bangs == 8 then
+					eachStory(function(player, story)
+						tell(player, "The seal bends", story.tutorial.doorAlmostToast)
+					end)
+				end
+				if world.bangs >= 10 then
+					breach(false)
+				else
+					for _, player in Players:GetPlayers() do
+						sync(player)
+					end
 				end
 			end
 		end
-		if closest then
-			local rescue = Scale.studs(16)
-			if closestDist > rescue then
-				local flat = Vector3.new(closest.Position.X, elias:GetPivot().Position.Y, closest.Position.Z)
-				local back = (elias:GetPivot().Position - flat)
-				if back.Magnitude < 0.1 then
-					back = Vector3.new(0, 0, 6)
+
+		local nearestRoot: BasePart? = nil
+		local nearestDist = math.huge
+		for _, player in Players:GetPlayers() do
+			local character = player.Character
+			local root = character and character:FindFirstChild("HumanoidRootPart")
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if root and root:IsA("BasePart") then
+				local dist = (root.Position - companion:GetPivot().Position).Magnitude
+				if dist < nearestDist then
+					nearestDist = dist
+					nearestRoot = root
 				end
-				local snap = flat + back.Unit * 8
-				elias:PivotTo(CFrame.lookAt(Vector3.new(snap.X, elias:GetPivot().Position.Y, snap.Z), flat))
+				if humanoid and world.phase == "breach" then
+					for _, demon in world.demons do
+						if demon:GetAttribute("Phase") == "active" then
+							local gap = (demon:GetPivot().Position - root.Position).Magnitude
+							local ready = (demon:GetAttribute("MeleeAt") or 0) <= os.clock()
+							if gap < Combat.meleeRange() + 1 and ready then
+								demon:SetAttribute("MeleeAt", os.clock() + RobotConfig.meleeCd)
+								humanoid.Health = math.max(0, humanoid.Health - RobotConfig.meleeDamage)
+								player:SetAttribute("Health", math.floor(humanoid.Health))
+							end
+						end
+					end
+				end
+			end
+		end
+
+		if companion:GetAttribute("Awake") == true and nearestRoot then
+			if nearestDist > Scale.studs(16) then
+				local feet = nearestRoot.Position - Vector3.new(0, 3, 0) + nearestRoot.CFrame.LookVector * -6
+				companion:PivotTo(CFrame.new(feet))
 			else
-				Elias.step(elias, closest.Position, dt)
+				Elias.step(companion, nearestRoot.Position, dt)
+			end
+		end
+
+		for _, player in Players:GetPlayers() do
+			local current = plasma[player]
+			if current then
+				local allies = if companion:GetAttribute("Awake") == true then 1 else 0
+				local index = allies + 1
+				local eq = RobotConfig.plasmaEq[index]
+				local err = eq - current
+				if math.abs(err) >= 0.05 then
+					local k = if err > 0 then RobotConfig.plasmaRegenK[index] else RobotConfig.plasmaDrainK[index]
+					plasma[player] = math.clamp(current + k * err * dt, 0, 100)
+				end
+				local shown = math.floor(plasma[player])
+				if player:GetAttribute("Plasma") ~= shown then
+					player:SetAttribute("Plasma", shown)
+				end
+			end
+		end
+
+		if world.phase == "breach" then
+			world.allyHit -= dt
+			for _, demon in world.demons do
+				Combat.repair(demon, dt)
+				if nearestRoot and demon:GetAttribute("Phase") == "active" then
+					Combat.step(demon, nearestRoot.Position, dt)
+				end
+				if companion:GetAttribute("Awake") == true and world.allyHit <= 0 and demon:GetAttribute("Phase") == "active" then
+					local gap = (demon:GetPivot().Position - companion:GetPivot().Position).Magnitude
+					if gap < Combat.arcRange() then
+						Combat.hit(demon)
+						world.allyHit = RobotConfig.meleeCd
+					end
+				end
+			end
+			if hostilesLeft() == 0 and #world.demons > 0 then
+				beginEscape()
 			end
 		end
 	end)
