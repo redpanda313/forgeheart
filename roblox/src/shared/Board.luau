@@ -71,6 +71,12 @@ function Board.ensure(inv)
 	if board.deck == nil then
 		board.deck = false
 	end
+	if board.aetherDrive == nil then
+		board.aetherDrive = false
+	end
+	if board.gyro == nil then
+		board.gyro = false
+	end
 	return board
 end
 
@@ -140,6 +146,9 @@ function Board.walkSpeedMul(inv): number
 	if inv.playerBoard.rails then
 		m += 0.08
 	end
+	if inv.playerBoard.aetherDrive then
+		m += 0.1
+	end
 	return m
 end
 
@@ -158,6 +167,12 @@ function Board.speedMul(inv): number
 	if inv.playerBoard.deck then
 		m += 0.05
 	end
+	if inv.playerBoard.aetherDrive then
+		m += 0.28
+	end
+	if inv.playerBoard.gyro then
+		m += 0.06
+	end
 	return m
 end
 
@@ -169,6 +184,9 @@ function Board.turnMul(inv): number
 	local m = 1
 	if inv.playerBoard.rails then
 		m += 0.12
+	end
+	if inv.playerBoard.gyro then
+		m += 0.35
 	end
 	return m
 end

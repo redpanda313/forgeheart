@@ -37,6 +37,18 @@ if stats.sellValue ~= 109 then
 	fail("sell " .. tostring(stats.sellValue))
 end
 
+local picker = {}
+for _, slot in Frame.SLOTS do
+	local parts = Frame.listForSlot(inv, slot)
+	if #parts == 0 then
+		fail("picker empty " .. slot)
+	end
+	picker[slot] = parts[1]
+end
+if picker.chassis ~= "cloud_iron" or picker.personality ~= "flower_gift" then
+	fail("picker slots")
+end
+
 local ok, msg = Frame.assemble(inv, fill)
 if not ok or #inv.assembledFrames ~= 1 then
 	fail(msg)

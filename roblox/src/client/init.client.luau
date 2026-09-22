@@ -11,6 +11,10 @@ local Harvest = require(script:WaitForChild("Harvest"))
 local LeaseUi = require(script:WaitForChild("LeaseUi"))
 local NeighborUi = require(script:WaitForChild("NeighborUi"))
 local ProgramUi = require(script:WaitForChild("ProgramUi"))
+local RomanceUi = require(script:WaitForChild("RomanceUi"))
+local StallUi = require(script:WaitForChild("StallUi"))
+local StorageUi = require(script:WaitForChild("StorageUi"))
+local TitleUi = require(script:WaitForChild("TitleUi"))
 local VendorUi = require(script:WaitForChild("VendorUi"))
 
 local player = Players.LocalPlayer
@@ -95,7 +99,13 @@ local function refreshObjective()
 	objective.Text = player:GetAttribute("Objective") or "Read the photograph on the south wall."
 	local health = player:GetAttribute("Health") or 100
 	local plasma = player:GetAttribute("Plasma") or 100
-	stats.Text = string.format("Health %d    Plasma %d    Brass %d", health, plasma, player:GetAttribute("Brass") or 0)
+	stats.Text = string.format(
+		"Health %d    Plasma %d    Brass %d    Æ %d",
+		health,
+		plasma,
+		player:GetAttribute("Brass") or 0,
+		player:GetAttribute("Aether") or 0
+	)
 	local carried = player:GetAttribute("Stock")
 	if type(carried) == "string" and carried ~= "" then
 		stock.Text = carried
@@ -109,6 +119,7 @@ player:GetAttributeChangedSignal("Objective"):Connect(refreshObjective)
 player:GetAttributeChangedSignal("Health"):Connect(refreshObjective)
 player:GetAttributeChangedSignal("Plasma"):Connect(refreshObjective)
 player:GetAttributeChangedSignal("Brass"):Connect(refreshObjective)
+player:GetAttributeChangedSignal("Aether"):Connect(refreshObjective)
 player:GetAttributeChangedSignal("Stock"):Connect(refreshObjective)
 
 local card = Instance.new("Frame")
@@ -259,7 +270,7 @@ local function refreshBay()
 	local lines = {
 		"Inventory, crew, and the work in front of you.",
 		"",
-		`Brass  {player:GetAttribute("Brass") or 0}`,
+		`Brass  {player:GetAttribute("Brass") or 0}   Aether  {player:GetAttribute("Aether") or 0}`,
 		`Crew  {player:GetAttribute("Crew") or "No crew yet"}`,
 		"",
 		"Stock",
@@ -315,3 +326,14 @@ FrameUi.start(gui)
 NeighborUi.start(gui)
 ProgramUi.start(gui)
 LeaseUi.start(gui)
+RomanceUi.start(gui)
+StallUi.start(gui)
+StorageUi.start(gui)
+TitleUi.start(gui)
+
+local function titleChrome()
+	local open = player:GetAttribute("TitleOpen") == true
+	panel.Visible = not open
+end
+titleChrome()
+player:GetAttributeChangedSignal("TitleOpen"):Connect(titleChrome)

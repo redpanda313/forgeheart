@@ -16,11 +16,16 @@ local Backstory = require(Shared:WaitForChild("Backstory"))
 local Board = require(Shared:WaitForChild("Board"))
 local BoardMesh = require(Shared:WaitForChild("BoardMesh"))
 local CityRules = require(Shared:WaitForChild("CityRules"))
+local Districts = require(Shared:WaitForChild("Districts"))
 local Frame = require(Shared:WaitForChild("Frame"))
 local Economy = require(Shared:WaitForChild("Economy"))
+local MarketRules = require(Shared:WaitForChild("Market"))
+local Romance = require(Shared:WaitForChild("Romance"))
 local RobotConfig = require(Shared:WaitForChild("RobotConfig"))
 local Scale = require(Shared:WaitForChild("Scale"))
+local Slots = require(Shared:WaitForChild("Slots"))
 local SpawnProgress = require(Shared:WaitForChild("SpawnProgress"))
+local Storage = require(Shared:WaitForChild("Storage"))
 
 local Tutorial = {}
 local store = DataStoreService:GetDataStore("ForgeHeartProfile_v1")
@@ -59,6 +64,19 @@ local requestProgram = ensureRemote("RequestProgram")
 local setJob = ensureRemote("SetJob")
 local openLease = ensureRemote("OpenLease")
 local leaseAct = ensureRemote("LeaseAct")
+local slotList = ensureRemote("SlotList")
+local selectSlot = ensureRemote("SelectSlot")
+local newGameSlot = ensureRemote("NewGameSlot")
+local continueSlot = ensureRemote("ContinueSlot")
+local pauseSave = ensureRemote("PauseSave")
+local goTitle = ensureRemote("GoTitle")
+local openRomance = ensureRemote("OpenRomance")
+local romanceAct = ensureRemote("RomanceAct")
+local openStall = ensureRemote("OpenStall")
+local stallAct = ensureRemote("StallAct")
+local hagglePrompt = ensureRemote("HagglePrompt")
+local openStorage = ensureRemote("OpenStorage")
+local storageAct = ensureRemote("StorageAct")
 
 -- The generator keeps the browser's Hand (1) / scrap (E) wording so seeds still match.
 -- Shown copy uses this place's keys: E interacts, R scraps the quiet frame.
@@ -83,6 +101,9 @@ local profiles: { [Player]: any } = {}
 local plasma: { [Player]: number } = {}
 local nextSwing: { [Player]: number } = {}
 local harvestWait: { [Player]: boolean } = {}
+local envelopes: { [Player]: any } = {}
+local selectedSlot: { [Player]: number } = {}
+local stallPrice: { [Player]: string } = {}
 
 local world = {
 	phase = "explore",
@@ -114,19 +135,15 @@ local function newSeed(): number
 	return bit32.bor(math.floor(math.random() * 4294967295), 0)
 end
 
-local function save(player: Player)
-	local profile = profileOf(player)
-	local story = storyOf(player)
-	if not profile or not story then
-		return
-	end
-	local payload = {
+local function profileToPayload(profile, story)
+	return {
 		version = 5,
 		backstorySeed = story.seed,
 		phase = profile.phase,
 		spawn = profile.spawn,
 		eliasAwake = profile.eliasAwake,
 		brass = profile.inv.brass,
+		aether = profile.inv.aether,
 		items = profile.inv.items,
 		apartment = profile.inv.apartment,
 		harvestRuns = profile.inv.harvestRuns,
@@ -155,22 +172,43 @@ local function save(player: Player)
 		playerBoard = profile.inv.playerBoard,
 		neighborAff = profile.inv.neighborAff,
 		assembledFrames = profile.inv.assembledFrames,
+		relationships = profile.inv.relationships,
+		marketPressure = profile.inv.marketPressure,
+		storageResourcesLevel = profile.inv.storageResourcesLevel,
+		storageCraftedLevel = profile.inv.storageCraftedLevel,
+		storageInventionsLevel = profile.inv.storageInventionsLevel,
+		brokerFrameStock = profile.inv.brokerFrameStock,
+		frameFill = profile.inv.frameFill,
 	}
+end
+
+local function save(player: Player)
+	local profile = profileOf(player)
+	local story = storyOf(player)
+	if not profile or not story then
+		return
+	end
+	local env = envelopes[player] or Slots.emptyEnvelope()
+	local index = env.lastSlot
+	if type(index) ~= "number" or index < 1 or index > Slots.COUNT then
+		index = 1
+		env.lastSlot = 1
+	end
+	env.version = Slots.VERSION
+	env.slots[index] = profileToPayload(profile, story)
+	envelopes[player] = env
 	pcall(function()
-		store:SetAsync("u_" .. player.UserId, payload)
+		store:SetAsync("u_" .. player.UserId, env)
 	end)
 end
 
-local function load(player: Player)
-	local ok, data = pcall(function()
-		return store:GetAsync("u_" .. player.UserId)
-	end)
+local function applyPayload(data)
 	local seed = newSeed()
 	local phase = "explore"
 	local awake = false
 	local inv = Economy.empty(Economy.STARTER_BRASS)
 	CityRules.ensure(inv)
-	if ok and type(data) == "table" then
+	if type(data) == "table" then
 		if type(data.backstorySeed) == "number" then
 			seed = data.backstorySeed
 		end
@@ -255,10 +293,36 @@ local function load(player: Player)
 		if type(data.assembledFrames) == "table" then
 			inv.assembledFrames = data.assembledFrames
 		end
+		if type(data.aether) == "number" then
+			inv.aether = data.aether
+		end
+		if type(data.relationships) == "table" then
+			inv.relationships = data.relationships
+		end
+		if type(data.marketPressure) == "table" then
+			inv.marketPressure = data.marketPressure
+		end
+		if type(data.storageResourcesLevel) == "number" then
+			inv.storageResourcesLevel = data.storageResourcesLevel
+		end
+		if type(data.storageCraftedLevel) == "number" then
+			inv.storageCraftedLevel = data.storageCraftedLevel
+		end
+		if type(data.storageInventionsLevel) == "number" then
+			inv.storageInventionsLevel = data.storageInventionsLevel
+		end
+		if type(data.brokerFrameStock) == "number" then
+			inv.brokerFrameStock = data.brokerFrameStock
+		end
+		if type(data.frameFill) == "table" then
+			inv.frameFill = data.frameFill
+		end
 		Board.ensure(inv)
+		Storage.ensure(inv)
 	end
 	Board.ensure(inv)
-	local savedSpawn = if ok and type(data) == "table" then data.spawn else nil
+	Storage.ensure(inv)
+	local savedSpawn = if type(data) == "table" then data.spawn else nil
 	local spawn = SpawnProgress.resolve(savedSpawn, phase, inv.apartment)
 	-- A market visit or an old siege overwrite does not resume behind the checkpoint.
 	if spawn == SpawnProgress.CITY then
@@ -274,6 +338,36 @@ local function load(player: Player)
 		eliasAwake = awake,
 		inv = inv,
 	}
+end
+
+local function load(player: Player)
+	local ok, data = pcall(function()
+		return store:GetAsync("u_" .. player.UserId)
+	end)
+	local env = Slots.migrate(if ok then data else nil)
+	envelopes[player] = env
+	local index = env.lastSlot
+	if type(index) ~= "number" or index < 1 or index > Slots.COUNT then
+		index = 1
+	end
+	local slot = env.slots[index]
+	if type(slot) ~= "table" then
+		for i = 1, Slots.COUNT do
+			if type(env.slots[i]) == "table" then
+				index = i
+				slot = env.slots[i]
+				break
+			end
+		end
+	end
+	if type(slot) ~= "table" then
+		slot = Slots.emptyPayload(newSeed())
+		env.slots[1] = slot
+		index = 1
+	end
+	env.lastSlot = index
+	selectedSlot[player] = index
+	return applyPayload(slot)
 end
 
 local function stockText(inv): string
@@ -306,7 +400,9 @@ local function sync(player: Player)
 		return
 	end
 	Board.ensure(profile.inv)
+	Storage.ensure(profile.inv)
 	player:SetAttribute("Brass", profile.inv.brass)
+	player:SetAttribute("Aether", profile.inv.aether or 0)
 	player:SetAttribute("Plasma", math.floor(plasma[player] or 100))
 	player:SetAttribute("BoardOwned", profile.inv.playerBoard.owned == true)
 	player:SetAttribute("BoardSpeedMul", Board.speedMul(profile.inv))
@@ -636,8 +732,12 @@ local function placeCharacter(player: Player, character: Model)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local profile = profileOf(player)
 	if humanoid then
-		local walkMul = if profile then Board.walkSpeedMul(profile.inv) else 1
-		humanoid.WalkSpeed = Scale.studs(7) * walkMul
+		if player:GetAttribute("TitleOpen") == true then
+			humanoid.WalkSpeed = 0
+		else
+			local walkMul = if profile then Board.walkSpeedMul(profile.inv) else 1
+			humanoid.WalkSpeed = Scale.studs(7) * walkMul
+		end
 		humanoid.UseJumpPower = false
 		humanoid.JumpHeight = Scale.studs(1.6)
 		humanoid.MaxHealth = 100
@@ -663,6 +763,49 @@ local function placeCharacter(player: Player, character: Model)
 	if profile and (profile.phase == "siege" or profile.phase == "breach" or profile.phase == "escape") then
 		giveWrench(player)
 	end
+end
+
+local function sendSlots(player: Player, openTitle: boolean)
+	local env = envelopes[player] or Slots.emptyEnvelope()
+	local list, last = Slots.list(env)
+	local selected = selectedSlot[player] or last or 1
+	slotList:FireClient(player, {
+		slots = list,
+		lastSlot = env.lastSlot,
+		selected = selected,
+		open = openTitle,
+	})
+	player:SetAttribute("TitleOpen", openTitle == true)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local profile = profileOf(player)
+	if humanoid then
+		if openTitle then
+			humanoid.WalkSpeed = 0
+		elseif profile then
+			humanoid.WalkSpeed = Scale.studs(7) * Board.walkSpeedMul(profile.inv)
+		end
+	end
+end
+
+local function romancePayload(inv, npcId: string, worldSeed: number, log: string?, view: string?)
+	local def = Romance.generate(npcId, worldSeed)
+	local gifts = {}
+	for _, id in Romance.heldGifts(inv) do
+		table.insert(gifts, { id = id, label = CityRules.itemName(id) })
+	end
+	return {
+		id = npcId,
+		title = if def then def.name else "Talk",
+		status = if def then `{def.bioLine}\n{Romance.statusLine(inv, npcId, worldSeed)}` else Romance.statusLine(inv, npcId, worldSeed),
+		log = log or "",
+		gifts = gifts,
+		stories = Romance.listStories(inv, npcId, {
+			companionName = "companion",
+			worldSeed = worldSeed,
+		}),
+		view = view or "menu",
+	}
 end
 
 function Tutorial.start()
@@ -853,6 +996,10 @@ function Tutorial.start()
 		end
 		if success == true then
 			local _, _, message = Economy.harvest(profile.inv, math.random)
+			if math.random() < 0.12 then
+				Economy.add(profile.inv, "bloom_aether", 1)
+				message = `{message} · Aether Orchid`
+			end
 			tell(player, "Cloud reef", message)
 			sync(player)
 			save(player)
@@ -1001,17 +1148,6 @@ function Tutorial.start()
 		save(player)
 	end)
 
-	city.stall.Triggered:Connect(function(player)
-		local profile = cityPlayer(player)
-		if not profile then
-			return
-		end
-		local _, message = CityRules.leaseStall(profile.inv, "residential")
-		tell(player, "Plaza stall", message)
-		sync(player)
-		save(player)
-	end)
-
 	local function cityAct(player: Player, title: string, ok: boolean, message: string)
 		tell(player, title, message)
 		if ok then
@@ -1019,33 +1155,6 @@ function Tutorial.start()
 			save(player)
 		end
 	end
-
-	city.stock.Triggered:Connect(function(player)
-		local profile = cityPlayer(player)
-		if not profile then
-			return
-		end
-		local ok, message = CityRules.stockStall(profile.inv, "residential")
-		cityAct(player, "Shelf", ok, message)
-	end)
-
-	city.grandStall.Triggered:Connect(function(player)
-		local profile = cityPlayer(player)
-		if not profile then
-			return
-		end
-		local ok, message = CityRules.leaseStall(profile.inv, "grand_market")
-		cityAct(player, "Grand Market", ok, message)
-	end)
-
-	city.industrialStall.Triggered:Connect(function(player)
-		local profile = cityPlayer(player)
-		if not profile then
-			return
-		end
-		local ok, message = CityRules.leaseStall(profile.inv, "industrial")
-		cityAct(player, "Industrial stall", ok, message)
-	end)
 
 	city.invent.Triggered:Connect(function(player)
 		local profile = cityPlayer(player)
@@ -1092,16 +1201,7 @@ function Tutorial.start()
 				return
 			end
 			Frame.ensure(profile.inv)
-			local fill = Frame.autoFill(profile.inv)
-			local lines = { "Five spaces: chassis · mechanisms · power · wiring · personality.", "" }
-			for _, slot in Frame.SLOTS do
-				table.insert(lines, `{slot}: {fill[slot] or "empty"}`)
-			end
-			if #profile.inv.assembledFrames > 0 then
-				table.insert(lines, "")
-				table.insert(lines, `Frames owned: {#profile.inv.assembledFrames}`)
-			end
-			openFrame:FireClient(player, table.concat(lines, "\n"))
+			openFrame:FireClient(player, Frame.pickerState(profile.inv))
 		end)
 	end
 
@@ -1249,19 +1349,31 @@ function Tutorial.start()
 		end
 	end)
 
-	assembleFrame.OnServerEvent:Connect(function(player: Player)
+	assembleFrame.OnServerEvent:Connect(function(player: Player, action: string, slot: string?, ref: string?)
 		local profile = cityPlayer(player)
 		if not profile then
 			return
 		end
-		local fill = Frame.autoFill(profile.inv)
-		local ok, message = Frame.assemble(profile.inv, fill)
-		tell(player, "Frame bench", message)
-		if ok then
-			sync(player)
-			save(player)
+		Frame.ensure(profile.inv)
+		if type(profile.inv.frameFill) ~= "table" then
+			profile.inv.frameFill = {}
 		end
-		openFrame:FireClient(player, message)
+		if action == "pick" and type(slot) == "string" and type(ref) == "string" then
+			if Frame.slotAccepts(profile.inv, slot, ref) then
+				profile.inv.frameFill[slot] = ref
+			end
+		elseif action == "clear" and type(slot) == "string" then
+			profile.inv.frameFill[slot] = nil
+		elseif action == "assemble" then
+			local ok, message = Frame.assemble(profile.inv, profile.inv.frameFill)
+			tell(player, "Frame bench", message)
+			if ok then
+				profile.inv.frameFill = {}
+				sync(player)
+				save(player)
+			end
+		end
+		openFrame:FireClient(player, Frame.pickerState(profile.inv))
 	end)
 
 	neighborAct.OnServerEvent:Connect(function(player: Player, neighborId: string, action: string)
@@ -1328,6 +1440,271 @@ function Tutorial.start()
 		end
 		cityAct(player, "Lease office", ok, message)
 		openLease:FireClient(player, message)
+	end)
+
+	local function openStallOffice(player: Player, districtId: string, extra: string?)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local text = MarketRules.summary(profile.inv, districtId)
+		if extra then
+			text = `{extra}\n\n{text}`
+		end
+		local dist = Districts.byId(districtId)
+		openStall:FireClient(player, districtId, if dist then dist.name else districtId, text)
+	end
+
+	for districtId, office in city.stallOffices or {} do
+		office.lease.Triggered:Connect(function(player)
+			local profile = cityPlayer(player)
+			if not profile then
+				return
+			end
+			local ok, message = CityRules.leaseStall(profile.inv, districtId)
+			cityAct(player, "Plaza stall", ok, message)
+			openStallOffice(player, districtId, message)
+		end)
+		office.office.Triggered:Connect(function(player)
+			openStallOffice(player, districtId)
+		end)
+	end
+
+	stallAct.OnServerEvent:Connect(function(player: Player, districtId: string, action: string)
+		local profile = cityPlayer(player)
+		if not profile or type(districtId) ~= "string" then
+			return
+		end
+		local ok, message = false, ""
+		if action == "stock" then
+			ok, message = CityRules.stockStall(profile.inv, districtId)
+		elseif action == "stock_invent" then
+			local recipe = profile.inv.customRecipes[#profile.inv.customRecipes]
+			if recipe then
+				ok, message = MarketRules.stockInvention(profile.inv, districtId, recipe.id, 1)
+			else
+				message = "No invention in the book."
+			end
+		elseif action == "stock_frame" then
+			ok, message = MarketRules.stockFrame(profile.inv, districtId)
+		elseif action == "cycle_price" then
+			local cur = stallPrice[player] or "fair"
+			local nxt = if cur == "fair" then "premium" elseif cur == "premium" then "deal" else "fair"
+			stallPrice[player] = nxt
+			ok, message = CityRules.priceStall(profile.inv, districtId, nxt)
+		elseif action == "haggle_yes" then
+			ok, message = CityRules.resolveHaggle(profile.inv, districtId, true)
+		elseif action == "haggle_no" then
+			ok, message = CityRules.resolveHaggle(profile.inv, districtId, false)
+		end
+		if message ~= "" then
+			tell(player, "Stall", message)
+		end
+		if ok then
+			sync(player)
+			save(player)
+		end
+		openStallOffice(player, districtId, message)
+	end)
+
+	for npcId, romancePrompt in city.romance or {} do
+		romancePrompt.Triggered:Connect(function(player)
+			local profile = cityPlayer(player)
+			local story = storyOf(player)
+			if not profile or not story then
+				return
+			end
+			openRomance:FireClient(player, romancePayload(profile.inv, npcId, story.seed))
+		end)
+	end
+
+	romanceAct.OnServerEvent:Connect(function(player: Player, npcId: string, action: string, extra: string?)
+		local profile = cityPlayer(player)
+		local story = storyOf(player)
+		if not profile or not story or type(npcId) ~= "string" then
+			return
+		end
+		local view = "menu"
+		local log = ""
+		local ok = false
+		if action == "chat" then
+			ok, log = Romance.chat(profile.inv, npcId, story.seed)
+		elseif action == "learn" then
+			ok, log = Romance.learn(profile.inv, npcId, story.seed)
+		elseif action == "giftmenu" then
+			view = "gift"
+		elseif action == "storymenu" then
+			view = "story"
+		elseif action == "gift" and type(extra) == "string" then
+			ok, log = Romance.gift(profile.inv, npcId, extra, story.seed, function(inv, delta)
+				CityRules.applyStanding(inv, delta)
+			end)
+		elseif action == "story" and type(extra) == "string" then
+			ok, log = Romance.share(profile.inv, npcId, extra, {
+				companionName = story.companionName,
+				worldSeed = story.seed,
+				whoOf = story.whoOf or "someone",
+				how = story.how or "the raid",
+				why = story.why or "a better machine",
+				remains = story.remains or "the frame",
+				moral = story.moral or "keep building",
+			})
+		end
+		if ok then
+			sync(player)
+			save(player)
+		end
+		openRomance:FireClient(player, romancePayload(profile.inv, npcId, story.seed, log, view))
+	end)
+
+	for track, vaultPrompt in city.vaults or {} do
+		vaultPrompt.Triggered:Connect(function(player)
+			local profile = cityPlayer(player)
+			if not profile then
+				return
+			end
+			openStorage:FireClient(player, track, `{Storage.trackLabel(track)} vault`, Storage.summary(profile.inv, track))
+		end)
+	end
+
+	storageAct.OnServerEvent:Connect(function(player: Player, track: string, action: string)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = false, ""
+		if action == "upgrade" then
+			ok, message = Storage.upgrade(profile.inv, track)
+		elseif action == "distill" then
+			ok, message = Storage.distillAether(profile.inv)
+		elseif action == "drive" then
+			ok, message = Storage.craftAetherDrive(profile.inv)
+		elseif action == "gyro" then
+			ok, message = Storage.craftGyro(profile.inv)
+		end
+		tell(player, "Vault", message)
+		if ok then
+			sync(player)
+			save(player)
+		end
+		openStorage:FireClient(player, track, `{Storage.trackLabel(track)} vault`, `{message}\n\n{Storage.summary(profile.inv, track)}`)
+	end)
+
+	local function stripWrench(player: Player)
+		local backpack = player:FindFirstChildOfClass("Backpack")
+		if backpack then
+			local tool = backpack:FindFirstChild("Arc Wrench")
+			if tool then
+				tool:Destroy()
+			end
+		end
+		local character = player.Character
+		if character then
+			local tool = character:FindFirstChild("Arc Wrench")
+			if tool then
+				tool:Destroy()
+			end
+		end
+	end
+
+	local function resetWorldIfAlone()
+		if #Players:GetPlayers() > 1 then
+			return
+		end
+		world.phase = "explore"
+		world.bangs = 0
+		world.bangTimer = 0
+		world.doorHp = 4
+		world.trays = 0
+		world.scrapped = false
+		world.allyHit = 0
+		for _, demon in world.demons do
+			demon:Destroy()
+		end
+		world.demons = {}
+		closeDoor()
+		if built then
+			built.wrench.Enabled = false
+			built.boat.Enabled = false
+		end
+		if elias then
+			Elias.rest(elias, Workshop.brotherFeet())
+		end
+	end
+
+	local function adoptSlot(player: Player, index: number, payload, openTitle: boolean)
+		local seed, profile = applyPayload(payload)
+		local story = Backstory.generate(seed)
+		stories[player] = story
+		profiles[player] = profile
+		plasma[player] = 100
+		applyRespawn(player)
+		applySign(story)
+		if profile.phase == "city" then
+			if elias and elias:GetAttribute("Awake") ~= true then
+				Elias.wake(elias)
+			end
+			CityRules.ensureElias(profile.inv, story.companionName)
+			city.refreshHome(profile.inv.home)
+			city.refreshPlot(profile.inv.plot)
+		elseif profile.phase == "explore" or profile.phase == "rebuild" then
+			-- workshop
+		end
+		sync(player)
+		save(player)
+		if player.Character then
+			placeCharacter(player, player.Character)
+		end
+		sendSlots(player, openTitle)
+	end
+
+	selectSlot.OnServerEvent:Connect(function(player: Player, index: number)
+		if type(index) ~= "number" or index < 1 or index > Slots.COUNT then
+			return
+		end
+		selectedSlot[player] = math.floor(index)
+		sendSlots(player, player:GetAttribute("TitleOpen") == true)
+	end)
+
+	continueSlot.OnServerEvent:Connect(function(player: Player, index: number)
+		if type(index) ~= "number" or index < 1 or index > Slots.COUNT then
+			return
+		end
+		local env = envelopes[player] or Slots.emptyEnvelope()
+		local slot = env.slots[math.floor(index)]
+		if type(slot) ~= "table" then
+			return
+		end
+		env.lastSlot = math.floor(index)
+		selectedSlot[player] = env.lastSlot
+		envelopes[player] = env
+		adoptSlot(player, env.lastSlot, slot, false)
+	end)
+
+	newGameSlot.OnServerEvent:Connect(function(player: Player, index: number)
+		if type(index) ~= "number" or index < 1 or index > Slots.COUNT then
+			return
+		end
+		local env = envelopes[player] or Slots.emptyEnvelope()
+		env.lastSlot = math.floor(index)
+		selectedSlot[player] = env.lastSlot
+		local payload = Slots.emptyPayload(newSeed())
+		env.slots[env.lastSlot] = payload
+		envelopes[player] = env
+		resetWorldIfAlone()
+		stripWrench(player)
+		adoptSlot(player, env.lastSlot, payload, false)
+		tell(player, "New game", "Voss Workshop. Wake your companion with E.")
+	end)
+
+	pauseSave.OnServerEvent:Connect(function(player: Player)
+		save(player)
+		tell(player, "Save", `Slot {envelopes[player] and envelopes[player].lastSlot or 1} written.`)
+	end)
+
+	goTitle.OnServerEvent:Connect(function(player: Player)
+		save(player)
+		sendSlots(player, true)
 	end)
 
 	toggleBoard.OnServerEvent:Connect(function(player: Player, mounted: boolean)
@@ -1423,6 +1800,7 @@ function Tutorial.start()
 		if player.Character then
 			placeCharacter(player, player.Character)
 		end
+		sendSlots(player, true)
 	end
 
 	Players.PlayerAdded:Connect(onPlayer)
@@ -1433,6 +1811,9 @@ function Tutorial.start()
 		plasma[player] = nil
 		nextSwing[player] = nil
 		harvestWait[player] = nil
+		envelopes[player] = nil
+		selectedSlot[player] = nil
+		stallPrice[player] = nil
 	end)
 	for _, player in Players:GetPlayers() do
 		onPlayer(player)
@@ -1451,8 +1832,17 @@ function Tutorial.start()
 						tell(player, if ok then "Upkeep" else "Upkeep missed", message)
 					end
 					local sold, note = CityRules.tickCustomers(profile.inv)
-					if sold then
-						tell(player, "Customers", note)
+					if note ~= "" then
+						tell(player, if sold then "Customers" else "Market", note)
+					end
+					for districtId, stall in profile.inv.stalls or {} do
+						if type(stall.pendingHaggle) == "table" then
+							hagglePrompt:FireClient(
+								player,
+								districtId,
+								`Haggle! {stall.pendingHaggle.offer}b for {CityRules.itemName(stall.pendingHaggle.id)} (ask {stall.pendingHaggle.ask}b).`
+							)
+						end
 					end
 					for _, worker in profile.inv.workers or {} do
 						if not worker.unpaid then

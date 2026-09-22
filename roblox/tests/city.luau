@@ -158,7 +158,13 @@ if CityRules.fairPrice("cloud_iron") ~= 4 or CityRules.fairPrice("spore_silk") ~
 	fail("fair price")
 end
 home.stalls.residential.open = true
-local bought, buyMsg = CityRules.tickCustomers(home)
+local rolls = { 0.01, 0.01, 0.99 }
+local ri = 0
+local function saleRng()
+	ri += 1
+	return rolls[ri] or 0.5
+end
+local bought, buyMsg = CityRules.tickCustomers(home, saleRng)
 if not bought or not string.find(buyMsg, "4b", 1, true) then
 	fail(buyMsg)
 end
@@ -184,6 +190,7 @@ if not cleared or home.brass ~= 0 or home.clearedDebt ~= true then
 end
 
 home.brass = 200
+home.brokerFrameStock = 1
 local _, robotMsg = CityRules.buyRobot(home)
 if not string.find(robotMsg, "Slip chassis", 1, true) then
 	fail(robotMsg)

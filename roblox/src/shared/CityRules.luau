@@ -1,5 +1,35 @@
 -- Sky-city rules copied from economy.ts and laborMarket.ts.
 -- Housing is empty in this slice, so wages stay at the open-market multiplier.
+local Districts
+local Market
+local Storage
+do
+	local ok, loaded = pcall(function()
+		return require(script.Parent.Districts)
+	end)
+	if ok then
+		Districts = loaded
+	else
+		Districts = require("./Districts")
+	end
+	ok, loaded = pcall(function()
+		return require(script.Parent.Market)
+	end)
+	if ok then
+		Market = loaded
+	else
+		Market = require("./Market")
+	end
+	ok, loaded = pcall(function()
+		return require(script.Parent.Storage)
+	end)
+	if ok then
+		Storage = loaded
+	else
+		Storage = require("./Storage")
+	end
+end
+
 local CityRules = {}
 
 CityRules.CITY_WORKSHOP_COST = 80
@@ -43,11 +73,10 @@ CityRules.WORKER_NAMES = {
 	"Nyx",
 }
 
-CityRules.STALLS = {
-	residential = { name = "Residential Ring", cost = 90 },
-	grand_market = { name = "Grand Market", cost = 280 },
-	industrial = { name = "Industrial Slips", cost = 160 },
-}
+CityRules.STALLS = {}
+for _, district in Districts.LIST do
+	CityRules.STALLS[district.id] = { name = district.name, cost = district.stallCost }
+end
 
 CityRules.HOME_TIERS = {
 	{ id = "cottage", name = "Cottage", extraCost = 0, roomCap = 1 },
@@ -182,6 +211,31 @@ function CityRules.ensure(inv)
 	if type(inv.assembledFrames) ~= "table" then
 		inv.assembledFrames = {}
 	end
+	if inv.aether == nil then
+		inv.aether = 0
+	end
+	if type(inv.relationships) ~= "table" then
+		inv.relationships = {}
+	end
+	if type(inv.marketPressure) ~= "table" then
+		inv.marketPressure = {}
+	end
+	if inv.brokerFrameStock == nil then
+		inv.brokerFrameStock = 0
+	end
+	if inv.storageResourcesLevel == nil then
+		inv.storageResourcesLevel = 0
+	end
+	if inv.storageCraftedLevel == nil then
+		inv.storageCraftedLevel = 0
+	end
+	if inv.storageInventionsLevel == nil then
+		inv.storageInventionsLevel = 0
+	end
+	if type(inv.frameFill) ~= "table" then
+		inv.frameFill = {}
+	end
+	Storage.ensure(inv)
 	return inv
 end
 
@@ -487,7 +541,10 @@ function CityRules.leaseStall(inv, districtId: string): (boolean, string)
 			`Need {dist.cost} brass for a stall in {dist.name} (you have {inv.brass}). Multi-plaza retail is expensive — invent & sell.`
 	end
 	inv.brass -= dist.cost
-	inv.stalls[districtId] = { owned = true, open = true, forcedClosed = false }
+	local stall = Market.ensureStall(inv, districtId)
+	stall.owned = true
+	stall.open = true
+	stall.forcedClosed = false
 	CityRules.applyStanding(inv, 3, districtId, 5)
 	local n = CityRules.ownedStallCount(inv)
 	return true, `Leased stall · {dist.name} (−{dist.cost}). Empire shops: {n}. Stock inventions at premium plazas for max profit.`
@@ -650,12 +707,8 @@ local SLOT_LABEL = {
 	personality = "Personality",
 }
 
-function CityRules.fairPrice(id: string): number
-	local def = EconomyCommodity(id)
-	if not def then
-		return 1
-	end
-	return math.max(1, math.round(def.baseBuy * CityRules.STALL_PRICE_MUL))
+function CityRules.fairPrice(id: string, inv: any?): number
+	return Market.fairStallPrice(id, inv)
 end
 
 function EconomyCommodity(id: string)
@@ -827,8 +880,9 @@ function CityRules.craftInvention(inv): (boolean, string)
 		end
 	end
 	local have = inv.customStock[recipe.id] or 0
-	if have >= CityRules.INVENTION_CAP then
-		return false, `Invention storage full ({CityRules.INVENTION_CAP}). Expand at Aether Spire.`
+	local cap = Storage.inventionCap(inv)
+	if have >= cap then
+		return false, `Invention storage full ({cap}). Expand at Aether Spire.`
 	end
 	for _, input in recipe.inputs do
 		inv.items[input.id] -= input.n
@@ -878,65 +932,32 @@ function CityRules.stockStall(inv, districtId: string): (boolean, string)
 	if not bestId then
 		return false, "Pack is empty — nothing to put on the shelf."
 	end
-	local n = math.min(5, bestQty)
-	inv.items[bestId] -= n
-	if inv.items[bestId] <= 0 then
-		inv.items[bestId] = nil
-	end
-	if type(stall.shelf) ~= "table" then
-		stall.shelf = {}
-	end
-	stall.shelf[bestId] = (stall.shelf[bestId] or 0) + n
-	local ask = CityRules.fairPrice(bestId)
-	return true, `Stocked {n}× {CityRules.itemName(bestId)} @ {ask}b ask`
+	return Market.stockGoods(inv, districtId, bestId, math.min(5, bestQty))
 end
 
-function CityRules.tickCustomers(inv): (boolean, string)
+function CityRules.tickCustomers(inv, rng): (boolean, string)
 	CityRules.ensure(inv)
-	local notes = {}
-	local gained = 0
-	for _, stall in inv.stalls do
-		if stall.owned and stall.open and type(stall.shelf) == "table" then
-			for id, qty in stall.shelf do
-				if type(qty) == "number" and qty > 0 then
-					stall.shelf[id] = qty - 1
-					if stall.shelf[id] <= 0 then
-						stall.shelf[id] = nil
-					end
-					local price = CityRules.fairPrice(id)
-					gained += price
-					table.insert(notes, `{CityRules.itemName(id)} {price}b`)
-					break
-				end
-			end
-		end
+	local r = Market.tickAllStalls(inv, rng)
+	if r.haggle and r.msg then
+		return false, r.msg
 	end
-	for _, recipe in inv.customRecipes do
-		local n = inv.customStock[recipe.id] or 0
-		if n > 0 then
-			local listed = false
-			for _, stall in inv.stalls do
-				if stall.owned and stall.open then
-					listed = true
-					break
-				end
-			end
-			if listed then
-				inv.customStock[recipe.id] = n - 1
-				if inv.customStock[recipe.id] <= 0 then
-					inv.customStock[recipe.id] = nil
-				end
-				gained += recipe.sellValue
-				table.insert(notes, `{recipe.name} {recipe.sellValue}b`)
-				break
-			end
-		end
+	if r.ok and r.msg then
+		return true, r.msg
 	end
-	if gained == 0 then
-		return false, ""
-	end
-	inv.brass += gained
-	return true, `Customers bought {table.concat(notes, ", ")}.`
+	return false, r.msg or ""
+end
+
+function CityRules.resolveHaggle(inv, districtId: string, accept: boolean): (boolean, string)
+	CityRules.ensure(inv)
+	local stall = Market.ensureStall(inv, districtId)
+	return Market.resolveHaggle(inv, stall, accept)
+end
+
+function CityRules.priceStall(inv, districtId: string, policy: string): (boolean, string)
+	CityRules.ensure(inv)
+	local stall = Market.ensureStall(inv, districtId)
+	local dist = Districts.byId(districtId)
+	return Market.applyPolicy(inv, stall, policy, if dist then dist.inventBonus else 1)
 end
 
 function CityRules.buyPlot(inv): (boolean, string)
@@ -998,10 +1019,10 @@ function CityRules.developPlot(inv, kind: string): (boolean, string)
 		inv.plantedGarden = true
 	end
 	if kind == "retail" then
-		local stall = inv.stalls.residential
-		if not stall or not stall.owned then
-			inv.stalls.residential = { owned = true, open = true, forcedClosed = false, shelf = {} }
-		end
+		local stall = Market.ensureStall(inv, "residential")
+		stall.owned = true
+		stall.open = true
+		stall.forcedClosed = false
 	end
 	local zoneBit = if offZone then " · off-zone surcharge" else ""
 	return true, `Built {def.name} @ (0.0, 0.0) yaw 0° (−{cost}b){zoneBit}`
@@ -1144,20 +1165,36 @@ function CityRules.buyRobot(inv): (boolean, string)
 			return false, "The slip chassis is already docked."
 		end
 	end
+	local hasFrame = #(inv.assembledFrames or {}) > 0
+	local hasBroker = (inv.brokerFrameStock or 0) > 0
+	if not hasFrame and not hasBroker then
+		return false, "Need an assembled frame (workbench) or broker stock."
+	end
 	if inv.brass < CityRules.ROBOT_BUY_COST then
 		return false, `Need {CityRules.ROBOT_BUY_COST} brass to buy a work robot.`
 	end
 	inv.brass -= CityRules.ROBOT_BUY_COST
+	local frame = nil
+	if hasBroker and not hasFrame then
+		inv.brokerFrameStock -= 1
+	else
+		table.sort(inv.assembledFrames, function(a, b)
+			return (a.quality or 0) > (b.quality or 0)
+		end)
+		frame = table.remove(inv.assembledFrames, 1)
+	end
+	local name = if frame and frame.name then string.gsub(frame.name, "%s*Frame$", "") else "Slip chassis"
 	table.insert(inv.workers, {
 		id = "yard_bot",
-		name = "Slip chassis",
+		name = name,
 		kind = "robot",
-		payGrade = 0,
+		payGrade = if frame and (frame.quality or 0) >= 1.55 then 2 elseif frame and (frame.quality or 0) >= 1.3 then 1 else 0,
 		job = "haul",
 		unpaid = false,
 		rogue = false,
 	})
-	return true, `Slip chassis docked (−{CityRules.ROBOT_BUY_COST}). It works the yard and can rarely go rogue.`
+	local q = if frame then ` · {frame.name} (Q{string.format("%.2f", frame.quality)})` else " · broker chassis"
+	return true, `Powered work robot {name}{q} (−{CityRules.ROBOT_BUY_COST} brass).`
 end
 
 function CityRules.considerRogue(inv, dt: number, roll: number): (boolean, string)

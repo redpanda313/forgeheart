@@ -7,6 +7,7 @@ local Districts = require(Shared:WaitForChild("Districts"))
 local Economy = require(Shared:WaitForChild("Economy"))
 local Palette = require(Shared:WaitForChild("Palette"))
 local Scale = require(Shared:WaitForChild("Scale"))
+local Storage = require(Shared:WaitForChild("Storage"))
 
 local CityLayout = require(script.Parent.CityLayout)
 local NpcKit = require(script.Parent.NpcKit)
@@ -294,10 +295,32 @@ function SkyCity.build(parent: Instance)
 	end
 
 	local homePrompt = prompt(layout.home, "Improve", "Cottage", 0.4)
-	local stallPrompt = prompt(layout.stalls.residential, "Lease stall", "Residential · 90", 0.45)
-	local stockPrompt = prompt(layout.stalls.residential, "Stock shelf", "Residential stall", 0.3)
-	local grandStallPrompt = prompt(layout.stalls.grand_market, "Lease stall", "Grand Market · 280", 0.45)
-	local industrialStallPrompt = prompt(layout.stalls.industrial, "Lease stall", "Industrial · 160", 0.45)
+	local stallOffices = {}
+	for districtId, stallPart in layout.stalls do
+		local dist = Districts.byId(districtId)
+		local cost = if dist then dist.stallCost else 90
+		local name = if dist then dist.name else districtId
+		stallOffices[districtId] = {
+			lease = prompt(stallPart, "Lease stall", `{name} · {cost}`, 0.45),
+			office = prompt(stallPart, "Stall office", name, 0.25),
+		}
+	end
+	local stallPrompt = stallOffices.residential.lease
+	local stockPrompt = stallOffices.residential.office
+	local grandStallPrompt = stallOffices.grand_market.lease
+	local industrialStallPrompt = stallOffices.industrial.lease
+
+	local romancePrompts = {}
+	for id, spot in layout.romance or {} do
+		if spot.part then
+			romancePrompts[id] = prompt(spot.part, "Talk", spot.name, 0.25)
+		end
+	end
+
+	local vaultPrompts = {}
+	for track, part in layout.vaults or {} do
+		vaultPrompts[track] = prompt(part, "Vault", Storage.trackLabel(track), 0.3)
+	end
 	local leasePrompt = prompt(layout.workshop, "Lease workshop", "80 brass", 0.45)
 	local hirePrompt = prompt(layout.hire, "Hire", "Crew", 0.4)
 	local expandPrompt = prompt(layout.expand, "Expand bay", "Workshop", 0.4)
@@ -343,7 +366,6 @@ function SkyCity.build(parent: Instance)
 	local industrial = Districts.byId("industrial")
 	rogueModel = NpcKit.make(folder, "rogue", 0, "Slip chassis", world(industrial.x + 12, 0.55, industrial.z + 4))
 	local rogueTorso = rogueModel:FindFirstChild("Torso")
-	local roguePrompt: ProximityPrompt? = nil
 	if rogueTorso and rogueTorso:IsA("BasePart") then
 		roguePrompt = prompt(rogueTorso, "Repair", "Rogue chassis", 0.45)
 	end
@@ -407,6 +429,9 @@ function SkyCity.build(parent: Instance)
 		refreshHome = refreshHome,
 		rules = CityRules,
 		economy = Economy,
+		stallOffices = stallOffices,
+		romance = romancePrompts,
+		vaults = vaultPrompts,
 	}
 end
 
