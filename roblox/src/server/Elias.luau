@@ -121,6 +121,27 @@ function Elias.setVisible(model: Model, visible: boolean)
 	end
 end
 
+function Elias.rest(model: Model, feet: Vector3)
+	model:SetAttribute("Awake", false)
+	Elias.setVisible(model, true)
+	local wake = model:FindFirstChild("WakePrompt", true)
+	if wake and wake:IsA("ProximityPrompt") then
+		wake.Enabled = true
+	end
+	local scrap = model:FindFirstChild("ScrapPrompt", true)
+	if scrap and scrap:IsA("ProximityPrompt") then
+		scrap.Enabled = true
+	end
+	for _, name in { "EyeLeft", "EyeRight" } do
+		local eye = model:FindFirstChild(name)
+		if eye and eye:IsA("BasePart") then
+			eye.Color = Palette.eyeDark
+			eye.Transparency = 0
+		end
+	end
+	model:PivotTo(CFrame.new(feet) * CFrame.Angles(math.rad(16), 0, 0))
+end
+
 function Elias.wake(model: Model)
 	model:SetAttribute("Awake", true)
 	local prompt = model:FindFirstChild("WakePrompt", true)

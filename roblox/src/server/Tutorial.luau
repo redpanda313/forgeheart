@@ -22,24 +22,25 @@ local SpawnProgress = require(Shared:WaitForChild("SpawnProgress"))
 local Tutorial = {}
 local store = DataStoreService:GetDataStore("ForgeHeartProfile_v1")
 
-local function loreRemote(): RemoteEvent
+local function ensureRemote(name: string): RemoteEvent
 	local remotes = Shared:FindFirstChild("Remotes")
 	if not remotes then
 		remotes = Instance.new("Folder")
 		remotes.Name = "Remotes"
 		remotes.Parent = Shared
 	end
-	local existing = remotes:FindFirstChild("ShowLore")
+	local existing = remotes:FindFirstChild(name)
 	if existing and existing:IsA("RemoteEvent") then
 		return existing
 	end
 	local remote = Instance.new("RemoteEvent")
-	remote.Name = "ShowLore"
+	remote.Name = name
 	remote.Parent = remotes
 	return remote
 end
 
-local showLore = loreRemote()
+local showLore = ensureRemote("ShowLore")
+local newGameRemote = ensureRemote("NewGame")
 
 -- The generator keeps the browser's Hand (1) / scrap (E) wording so seeds still match.
 -- Shown copy uses this place's keys: E interacts, R scraps the quiet frame.
@@ -312,6 +313,16 @@ local function openDoor()
 	for _, door in built.doors do
 		door.CanCollide = false
 		door.Transparency = 1
+	end
+end
+
+local function closeDoor()
+	if not built then
+		return
+	end
+	for _, door in built.doors do
+		door.CanCollide = true
+		door.Transparency = if door.Name == "DoorSeal" then 1 else 0
 	end
 end
 
@@ -1160,6 +1171,99 @@ function Tutorial.start()
 			placeCharacter(player, player.Character)
 		end
 	end
+
+	local function stripWrench(player: Player)
+		local backpack = player:FindFirstChildOfClass("Backpack")
+		local tool = backpack and backpack:FindFirstChild("Arc Wrench")
+		if tool then
+			tool:Destroy()
+		end
+		local character = player.Character
+		local held = character and character:FindFirstChild("Arc Wrench")
+		if held then
+			held:Destroy()
+		end
+	end
+
+	local function resetWorkshop()
+		world.phase = "explore"
+		world.bangs = 0
+		world.bangTimer = 0
+		world.doorHp = 4
+		world.trays = 0
+		world.scrapped = false
+		world.allyHit = 0
+		closeDoor()
+		for _, demon in world.demons do
+			demon:Destroy()
+		end
+		table.clear(world.demons)
+		if built then
+			built.wrench.Enabled = false
+			built.boat.Enabled = false
+			for _, trayPrompt in built.trays do
+				trayPrompt:SetAttribute("Taken", false)
+				trayPrompt.Enabled = true
+				local trayPart = trayPrompt.Parent
+				if trayPart and trayPart:IsA("BasePart") then
+					trayPart.Transparency = 0
+				end
+			end
+		end
+		if elias then
+			Elias.rest(elias, Workshop.brotherFeet())
+		end
+	end
+
+	newGameRemote.OnServerEvent:Connect(function(player: Player)
+		local othersInLab = false
+		for _, other in Players:GetPlayers() do
+			if other ~= player then
+				local otherProfile = profileOf(other)
+				if otherProfile and not SpawnProgress.locked(otherProfile.spawn) then
+					othersInLab = true
+				end
+			end
+		end
+		if not othersInLab then
+			resetWorkshop()
+			city.refreshHome({ tier = "cottage", rooms = { "living" } })
+			city.refreshPlot({ owned = false, buildings = {} })
+			SkyCity.setRogue(false)
+		end
+		local seed = newSeed()
+		local story = Backstory.generate(seed)
+		local inv = Economy.empty(Economy.STARTER_BRASS)
+		CityRules.ensure(inv)
+		stories[player] = story
+		profiles[player] = {
+			phase = "explore",
+			spawn = SpawnProgress.WORKSHOP,
+			eliasAwake = false,
+			inv = inv,
+		}
+		plasma[player] = 100
+		nextSwing[player] = 0
+		stripWrench(player)
+		applyRespawn(player)
+		applySign(story)
+		for index, notePrompt in { built.journal, built.theory, built.talisman } do
+			local note = story.tutorial.notes[index]
+			if note then
+				notePrompt.ObjectText = note.title
+			end
+		end
+		sync(player)
+		save(player)
+		if player.Character then
+			placeCharacter(player, player.Character)
+		end
+		tell(
+			player,
+			story.tutorial.flashTitle,
+			story.tutorial.openingToast .. " This is a new story. The lab door stays shut until you wake the frame."
+		)
+	end)
 
 	Players.PlayerAdded:Connect(onPlayer)
 	Players.PlayerRemoving:Connect(function(player)
