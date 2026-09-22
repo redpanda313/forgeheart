@@ -13,7 +13,10 @@ local Workshop = require(script.Parent.Workshop)
 
 local Shared = ReplicatedStorage:WaitForChild("ForgeHeart")
 local Backstory = require(Shared:WaitForChild("Backstory"))
+local Board = require(Shared:WaitForChild("Board"))
+local BoardMesh = require(Shared:WaitForChild("BoardMesh"))
 local CityRules = require(Shared:WaitForChild("CityRules"))
+local Frame = require(Shared:WaitForChild("Frame"))
 local Economy = require(Shared:WaitForChild("Economy"))
 local RobotConfig = require(Shared:WaitForChild("RobotConfig"))
 local Scale = require(Shared:WaitForChild("Scale"))
@@ -40,7 +43,22 @@ local function ensureRemote(name: string): RemoteEvent
 end
 
 local showLore = ensureRemote("ShowLore")
-local newGameRemote = ensureRemote("NewGame")
+local toggleBoard = ensureRemote("ToggleBoard")
+local boardShopRemote = ensureRemote("BoardShop")
+local openBoardShop = ensureRemote("OpenBoardShop")
+local startHarvest = ensureRemote("StartHarvest")
+local harvestResult = ensureRemote("HarvestResult")
+local openVendor = ensureRemote("OpenVendor")
+local vendorAct = ensureRemote("VendorAct")
+local openFrame = ensureRemote("OpenFrame")
+local assembleFrame = ensureRemote("AssembleFrame")
+local openNeighbor = ensureRemote("OpenNeighbor")
+local neighborAct = ensureRemote("NeighborAct")
+local openProgram = ensureRemote("OpenProgram")
+local requestProgram = ensureRemote("RequestProgram")
+local setJob = ensureRemote("SetJob")
+local openLease = ensureRemote("OpenLease")
+local leaseAct = ensureRemote("LeaseAct")
 
 -- The generator keeps the browser's Hand (1) / scrap (E) wording so seeds still match.
 -- Shown copy uses this place's keys: E interacts, R scraps the quiet frame.
@@ -64,6 +82,7 @@ local stories: { [Player]: any } = {}
 local profiles: { [Player]: any } = {}
 local plasma: { [Player]: number } = {}
 local nextSwing: { [Player]: number } = {}
+local harvestWait: { [Player]: boolean } = {}
 
 local world = {
 	phase = "explore",
@@ -102,7 +121,7 @@ local function save(player: Player)
 		return
 	end
 	local payload = {
-		version = 4,
+		version = 5,
 		backstorySeed = story.seed,
 		phase = profile.phase,
 		spawn = profile.spawn,
@@ -133,6 +152,9 @@ local function save(player: Player)
 		debts = profile.inv.debts,
 		plot = profile.inv.plot,
 		rogueId = profile.inv.rogueId,
+		playerBoard = profile.inv.playerBoard,
+		neighborAff = profile.inv.neighborAff,
+		assembledFrames = profile.inv.assembledFrames,
 	}
 	pcall(function()
 		store:SetAsync("u_" .. player.UserId, payload)
@@ -222,7 +244,20 @@ local function load(player: Player)
 		if type(data.rogueId) == "string" then
 			inv.rogueId = data.rogueId
 		end
+		if type(data.playerBoard) == "table" then
+			inv.playerBoard = data.playerBoard
+		elseif data.boardOwned == true then
+			inv.playerBoard = { owned = true, thruster = false, rails = false, deck = false }
+		end
+		if type(data.neighborAff) == "table" then
+			inv.neighborAff = data.neighborAff
+		end
+		if type(data.assembledFrames) == "table" then
+			inv.assembledFrames = data.assembledFrames
+		end
+		Board.ensure(inv)
 	end
+	Board.ensure(inv)
 	local savedSpawn = if ok and type(data) == "table" then data.spawn else nil
 	local spawn = SpawnProgress.resolve(savedSpawn, phase, inv.apartment)
 	-- A market visit or an old siege overwrite does not resume behind the checkpoint.
@@ -270,9 +305,20 @@ local function sync(player: Player)
 	if not profile or not story then
 		return
 	end
+	Board.ensure(profile.inv)
 	player:SetAttribute("Brass", profile.inv.brass)
 	player:SetAttribute("Plasma", math.floor(plasma[player] or 100))
-	player:SetAttribute("Stock", stockText(profile.inv))
+	player:SetAttribute("BoardOwned", profile.inv.playerBoard.owned == true)
+	player:SetAttribute("BoardSpeedMul", Board.speedMul(profile.inv))
+	player:SetAttribute("BoardTurnMul", Board.turnMul(profile.inv))
+	player:SetAttribute("WalkMul", Board.walkSpeedMul(profile.inv))
+	local carried = stockText(profile.inv)
+	if carried == "" and profile.inv.playerBoard.owned then
+		carried = "E interact · Q board · wind skyways · I bay · M map"
+	elseif carried == "" then
+		carried = "E interact · R scrap a quiet frame"
+	end
+	player:SetAttribute("Stock", carried)
 	local crew = {}
 	if type(profile.inv.workers) == "table" then
 		for _, worker in profile.inv.workers do
@@ -588,14 +634,15 @@ end
 local function placeCharacter(player: Player, character: Model)
 	local root = character:WaitForChild("HumanoidRootPart", 8)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local profile = profileOf(player)
 	if humanoid then
-		humanoid.WalkSpeed = Scale.studs(7)
+		local walkMul = if profile then Board.walkSpeedMul(profile.inv) else 1
+		humanoid.WalkSpeed = Scale.studs(7) * walkMul
 		humanoid.UseJumpPower = false
 		humanoid.JumpHeight = Scale.studs(1.6)
 		humanoid.MaxHealth = 100
 		humanoid.Health = 100
 	end
-	local profile = profileOf(player)
 	-- Dying on a ferry visit, or rejoining after one, resumes at the cottage.
 	if profile and profile.spawn == SpawnProgress.CITY and profile.phase ~= "city" then
 		profile.phase = "city"
@@ -631,6 +678,8 @@ function Tutorial.start()
 	cityPad = city.spawn
 	elias = Elias.create(built.folder, Workshop.brotherFeet())
 	local companion = elias :: Model
+	local eliasBoard = BoardMesh.make(workspace, "EliasBoard")
+	Elias.attachBoard(eliasBoard)
 
 	built.photo.Triggered:Connect(function(player)
 		local story = storyOf(player)
@@ -783,18 +832,62 @@ function Tutorial.start()
 		goMarket(player)
 	end)
 
-	market.reef.Triggered:Connect(function(player)
+	local function beginHarvest(player: Player)
 		local profile = profileOf(player)
-		local story = storyOf(player)
-		if not profile or profile.phase ~= "market" then
+		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
 			return
 		end
-		local _, _, message = Economy.harvest(profile.inv, math.random)
-		tell(player, "Cloud reef", message)
-		sync(player)
-		save(player)
-		if story then
-			player:SetAttribute("Objective", profile.inv.apartment and player:GetAttribute("Objective") or `Harvest the reef, sell at the broker, earn {Economy.APARTMENT_COST} brass.`)
+		harvestWait[player] = true
+		startHarvest:FireClient(player, "Cloud reef")
+	end
+	market.reef.Triggered:Connect(beginHarvest)
+
+	harvestResult.OnServerEvent:Connect(function(player: Player, success: boolean)
+		if harvestWait[player] ~= true then
+			return
+		end
+		harvestWait[player] = nil
+		local profile = profileOf(player)
+		if not profile then
+			return
+		end
+		if success == true then
+			local _, _, message = Economy.harvest(profile.inv, math.random)
+			tell(player, "Cloud reef", message)
+			sync(player)
+			save(player)
+		else
+			tell(player, "Cloud reef", "Extraction failed — try again.")
+		end
+	end)
+
+	for vendorId, tradePrompt in market.trades do
+		tradePrompt.Triggered:Connect(function(player)
+			local profile = profileOf(player)
+			if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+				return
+			end
+			openVendor:FireClient(player, vendorId)
+		end)
+	end
+
+	vendorAct.OnServerEvent:Connect(function(player: Player, vendorId: string, action: string, itemId: string)
+		local profile = profileOf(player)
+		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		local ok, _, message
+		if action == "buy" then
+			ok, _, message = Economy.buyFromVendor(profile.inv, vendorId, itemId, 1)
+		elseif action == "sell" then
+			ok, _, message = Economy.sellToVendor(profile.inv, vendorId, itemId, 1)
+		else
+			return
+		end
+		tell(player, "Stall", message)
+		if ok then
+			sync(player)
+			save(player)
 		end
 	end)
 
@@ -865,7 +958,9 @@ function Tutorial.start()
 				return
 			end
 			local ok, message = CityRules.talk(profile.inv, neighbor.id)
-			tell(player, "Neighbor", message)
+			local aff = CityRules.affinity(profile.inv, neighbor.id)
+			local def = CityRules.neighborDef(neighbor.id)
+			openNeighbor:FireClient(player, neighbor.id, if def then def.name else neighbor.id, `{message}\n\nAffinity {aff}. Gift brass or blooms, hire, or clear debt.`)
 			if ok then
 				sync(player)
 				save(player)
@@ -984,12 +1079,31 @@ function Tutorial.start()
 		if not profile then
 			return
 		end
-		local ok, message = CityRules.buyPlot(profile.inv)
-		if ok then
-			city.refreshPlot(profile.inv.plot)
-		end
-		cityAct(player, "Lease office", ok, message)
+		local status = if profile.inv.plot.owned
+			then "You hold residential pad (0,0). Décor and garden still use the pegs."
+			else "Residential ring 3×3. City pad (0,0) is 16,560 brass. Other cells stay NPC-held."
+		openLease:FireClient(player, status)
 	end)
+
+	if city.assemble then
+		city.assemble.Triggered:Connect(function(player)
+			local profile = cityPlayer(player)
+			if not profile then
+				return
+			end
+			Frame.ensure(profile.inv)
+			local fill = Frame.autoFill(profile.inv)
+			local lines = { "Five spaces: chassis · mechanisms · power · wiring · personality.", "" }
+			for _, slot in Frame.SLOTS do
+				table.insert(lines, `{slot}: {fill[slot] or "empty"}`)
+			end
+			if #profile.inv.assembledFrames > 0 then
+				table.insert(lines, "")
+				table.insert(lines, `Frames owned: {#profile.inv.assembledFrames}`)
+			end
+			openFrame:FireClient(player, table.concat(lines, "\n"))
+		end)
+	end
 
 	city.decor.Triggered:Connect(function(player)
 		local profile = cityPlayer(player)
@@ -1060,16 +1174,7 @@ function Tutorial.start()
 		save(player)
 	end)
 
-	city.reef.Triggered:Connect(function(player)
-		local profile = cityPlayer(player)
-		if not profile then
-			return
-		end
-		local _, _, message = Economy.harvest(profile.inv, math.random)
-		tell(player, "Cloud reef", message)
-		sync(player)
-		save(player)
-	end)
+	city.reef.Triggered:Connect(beginHarvest)
 
 	city.broker.Triggered:Connect(function(player)
 		local profile = cityPlayer(player)
@@ -1098,6 +1203,145 @@ function Tutorial.start()
 			save(player)
 		end)
 	end
+
+	local function openShop(player: Player)
+		local profile = profileOf(player)
+		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		Board.ensure(profile.inv)
+		local board = profile.inv.playerBoard
+		local status = if board.owned
+			then "Board owned. Q rides anywhere. Fit thruster, rails, or deck."
+			else `Buy the chassis for {Board.BASE_COST} brass. One purchase forever.`
+		openBoardShop:FireClient(player, status)
+	end
+	market.boardShop.Triggered:Connect(openShop)
+	city.boardShop.Triggered:Connect(openShop)
+
+	boardShopRemote.OnServerEvent:Connect(function(player: Player, action: string)
+		local profile = profileOf(player)
+		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		Board.ensure(profile.inv)
+		local ok, message
+		if action == "buy" then
+			ok, message = Board.buy(profile.inv)
+		elseif action == "thruster" or action == "rails" or action == "deck" then
+			ok, message = Board.upgrade(profile.inv, action)
+		else
+			return
+		end
+		player:SetAttribute("BoardShopLog", message)
+		openBoardShop:FireClient(player, message)
+		if ok then
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if humanoid and player:GetAttribute("BoardMounted") ~= true then
+				humanoid.WalkSpeed = Scale.studs(7) * Board.walkSpeedMul(profile.inv)
+			end
+		end
+		sync(player)
+		save(player)
+		if ok and action == "buy" then
+			tell(player, "Board shop", "Board stowed. Q rides from anywhere. Wind skyways only — no roads between islands.")
+		end
+	end)
+
+	assembleFrame.OnServerEvent:Connect(function(player: Player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local fill = Frame.autoFill(profile.inv)
+		local ok, message = Frame.assemble(profile.inv, fill)
+		tell(player, "Frame bench", message)
+		if ok then
+			sync(player)
+			save(player)
+		end
+		openFrame:FireClient(player, message)
+	end)
+
+	neighborAct.OnServerEvent:Connect(function(player: Player, neighborId: string, action: string)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = false, "Nothing happens."
+		if action == "brass" then
+			ok, message = CityRules.giftBrass(profile.inv, neighborId)
+		elseif action == "bloom" then
+			ok, message = CityRules.giftGood(profile.inv, neighborId, "flower_gift")
+		elseif action == "hire" then
+			ok, message = CityRules.hireNeighbor(profile.inv, neighborId)
+		elseif action == "debt" then
+			ok, message = CityRules.clearDebt(profile.inv, neighborId)
+		end
+		tell(player, "Neighbor", message)
+		if ok then
+			sync(player)
+			save(player)
+		end
+		openNeighbor:FireClient(player, neighborId, neighborId, `{message}\n\nAffinity {CityRules.affinity(profile.inv, neighborId)}.`)
+	end)
+
+	local function sendPrograms(player: Player)
+		local profile = profileOf(player)
+		if not profile then
+			return
+		end
+		local crew = {}
+		for _, worker in profile.inv.workers or {} do
+			table.insert(crew, { id = worker.id, name = worker.name, job = worker.job or "harvest" })
+		end
+		openProgram:FireClient(player, crew)
+	end
+	requestProgram.OnServerEvent:Connect(sendPrograms)
+	setJob.OnServerEvent:Connect(function(player: Player, workerId: string, job: string)
+		local profile = profileOf(player)
+		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		local ok, message = CityRules.setJob(profile.inv, workerId, job)
+		tell(player, "Programs", message)
+		if ok then
+			sync(player)
+			save(player)
+		end
+		sendPrograms(player)
+	end)
+
+	leaseAct.OnServerEvent:Connect(function(player: Player, cellX: number, cellY: number)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		if cellX ~= 0 or cellY ~= 0 then
+			tell(player, "Lease office", "That pad is still held by an NPC household.")
+			return
+		end
+		local ok, message = CityRules.buyPlot(profile.inv)
+		if ok then
+			city.refreshPlot(profile.inv.plot)
+		end
+		cityAct(player, "Lease office", ok, message)
+		openLease:FireClient(player, message)
+	end)
+
+	toggleBoard.OnServerEvent:Connect(function(player: Player, mounted: boolean)
+		local profile = profileOf(player)
+		if not profile or not profile.inv.playerBoard or not profile.inv.playerBoard.owned then
+			player:SetAttribute("BoardMounted", false)
+			return
+		end
+		if profile.phase ~= "market" and profile.phase ~= "city" then
+			player:SetAttribute("BoardMounted", false)
+			return
+		end
+		player:SetAttribute("BoardMounted", mounted == true)
+	end)
 
 	city.ferry.Triggered:Connect(function(player)
 		local profile = profileOf(player)
@@ -1181,99 +1425,6 @@ function Tutorial.start()
 		end
 	end
 
-	local function stripWrench(player: Player)
-		local backpack = player:FindFirstChildOfClass("Backpack")
-		local tool = backpack and backpack:FindFirstChild("Arc Wrench")
-		if tool then
-			tool:Destroy()
-		end
-		local character = player.Character
-		local held = character and character:FindFirstChild("Arc Wrench")
-		if held then
-			held:Destroy()
-		end
-	end
-
-	local function resetWorkshop()
-		world.phase = "explore"
-		world.bangs = 0
-		world.bangTimer = 0
-		world.doorHp = 4
-		world.trays = 0
-		world.scrapped = false
-		world.allyHit = 0
-		closeDoor()
-		for _, demon in world.demons do
-			demon:Destroy()
-		end
-		table.clear(world.demons)
-		if built then
-			built.wrench.Enabled = false
-			built.boat.Enabled = false
-			for _, trayPrompt in built.trays do
-				trayPrompt:SetAttribute("Taken", false)
-				trayPrompt.Enabled = true
-				local trayPart = trayPrompt.Parent
-				if trayPart and trayPart:IsA("BasePart") then
-					trayPart.Transparency = 0
-				end
-			end
-		end
-		if elias then
-			Elias.rest(elias, Workshop.brotherFeet())
-		end
-	end
-
-	newGameRemote.OnServerEvent:Connect(function(player: Player)
-		local othersInLab = false
-		for _, other in Players:GetPlayers() do
-			if other ~= player then
-				local otherProfile = profileOf(other)
-				if otherProfile and not SpawnProgress.locked(otherProfile.spawn) then
-					othersInLab = true
-				end
-			end
-		end
-		if not othersInLab then
-			resetWorkshop()
-			city.refreshHome({ tier = "cottage", rooms = { "living" } })
-			city.refreshPlot({ owned = false, buildings = {} })
-			SkyCity.setRogue(false)
-		end
-		local seed = newSeed()
-		local story = Backstory.generate(seed)
-		local inv = Economy.empty(Economy.STARTER_BRASS)
-		CityRules.ensure(inv)
-		stories[player] = story
-		profiles[player] = {
-			phase = "explore",
-			spawn = SpawnProgress.WORKSHOP,
-			eliasAwake = false,
-			inv = inv,
-		}
-		plasma[player] = 100
-		nextSwing[player] = 0
-		stripWrench(player)
-		applyRespawn(player)
-		applySign(story)
-		for index, notePrompt in { built.journal, built.theory, built.talisman } do
-			local note = story.tutorial.notes[index]
-			if note then
-				notePrompt.ObjectText = note.title
-			end
-		end
-		sync(player)
-		save(player)
-		if player.Character then
-			placeCharacter(player, player.Character)
-		end
-		tell(
-			player,
-			story.tutorial.flashTitle,
-			story.tutorial.openingToast .. " This is a new story. The lab door stays shut until you wake the frame."
-		)
-	end)
-
 	Players.PlayerAdded:Connect(onPlayer)
 	Players.PlayerRemoving:Connect(function(player)
 		save(player)
@@ -1281,6 +1432,7 @@ function Tutorial.start()
 		profiles[player] = nil
 		plasma[player] = nil
 		nextSwing[player] = nil
+		harvestWait[player] = nil
 	end)
 	for _, player in Players:GetPlayers() do
 		onPlayer(player)
@@ -1301,6 +1453,28 @@ function Tutorial.start()
 					local sold, note = CityRules.tickCustomers(profile.inv)
 					if sold then
 						tell(player, "Customers", note)
+					end
+					for _, worker in profile.inv.workers or {} do
+						if not worker.unpaid then
+							local job = worker.job or "harvest"
+							if job == "harvest" then
+								Economy.harvest(profile.inv, math.random)
+							elseif job == "craft" then
+								for _, recipe in Economy.RECIPES do
+									local crafted = Economy.craft(profile.inv, recipe.id)
+									if crafted then
+										break
+									end
+								end
+							elseif job == "stock" then
+								for districtId in CityRules.STALLS do
+									local stocked = CityRules.stockStall(profile.inv, districtId)
+									if stocked then
+										break
+									end
+								end
+							end
+						end
 					end
 					sync(player)
 					save(player)
@@ -1393,7 +1567,18 @@ function Tutorial.start()
 		end
 
 		if companion:GetAttribute("Awake") == true and nearestRoot then
-			if nearestDist > Scale.studs(16) then
+			local riding = false
+			for _, player in Players:GetPlayers() do
+				local character = player.Character
+				local root = character and character:FindFirstChild("HumanoidRootPart")
+				if root == nearestRoot and player:GetAttribute("BoardMounted") == true then
+					riding = true
+					break
+				end
+			end
+			if riding then
+				Elias.stepBoard(companion, nearestRoot.CFrame, dt)
+			elseif nearestDist > Scale.studs(16) then
 				local feet = nearestRoot.Position - Vector3.new(0, 3, 0) + nearestRoot.CFrame.LookVector * -6
 				companion:PivotTo(CFrame.new(feet))
 			else

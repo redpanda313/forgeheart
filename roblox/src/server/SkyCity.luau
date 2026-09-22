@@ -303,6 +303,7 @@ function SkyCity.build(parent: Instance)
 	local expandPrompt = prompt(layout.expand, "Expand bay", "Workshop", 0.4)
 	local inventPrompt = prompt(layout.invent, "Invent", "Desk", 0.5)
 	local craftPrompt = prompt(layout.invent, "Craft invention", "Latest recipe", 0.35)
+	local assemblePrompt = prompt(peg("Assemble", layout.invent, 4, 0), "Assemble frame", "Five slots", 0.4)
 	local robotPrompt = prompt(layout.robot, "Buy chassis", "120 brass", 0.45)
 	local reefPrompt = prompt(layout.reefs.grand_market, "Extract", "Cloud reef", 0.3)
 	local brokerPrompt = prompt(layout.broker, "Sell all", "Broker", 0.3)
@@ -310,6 +311,7 @@ function SkyCity.build(parent: Instance)
 	local decorPrompt = prompt(layout.plot, "Place décor", "1,800", 0.4)
 	local gardenPrompt = prompt(layout.plot, "Plant garden", "5,500", 0.4)
 	local ferryPrompt = prompt(layout.ferry, "Training market", "Ferry", 0.5)
+	local boardShopPrompt = prompt(layout.boardShop, "Board shop", "Buy once, ride forever", 0.35)
 
 	local recipes = {}
 	local labels = {
@@ -384,6 +386,7 @@ function SkyCity.build(parent: Instance)
 		industrialStall = industrialStallPrompt,
 		invent = inventPrompt,
 		craft = craftPrompt,
+		assemble = assemblePrompt,
 		robot = robotPrompt,
 		plot = plotPrompt,
 		decor = decorPrompt,
@@ -399,6 +402,7 @@ function SkyCity.build(parent: Instance)
 		broker = brokerPrompt,
 		recipes = recipes,
 		ferry = ferryPrompt,
+		boardShop = boardShopPrompt,
 		spawn = spawn,
 		refreshHome = refreshHome,
 		rules = CityRules,
