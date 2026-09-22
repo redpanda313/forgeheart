@@ -129,4 +129,73 @@ if not garden or not CityRules.hasRoom(home, "garden") or home.brass ~= 20 then
 	fail(gardenMsg .. " " .. tostring(home.brass))
 end
 
+home.items.cloud_iron = 4
+home.items.scrap_brass = 4
+local invented, inventMsg = CityRules.invent(home)
+if not invented or home.customRecipes[1].name ~= "IronCoil" or home.customRecipes[1].quality ~= 2 or home.customRecipes[1].sellValue ~= 45 then
+	fail(inventMsg .. " q " .. tostring(home.customRecipes[1] and home.customRecipes[1].quality) .. " sell " .. tostring(home.customRecipes[1] and home.customRecipes[1].sellValue))
+end
+if home.brass ~= 20 - 15 or (home.items.cloud_iron or 0) ~= 2 then
+	fail("invent fee brass " .. tostring(home.brass))
+end
+if not string.find(inventMsg, "Chassis", 1, true) then
+	fail(inventMsg)
+end
+local crafted, craftMsg = CityRules.craftInvention(home)
+if not crafted or (home.customStock.inv_0 or 0) ~= 1 then
+	fail(craftMsg)
+end
+local sold, sellMsg, gained = CityRules.sellInventions(home)
+if not sold or gained ~= 45 then
+	fail(sellMsg)
+end
+
+local stocked, stockMsg = CityRules.stockStall(home, "residential")
+if not stocked then
+	fail(stockMsg)
+end
+if CityRules.fairPrice("cloud_iron") ~= 4 or CityRules.fairPrice("spore_silk") ~= 7 then
+	fail("fair price")
+end
+home.stalls.residential.open = true
+local bought, buyMsg = CityRules.tickCustomers(home)
+if not bought or not string.find(buyMsg, "4b", 1, true) then
+	fail(buyMsg)
+end
+
+if CityRules.PLOT_PRICE ~= 16560 then
+	fail("plot price")
+end
+home.brass = 20000
+local deed, deedMsg = CityRules.buyPlot(home)
+if not deed or home.brass ~= 3440 or not string.find(deedMsg, "vacant lot", 1, true) then
+	fail(deedMsg .. " " .. tostring(home.brass))
+end
+home.brass = 1800
+local decor, decorMsg = CityRules.developPlot(home, "decor")
+if not decor or home.brass ~= 0 or not string.find(decorMsg, "Plaza décor", 1, true) then
+	fail(decorMsg)
+end
+
+home.brass = 1200
+local cleared, debtMsg = CityRules.clearDebt(home, "neighbor_pip")
+if not cleared or home.brass ~= 0 or home.clearedDebt ~= true then
+	fail(debtMsg .. " " .. tostring(home.brass))
+end
+
+home.brass = 200
+local _, robotMsg = CityRules.buyRobot(home)
+if not string.find(robotMsg, "Slip chassis", 1, true) then
+	fail(robotMsg)
+end
+local sparked, sparkMsg = CityRules.considerRogue(home, 1, 0)
+if not sparked or home.rogueId ~= "yard_bot" then
+	fail(sparkMsg)
+end
+home.items.repair_kit = 1
+local fixed, fixMsg = CityRules.repairRogue(home)
+if not fixed or home.rogueId ~= false or home.repairsDone ~= 1 or not string.find(fixMsg, "+22", 1, true) then
+	fail(fixMsg)
+end
+
 print("city rules match")

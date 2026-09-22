@@ -124,6 +124,11 @@ end
 local walkers: { any } = {}
 local clock = 0.2
 local dressing: Folder? = nil
+local plotDressing: Folder? = nil
+local rogueModel: Model? = nil
+local roguePrompt: ProximityPrompt? = nil
+local rogueActive = false
+local rogueTarget: Vector3? = nil
 
 local function placeRig(model: Model, feet: Vector3, look: Vector3)
 	local flat = Vector3.new(look.X, feet.Y, look.Z)
@@ -155,6 +160,46 @@ function SkyCity.step(dt: number)
 	for _, walker in walkers do
 		local pos = routePoint(clock, walker.home, walker.work, walker.market)
 		placeRig(walker.model, pos, walker.work)
+	end
+	if rogueActive and rogueModel and rogueTarget then
+		local pos = rogueModel:GetPivot().Position
+		local flat = Vector3.new(rogueTarget.X - pos.X, 0, rogueTarget.Z - pos.Z)
+		if flat.Magnitude > 6 then
+			local nextPos = pos + flat.Unit * math.min(Scale.studs(1.55) * dt, flat.Magnitude - 6)
+			placeRig(rogueModel, Vector3.new(nextPos.X, pos.Y, nextPos.Z), rogueTarget)
+		end
+	end
+end
+
+function SkyCity.setRogueTarget(target: Vector3?)
+	rogueTarget = target
+end
+
+function SkyCity.roguePosition(): Vector3?
+	if rogueModel then
+		return rogueModel:GetPivot().Position
+	end
+	return nil
+end
+
+function SkyCity.setRogue(active: boolean)
+	rogueActive = active
+	if not rogueModel then
+		return
+	end
+	for _, child in rogueModel:GetDescendants() do
+		if child:IsA("BasePart") and child.Name ~= "Pivot" then
+			child.Transparency = if active then 0 else 1
+		elseif child:IsA("BillboardGui") then
+			child.Enabled = active
+		end
+	end
+	if roguePrompt then
+		roguePrompt.Enabled = active
+	end
+	local eye = rogueModel:FindFirstChild("Head")
+	if eye and eye:IsA("BasePart") then
+		eye.Color = if active then Color3.fromRGB(180, 40, 30) else Palette.skin
 	end
 end
 
@@ -265,6 +310,11 @@ function SkyCity.build(parent: Instance)
 	box(folder, "Fountain", 2.2, 1.1, 2.2, 0, 0.9, -22, Palette.glass, Enum.Material.Glass, false)
 	local stallDesk = box(folder, "PlazaStall", 3, 1.6, 2, -8, 1.1, -24, Palette.wood, Enum.Material.Wood)
 	local stallPrompt = prompt(stallDesk, "Lease stall", "Residential · 90", 0.45)
+	local stockPrompt = prompt(stallDesk, "Stock shelf", "Residential stall", 0.3)
+	local marketStall = box(folder, "GrandStall", 3, 1.6, 2, 54, 1.1, -16, Palette.wood, Enum.Material.Wood)
+	local grandStallPrompt = prompt(marketStall, "Lease stall", "Grand Market · 280", 0.45)
+	local industrialStall = box(folder, "IndustrialStall", 3, 1.4, 2, -54, 1, -28, Palette.iron, Enum.Material.Metal)
+	local industrialStallPrompt = prompt(industrialStall, "Lease stall", "Industrial · 160", 0.45)
 
 	local slip = box(folder, "WorkshopSlip", 8, 2.4, 5, -62, 1.4, -22, Palette.ironDark, Enum.Material.Metal)
 	local leasePrompt = prompt(slip, "Lease workshop", "80 brass", 0.45)
@@ -272,6 +322,11 @@ function SkyCity.build(parent: Instance)
 	local hirePrompt = prompt(hireDesk, "Hire", "Crew", 0.4)
 	local expandDesk = box(folder, "ExpandBay", 2.2, 1.4, 0.3, -70, 1, -18, Palette.brass, Enum.Material.Metal)
 	local expandPrompt = prompt(expandDesk, "Expand bay", "Workshop", 0.4)
+	local inventDesk = box(folder, "InventDesk", 2.4, 1.2, 1.2, -66, 0.9, -28, Palette.copper, Enum.Material.Metal)
+	local inventPrompt = prompt(inventDesk, "Invent", "Desk", 0.5)
+	local craftPrompt = prompt(inventDesk, "Craft invention", "Latest recipe", 0.35)
+	local robotDesk = box(folder, "RobotDock", 2, 1.2, 1.4, -58, 0.9, -26, Palette.ironDark, Enum.Material.Metal)
+	local robotPrompt = prompt(robotDesk, "Buy chassis", "120 brass", 0.45)
 
 	local reef = box(folder, "CityReef", 3, 1.3, 3, 56, 1, -20, Color3.fromRGB(90, 110, 120), Enum.Material.Slate)
 	local reefPrompt = prompt(reef, "Extract", "Cloud reef", 0.3)
@@ -290,6 +345,29 @@ function SkyCity.build(parent: Instance)
 		recipes[spec[1]] = prompt(anchor, spec[2], "Bench", 0.25)
 		recipes[spec[1]].MaxActivationDistance = 4
 	end
+
+	pad("PlotPad", 12, 12, 16, -40, Palette.wood, Enum.Material.Wood)
+	plotDressing = Instance.new("Folder")
+	plotDressing.Name = "PlotDressing"
+	plotDressing.Parent = folder
+	local plotSign = box(folder, "PlotOffice", 2.4, 1.6, 1.2, 16, 1.1, -34, Palette.brass, Enum.Material.Metal)
+	local plotPrompt = prompt(plotSign, "Buy plot", "16,560 brass", 0.5)
+	local decorPrompt = prompt(plotSign, "Place décor", "1,800", 0.4)
+	local gardenPrompt = prompt(plotSign, "Plant garden", "5,500", 0.4)
+
+	local function sidePrompt(name: string, action: string, object: string, x: number, z: number): ProximityPrompt
+		local peg = box(folder, name, 0.6, 1.2, 0.2, x, 0.8, z, Palette.paper, Enum.Material.Wood)
+		return prompt(peg, action, object, 0.4)
+	end
+	local debts = {
+		neighbor_pip = sidePrompt("PipDebt", "Clear debt", "1,200", -16, 12),
+		neighbor_bolt = sidePrompt("BoltDebt", "Clear debt", "6,500", 2, 24),
+	}
+	local hires = {
+		neighbor_pip = sidePrompt("PipHire", "Hire neighbor", "Pip Harper", -20, 12),
+		neighbor_sera = sidePrompt("SeraHire", "Hire neighbor", "Sera Quinn", 16, 12),
+		neighbor_bolt = sidePrompt("BoltHire", "Hire neighbor", "Bolt Voss", -2, 24),
+	}
 
 	local ferry = box(folder, "Ferry", 3, 1.2, 2, 0, 0.9, -64, Palette.wood, Enum.Material.Wood)
 	local ferryPrompt = prompt(ferry, "Training market", "Ferry", 0.5)
@@ -323,11 +401,55 @@ function SkyCity.build(parent: Instance)
 
 	refreshHome({ tier = "cottage", rooms = { "living" } })
 
+	rogueModel = person(folder, "Slip chassis", Palette.ironDark)
+	placeRig(rogueModel, feet(-62, -16), feet(-62, -22))
+	local rogueTorso = rogueModel:FindFirstChild("Torso")
+	if rogueTorso and rogueTorso:IsA("BasePart") then
+		roguePrompt = prompt(rogueTorso, "Repair", "Rogue chassis", 0.45)
+	end
+	SkyCity.setRogue(false)
+
+	local function refreshPlot(plot)
+		if not plotDressing then
+			return
+		end
+		plotDressing:ClearAllChildren()
+		if not plot or not plot.owned then
+			return
+		end
+		for _, kind in plot.buildings or {} do
+			if kind == "decor" then
+				box(plotDressing, "PlotDecor", 1.2, 1.6, 1.2, 14, 1.1, -42, Palette.brass, Enum.Material.Metal)
+			elseif kind == "garden" then
+				box(plotDressing, "PlotGarden", 4, 0.2, 4, 16, 0.5, -42, Color3.fromRGB(70, 120, 70), Enum.Material.Grass)
+			elseif kind == "apartment" then
+				box(plotDressing, "PlotApartment", 4, 3, 3, 18, 1.7, -40, Palette.wood, Enum.Material.Wood)
+			elseif kind == "retail" then
+				box(plotDressing, "PlotRetail", 3, 2, 2, 12, 1.2, -40, Palette.paper, Enum.Material.Wood)
+			elseif kind == "factory" then
+				box(plotDressing, "PlotFactory", 4, 2.4, 3, 16, 1.4, -44, Palette.iron, Enum.Material.Metal)
+			end
+		end
+	end
+
 	return {
 		folder = folder,
 		neighbors = neighbors,
 		home = homePrompt,
 		stall = stallPrompt,
+		stock = stockPrompt,
+		grandStall = grandStallPrompt,
+		industrialStall = industrialStallPrompt,
+		invent = inventPrompt,
+		craft = craftPrompt,
+		robot = robotPrompt,
+		plot = plotPrompt,
+		decor = decorPrompt,
+		garden = gardenPrompt,
+		debts = debts,
+		hires = hires,
+		repair = roguePrompt,
+		refreshPlot = refreshPlot,
 		workshop = leasePrompt,
 		hire = hirePrompt,
 		expand = expandPrompt,
