@@ -65,6 +65,22 @@ CityRules.ROOMS = {
 	garden = { name = "Garden court", cost = 180 },
 }
 
+CityRules.ROBOT_BUY_COST = 120
+CityRules.ROGUE_REPAIR_PAY = 22
+CityRules.ROGUE_CHANCE_PER_SEC = 0.00012
+CityRules.STALL_PRICE_MUL = 1.12
+CityRules.INVENTION_CAP = 99
+CityRules.PLOT_PRICE = 16560
+CityRules.INVENT_MATS = { "cloud_iron", "scrap_brass", "spore_silk", "sky_salt", "wire", "gear_blank" }
+
+CityRules.PLOT_BUILDS = {
+	decor = { name = "Plaza décor", cost = 1800, zones = { residential = true, retail = true, mixed = true, garden = true } },
+	garden = { name = "Flower garden", cost = 5500, zones = { residential = true, garden = true, mixed = true }, primary = true },
+	apartment = { name = "Apartment row", cost = 8500, zones = { residential = true, mixed = true }, primary = true },
+	factory = { name = "Factory pad", cost = 18000, zones = { industrial = true, mixed = true }, primary = true },
+	retail = { name = "Retail front", cost = 14000, zones = { retail = true, mixed = true }, primary = true },
+}
+
 CityRules.NEIGHBORS = {
 	{
 		id = "neighbor_pip",
@@ -126,6 +142,36 @@ function CityRules.ensure(inv)
 	end
 	if inv.upkeepIn == nil then
 		inv.upkeepIn = CityRules.UPKEEP_INTERVAL
+	end
+	if type(inv.customRecipes) ~= "table" then
+		inv.customRecipes = {}
+	end
+	if type(inv.customStock) ~= "table" then
+		inv.customStock = {}
+	end
+	if inv.inventionsMade == nil then
+		inv.inventionsMade = 0
+	end
+	if inv.repairsDone == nil then
+		inv.repairsDone = 0
+	end
+	if inv.clearedDebt == nil then
+		inv.clearedDebt = false
+	end
+	if inv.hiredNeighbor == nil then
+		inv.hiredNeighbor = false
+	end
+	if inv.plantedGarden == nil then
+		inv.plantedGarden = false
+	end
+	if type(inv.debts) ~= "table" then
+		inv.debts = { neighbor_pip = 1200, neighbor_bolt = 6500 }
+	end
+	if type(inv.plot) ~= "table" then
+		inv.plot = { owned = false, buildings = {} }
+	end
+	if inv.rogueId == nil then
+		inv.rogueId = false
 	end
 	return inv
 end
@@ -568,6 +614,520 @@ function CityRules.improveHome(inv): (boolean, string)
 	return CityRules.addRoom(inv, action)
 end
 
+local INVENT_PREFIX = {
+	gear_blank = "Gear",
+	wire = "Wire",
+	cloud_iron = "Iron",
+	scrap_brass = "Brass",
+	spore_silk = "Silk",
+	sky_salt = "Salt",
+}
+
+local INVENT_SUFFIX = {
+	gear_blank = "works",
+	wire = "filament",
+	cloud_iron = "plate",
+	scrap_brass = "coil",
+	spore_silk = "weave",
+	sky_salt = "crystal",
+}
+
+local SLOT_ORDER = { "chassis", "mechanisms", "power", "wiring", "personality" }
+local SLOT_LABEL = {
+	chassis = "Chassis",
+	mechanisms = "Mechanisms",
+	power = "Power",
+	wiring = "Wiring",
+	personality = "Personality",
+}
+
+function CityRules.fairPrice(id: string): number
+	local def = EconomyCommodity(id)
+	if not def then
+		return 1
+	end
+	return math.max(1, math.round(def.baseBuy * CityRules.STALL_PRICE_MUL))
+end
+
+function EconomyCommodity(id: string)
+	local commodities = {
+		cloud_iron = { name = "Cloud Iron", baseBuy = 4 },
+		scrap_brass = { name = "Scrap Brass", baseBuy = 3 },
+		spore_silk = { name = "Spore Silk", baseBuy = 6 },
+		sky_salt = { name = "Sky Salt", baseBuy = 2 },
+		wire = { name = "Copper Wire", baseBuy = 5 },
+		gear_blank = { name = "Gear Blank", baseBuy = 8 },
+		repair_kit = { name = "Repair Kit", baseBuy = 6 },
+		haul_pack = { name = "Haul Pack", baseBuy = 10 },
+	}
+	return commodities[id]
+end
+
+function CityRules.itemName(id: string): string
+	local def = EconomyCommodity(id)
+	return if def then def.name else id
+end
+
+function CityRules.inventPairKey(a: string, b: string): string
+	return if a < b then `{a}|{b}` else `{b}|{a}`
+end
+
+function CityRules.hasInventPair(inv, a: string, b: string): boolean
+	local key = CityRules.inventPairKey(a, b)
+	for _, recipe in inv.customRecipes do
+		local inputs = recipe.inputs
+		if inputs and inputs[1] and inputs[2] and CityRules.inventPairKey(inputs[1].id, inputs[2].id) == key then
+			return true
+		end
+	end
+	return false
+end
+
+function CityRules.inventName(a: string, b: string, index: number): string
+	local left = INVENT_PREFIX[a] or a
+	local right = INVENT_SUFFIX[b] or b
+	local base = left .. string.upper(string.sub(right, 1, 1)) .. string.sub(right, 2)
+	if index > 0 then
+		return `{base} {index + 1}`
+	end
+	return base
+end
+
+function CityRules.slotBlurb(a: string, b: string): string
+	local has = {}
+	local function mark(id: string)
+		if id == "gear_blank" then
+			has.mechanisms = true
+		end
+		if id == "wire" then
+			has.wiring = true
+		end
+		if id == "cloud_iron" or id == "scrap_brass" or id == "spore_silk" or id == "sky_salt" then
+			has.chassis = true
+		end
+	end
+	mark(a)
+	mark(b)
+	local parts = {}
+	for _, slot in SLOT_ORDER do
+		if has[slot] then
+			table.insert(parts, SLOT_LABEL[slot])
+		end
+	end
+	if #parts == 0 then
+		return "Chassis · Power"
+	end
+	return table.concat(parts, " · ")
+end
+
+function CityRules.findInventPair(inv): (string?, string?)
+	local mats = CityRules.INVENT_MATS
+	for i = 1, #mats do
+		for j = i + 1, #mats do
+			local a = mats[i]
+			local b = mats[j]
+			if (inv.items[a] or 0) >= 2 and (inv.items[b] or 0) >= 2 and not CityRules.hasInventPair(inv, a, b) then
+				return a, b
+			end
+		end
+	end
+	return nil, nil
+end
+
+function CityRules.canInvent(inv): boolean
+	return (inv.bayLevel or 0) >= 3 or inv.cityWorkshopLeased == true
+end
+
+function CityRules.invent(inv): (boolean, string)
+	CityRules.ensure(inv)
+	if not CityRules.canInvent(inv) then
+		return false, "Invention needs Workshop Wing (bay L3+) or a leased city workshop."
+	end
+	local a, b = CityRules.findInventPair(inv)
+	if not a or not b then
+		local held = 0
+		for _, id in CityRules.INVENT_MATS do
+			if (inv.items[id] or 0) >= 2 then
+				held += 1
+			end
+		end
+		if held < 2 then
+			return false, "Need 2× of two different invent mats (set pair in program or stock pack)."
+		end
+		return false, "No new invention pairs left — that material combo is already in the book (or try other mats)."
+	end
+	local labFee = 15 + #inv.customRecipes * 12
+	if inv.brass < labFee then
+		return false, `Lab fee {labFee} brass for next prototype (you have {inv.brass}).`
+	end
+	inv.items[a] -= 2
+	if inv.items[a] <= 0 then
+		inv.items[a] = nil
+	end
+	inv.items[b] -= 2
+	if inv.items[b] <= 0 then
+		inv.items[b] = nil
+	end
+	inv.brass -= labFee
+	local index = #inv.customRecipes
+	local name = CityRules.inventName(a, b, index)
+	local quality = math.min(3, 1 + math.floor(inv.bayLevel / 4) + (if index >= 4 then 1 else 0))
+	local sellValue = math.round(
+		(EconomyCommodity(a).baseBuy + EconomyCommodity(b).baseBuy) * (2.8 + quality * 0.35) + 12 + inv.bayLevel * 2
+	)
+	local recipe = {
+		id = `inv_{index}`,
+		name = name,
+		inputs = { { id = a, n = 1 }, { id = b, n = 1 } },
+		sellValue = sellValue,
+		quality = quality,
+	}
+	table.insert(inv.customRecipes, recipe)
+	inv.inventionsMade += 1
+	CityRules.applyStanding(inv, 2)
+	local tip = if index == 0
+		then " Tip: craft a Rivet Spanner or Haul Pack, then Temper / Reinforce it (Tools) with this invention for stronger crew harvests."
+		else ""
+	local blurb = CityRules.slotBlurb(a, b)
+	return true, `Invented {name} (Q{quality}, ~{sellValue}b). Fits frame slots: {blurb}. Craft → assemble or stock stalls.{tip}`
+end
+
+function CityRules.craftInvention(inv): (boolean, string)
+	CityRules.ensure(inv)
+	local recipe = inv.customRecipes[#inv.customRecipes]
+	if not recipe then
+		return false, "Unknown invention."
+	end
+	if not (inv.cityWorkshopLeased or inv.parcelLeased) then
+		return false, "Need a bay or home workshop."
+	end
+	for _, input in recipe.inputs do
+		if (inv.items[input.id] or 0) < input.n then
+			return false, `Missing {CityRules.itemName(input.id)} for {recipe.name}.`
+		end
+	end
+	local have = inv.customStock[recipe.id] or 0
+	if have >= CityRules.INVENTION_CAP then
+		return false, `Invention storage full ({CityRules.INVENTION_CAP}). Expand at Aether Spire.`
+	end
+	for _, input in recipe.inputs do
+		inv.items[input.id] -= input.n
+		if inv.items[input.id] <= 0 then
+			inv.items[input.id] = nil
+		end
+	end
+	inv.customStock[recipe.id] = have + 1
+	return true, `Crafted 1× {recipe.name}`
+end
+
+function CityRules.sellInventions(inv): (boolean, string, number)
+	CityRules.ensure(inv)
+	local gained = 0
+	local parts = {}
+	for _, recipe in inv.customRecipes do
+		local n = inv.customStock[recipe.id] or 0
+		if n > 0 then
+			gained += recipe.sellValue * n
+			table.insert(parts, `{n}× {recipe.name}`)
+			inv.customStock[recipe.id] = nil
+		end
+	end
+	if gained == 0 then
+		return false, "No inventions in stock.", 0
+	end
+	inv.brass += gained
+	return true, `Sold {table.concat(parts, ", ")} for {gained} brass.`, gained
+end
+
+function CityRules.stockStall(inv, districtId: string): (boolean, string)
+	CityRules.ensure(inv)
+	local stall = inv.stalls[districtId]
+	local dist = CityRules.STALLS[districtId]
+	if not dist or not stall or not stall.owned then
+		return false, "Lease this district stall first."
+	end
+	local bestId = nil
+	local bestQty = 0
+	for _, id in CityRules.INVENT_MATS do
+		local qty = inv.items[id] or 0
+		if qty > bestQty then
+			bestId = id
+			bestQty = qty
+		end
+	end
+	if not bestId then
+		return false, "Pack is empty — nothing to put on the shelf."
+	end
+	local n = math.min(5, bestQty)
+	inv.items[bestId] -= n
+	if inv.items[bestId] <= 0 then
+		inv.items[bestId] = nil
+	end
+	if type(stall.shelf) ~= "table" then
+		stall.shelf = {}
+	end
+	stall.shelf[bestId] = (stall.shelf[bestId] or 0) + n
+	local ask = CityRules.fairPrice(bestId)
+	return true, `Stocked {n}× {CityRules.itemName(bestId)} @ {ask}b ask`
+end
+
+function CityRules.tickCustomers(inv): (boolean, string)
+	CityRules.ensure(inv)
+	local notes = {}
+	local gained = 0
+	for _, stall in inv.stalls do
+		if stall.owned and stall.open and type(stall.shelf) == "table" then
+			for id, qty in stall.shelf do
+				if type(qty) == "number" and qty > 0 then
+					stall.shelf[id] = qty - 1
+					if stall.shelf[id] <= 0 then
+						stall.shelf[id] = nil
+					end
+					local price = CityRules.fairPrice(id)
+					gained += price
+					table.insert(notes, `{CityRules.itemName(id)} {price}b`)
+					break
+				end
+			end
+		end
+	end
+	for _, recipe in inv.customRecipes do
+		local n = inv.customStock[recipe.id] or 0
+		if n > 0 then
+			local listed = false
+			for _, stall in inv.stalls do
+				if stall.owned and stall.open then
+					listed = true
+					break
+				end
+			end
+			if listed then
+				inv.customStock[recipe.id] = n - 1
+				if inv.customStock[recipe.id] <= 0 then
+					inv.customStock[recipe.id] = nil
+				end
+				gained += recipe.sellValue
+				table.insert(notes, `{recipe.name} {recipe.sellValue}b`)
+				break
+			end
+		end
+	end
+	if gained == 0 then
+		return false, ""
+	end
+	inv.brass += gained
+	return true, `Customers bought {table.concat(notes, ", ")}.`
+end
+
+function CityRules.buyPlot(inv): (boolean, string)
+	CityRules.ensure(inv)
+	if inv.plot.owned then
+		return false, "You already hold the residential pad."
+	end
+	local price = CityRules.PLOT_PRICE
+	if inv.brass < price then
+		return false, `Need {price} brass for this plot (you have {inv.brass}).`
+	end
+	inv.brass -= price
+	inv.plot.owned = true
+	inv.plot.buildings = {}
+	CityRules.applyStanding(inv, 1, "residential", 2)
+	return true, `Deed · Residential Ring plot (0,0) −{price}b · residential · vacant lot`
+end
+
+function CityRules.plotHas(inv, kind: string): boolean
+	for _, building in inv.plot.buildings do
+		if building == kind then
+			return true
+		end
+	end
+	return false
+end
+
+function CityRules.developPlot(inv, kind: string): (boolean, string)
+	CityRules.ensure(inv)
+	local def = CityRules.PLOT_BUILDS[kind]
+	if not def then
+		return false, "Unknown build."
+	end
+	if not inv.plot.owned then
+		return false, "Own the plot first."
+	end
+	if def.primary and CityRules.plotHas(inv, kind) then
+		return false, `{def.name} already on deck L0.`
+	end
+	if kind == "decor" and CityRules.plotHas(inv, "decor") then
+		return false, "Décor already on deck L0."
+	end
+	local mul = if def.zones.residential then 1 else 1.35
+	local cost = math.round(def.cost * mul)
+	if inv.brass < cost then
+		return false, `Need {cost} brass (you have {inv.brass}).`
+	end
+	inv.brass -= cost
+	table.insert(inv.plot.buildings, kind)
+	local offZone = mul > 1
+	if offZone then
+		CityRules.applyStanding(inv, -1, "residential", -2)
+	elseif kind == "decor" then
+		CityRules.applyStanding(inv, 1, "residential", 2)
+	else
+		CityRules.applyStanding(inv, 1, "residential", 1)
+	end
+	if kind == "garden" then
+		inv.plantedGarden = true
+	end
+	if kind == "retail" then
+		local stall = inv.stalls.residential
+		if not stall or not stall.owned then
+			inv.stalls.residential = { owned = true, open = true, forcedClosed = false, shelf = {} }
+		end
+	end
+	local zoneBit = if offZone then " · off-zone surcharge" else ""
+	return true, `Built {def.name} @ (0.0, 0.0) yaw 0° (−{cost}b){zoneBit}`
+end
+
+function CityRules.clearDebt(inv, neighborId: string): (boolean, string)
+	CityRules.ensure(inv)
+	local def = CityRules.neighborDef(neighborId)
+	if not def then
+		return false, "Nobody home."
+	end
+	local amount = inv.debts[neighborId]
+	if type(amount) ~= "number" or amount <= 0 then
+		return false, `{def.name} doesn’t owe a landlord right now.`
+	end
+	local landlord = if neighborId == "neighbor_bolt" then "Dockmaster Dredge" else "Mira Coil"
+	if inv.brass < amount then
+		return false, `Need {amount} brass to clear debt to {landlord} (you have {inv.brass}).`
+	end
+	inv.brass -= amount
+	inv.debts[neighborId] = 0
+	inv.clearedDebt = true
+	inv.metNeighbor = true
+	inv.knownNeighbors[neighborId] = true
+	CityRules.applyStanding(inv, 6, "residential", 10)
+	return true, `Paid {landlord} {amount}b for {def.name}. Debt gone · standing up · affinity +18.`
+end
+
+function CityRules.hireNeighbor(inv, neighborId: string): (boolean, string)
+	CityRules.ensure(inv)
+	local def = CityRules.neighborDef(neighborId)
+	if not def then
+		return false, "Nobody home."
+	end
+	if not inv.parcelLeased and not inv.cityWorkshopLeased then
+		return false, "Lease a workshop first — they need a place to report."
+	end
+	if inv.bayLevel < 1 then
+		inv.bayLevel = 1
+		inv.parcelLeased = true
+	end
+	for _, worker in inv.workers do
+		if worker.id == neighborId then
+			return false, `{def.name} already works for you ({worker.name}).`
+		end
+	end
+	local cap = CityRules.maxWorkersForBay(inv.bayLevel)
+	if #inv.workers >= cap then
+		return false, `Bay full ({#inv.workers}/{cap}). Expand bay first, then hire {def.name}.`
+	end
+	local cost = math.max(20, math.floor(CityRules.hireCost(inv) * 0.85))
+	if inv.brass < cost then
+		return false, `Need {cost} brass to hire {def.name}.`
+	end
+	inv.brass -= cost
+	table.insert(inv.workers, {
+		id = neighborId,
+		name = def.name,
+		kind = "human",
+		payGrade = 0,
+		job = "harvest",
+		unpaid = false,
+	})
+	inv.hiredNeighbor = true
+	inv.metNeighbor = true
+	CityRules.applyStanding(inv, 2)
+	return true, `Hired {def.name} (−{cost} brass).`
+end
+
+function CityRules.buyRobot(inv): (boolean, string)
+	CityRules.ensure(inv)
+	if not inv.parcelLeased or inv.bayLevel < 1 then
+		return false, "Lease a bay first — robots need a dock to report."
+	end
+	local cap = CityRules.maxWorkersForBay(inv.bayLevel)
+	if #inv.workers >= cap then
+		return false, `Bay full ({#inv.workers}/{cap}). Expand for more slots.`
+	end
+	for _, worker in inv.workers do
+		if worker.id == "yard_bot" then
+			return false, "The slip chassis is already docked."
+		end
+	end
+	if inv.brass < CityRules.ROBOT_BUY_COST then
+		return false, `Need {CityRules.ROBOT_BUY_COST} brass to buy a work robot.`
+	end
+	inv.brass -= CityRules.ROBOT_BUY_COST
+	table.insert(inv.workers, {
+		id = "yard_bot",
+		name = "Slip chassis",
+		kind = "robot",
+		payGrade = 0,
+		job = "haul",
+		unpaid = false,
+		rogue = false,
+	})
+	return true, `Slip chassis docked (−{CityRules.ROBOT_BUY_COST}). It works the yard and can rarely go rogue.`
+end
+
+function CityRules.considerRogue(inv, dt: number, roll: number): (boolean, string)
+	CityRules.ensure(inv)
+	if type(inv.rogueId) == "string" then
+		return false, ""
+	end
+	local target = nil
+	for _, worker in inv.workers do
+		if worker.kind == "robot" and worker.id ~= "bot_elias" and not worker.unpaid then
+			target = worker
+			break
+		end
+	end
+	if not target then
+		return false, ""
+	end
+	if roll >= CityRules.ROGUE_CHANCE_PER_SEC * dt then
+		return false, ""
+	end
+	inv.rogueId = target.id
+	target.rogue = true
+	return true, `{target.name} went rogue on the slips. A Repair Kit restores the chassis.`
+end
+
+function CityRules.repairRogue(inv): (boolean, string)
+	CityRules.ensure(inv)
+	if type(inv.rogueId) ~= "string" then
+		return false, "No rogue on the yard."
+	end
+	if (inv.items.repair_kit or 0) < 1 then
+		return false, "Need a Repair Kit to fix a rogue (craft: wire + scrap, or buy at market)."
+	end
+	inv.items.repair_kit -= 1
+	if inv.items.repair_kit <= 0 then
+		inv.items.repair_kit = nil
+	end
+	inv.brass += CityRules.ROGUE_REPAIR_PAY
+	inv.repairsDone += 1
+	for _, worker in inv.workers do
+		if worker.id == inv.rogueId then
+			worker.rogue = false
+		end
+	end
+	inv.rogueId = false
+	CityRules.applyStanding(inv, 2)
+	return true, `Used Repair Kit · restored to its owner's work (yard) · +{CityRules.ROGUE_REPAIR_PAY} brass.`
+end
+
 function CityRules.objective(inv): string
 	CityRules.ensure(inv)
 	local goals = {
@@ -610,12 +1170,58 @@ function CityRules.objective(inv): string
 		{
 			title = "Invent a product",
 			hint = "Bay L3 / workshop invent desk",
-			done = false,
+			done = #inv.customRecipes >= 1,
 			empire = true,
+		},
+		{
+			title = "Retail network (3 shops)",
+			hint = "Multi-plaza stalls · premium plazas pay invent bonus",
+			done = CityRules.ownedStallCount(inv) >= 3,
+			empire = true,
+		},
+		{
+			title = "Reach Friendly standing",
+			hint = "Hire fairly · repair rogues · gifts · open shops",
+			done = (inv.empireStanding or 0) >= 25,
+			empire = true,
+		},
+		{
+			title = "Clear a neighbor’s debt",
+			hint = "Pip / Bolt · E talk · Clear debt to Mira Coil or Dockmaster Dredge",
+			done = inv.clearedDebt == true,
+			empire = true,
+			needsContact = true,
+		},
+		{
+			title = "Own plaza land",
+			hint = "Leasing office (Market / Residential) · or buy a neighbor’s home plot",
+			done = inv.plot.owned == true,
+			empire = true,
+			needsContact = true,
+		},
+		{
+			title = "Hire a neighbor",
+			hint = "Offer hire on neighbor panel · needs free bay slot",
+			done = inv.hiredNeighbor == true,
+			empire = true,
+			needsContact = true,
+		},
+		{
+			title = "Plant a plot garden",
+			hint = "Lease office · Develop · Flower garden on an owned pad",
+			done = inv.plantedGarden == true,
+			empire = true,
+			needsLand = true,
 		},
 	}
 	for _, goal in goals do
 		if goal.empire and inv.apartment ~= true then
+			continue
+		end
+		if goal.needsContact and not inv.metNeighbor and CityRules.ownedStallCount(inv) < 1 then
+			continue
+		end
+		if goal.needsLand and not inv.plot.owned then
 			continue
 		end
 		if not goal.done then

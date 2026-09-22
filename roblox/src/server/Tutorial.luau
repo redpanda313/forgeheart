@@ -117,6 +117,16 @@ local function save(player: Player)
 		knownNeighbors = profile.inv.knownNeighbors,
 		deedStandingGranted = profile.inv.deedStandingGranted,
 		upkeepIn = profile.inv.upkeepIn,
+		customRecipes = profile.inv.customRecipes,
+		customStock = profile.inv.customStock,
+		inventionsMade = profile.inv.inventionsMade,
+		repairsDone = profile.inv.repairsDone,
+		clearedDebt = profile.inv.clearedDebt,
+		hiredNeighbor = profile.inv.hiredNeighbor,
+		plantedGarden = profile.inv.plantedGarden,
+		debts = profile.inv.debts,
+		plot = profile.inv.plot,
+		rogueId = profile.inv.rogueId,
 	}
 	pcall(function()
 		store:SetAsync("u_" .. player.UserId, payload)
@@ -182,6 +192,30 @@ local function load(player: Player)
 		if type(data.upkeepIn) == "number" then
 			inv.upkeepIn = data.upkeepIn
 		end
+		if type(data.customRecipes) == "table" then
+			inv.customRecipes = data.customRecipes
+		end
+		if type(data.customStock) == "table" then
+			inv.customStock = data.customStock
+		end
+		if type(data.inventionsMade) == "number" then
+			inv.inventionsMade = data.inventionsMade
+		end
+		if type(data.repairsDone) == "number" then
+			inv.repairsDone = data.repairsDone
+		end
+		inv.clearedDebt = data.clearedDebt == true
+		inv.hiredNeighbor = data.hiredNeighbor == true
+		inv.plantedGarden = data.plantedGarden == true
+		if type(data.debts) == "table" then
+			inv.debts = data.debts
+		end
+		if type(data.plot) == "table" then
+			inv.plot = data.plot
+		end
+		if type(data.rogueId) == "string" then
+			inv.rogueId = data.rogueId
+		end
 	end
 	return seed, {
 		phase = phase,
@@ -196,6 +230,14 @@ local function stockText(inv): string
 		local def = Economy.COMMODITIES[id]
 		if def and type(qty) == "number" and qty > 0 then
 			table.insert(parts, `{def.name} {qty}`)
+		end
+	end
+	if type(inv.customRecipes) == "table" and type(inv.customStock) == "table" then
+		for _, recipe in inv.customRecipes do
+			local n = inv.customStock[recipe.id] or 0
+			if n > 0 then
+				table.insert(parts, `{recipe.name} {n}`)
+			end
 		end
 	end
 	table.sort(parts)
@@ -690,6 +732,10 @@ function Tutorial.start()
 			return
 		end
 		local _, message = Economy.sellAll(profile.inv)
+		local soldInvent, inventMsg = CityRules.sellInventions(profile.inv)
+		if soldInvent then
+			message = if message == "Nothing to sell." then inventMsg else `{message} {inventMsg}`
+		end
 		tell(player, "Broker", message)
 		sync(player)
 		save(player)
@@ -799,6 +845,136 @@ function Tutorial.start()
 		save(player)
 	end)
 
+	local function cityAct(player: Player, title: string, ok: boolean, message: string)
+		tell(player, title, message)
+		if ok then
+			sync(player)
+			save(player)
+		end
+	end
+
+	city.stock.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = CityRules.stockStall(profile.inv, "residential")
+		cityAct(player, "Shelf", ok, message)
+	end)
+
+	city.grandStall.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = CityRules.leaseStall(profile.inv, "grand_market")
+		cityAct(player, "Grand Market", ok, message)
+	end)
+
+	city.industrialStall.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = CityRules.leaseStall(profile.inv, "industrial")
+		cityAct(player, "Industrial stall", ok, message)
+	end)
+
+	city.invent.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = CityRules.invent(profile.inv)
+		cityAct(player, "Invent", ok, message)
+	end)
+
+	city.craft.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = CityRules.craftInvention(profile.inv)
+		cityAct(player, "Bench", ok, message)
+	end)
+
+	city.robot.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = CityRules.buyRobot(profile.inv)
+		cityAct(player, "Slip chassis", ok, message)
+	end)
+
+	city.plot.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = CityRules.buyPlot(profile.inv)
+		if ok then
+			city.refreshPlot(profile.inv.plot)
+		end
+		cityAct(player, "Lease office", ok, message)
+	end)
+
+	city.decor.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = CityRules.developPlot(profile.inv, "decor")
+		city.refreshPlot(profile.inv.plot)
+		cityAct(player, "Plot", ok, message)
+	end)
+
+	city.garden.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local ok, message = CityRules.developPlot(profile.inv, "garden")
+		city.refreshPlot(profile.inv.plot)
+		cityAct(player, "Plot", ok, message)
+	end)
+
+	for neighborId, debtPrompt in city.debts do
+		debtPrompt.Triggered:Connect(function(player)
+			local profile = cityPlayer(player)
+			if not profile then
+				return
+			end
+			local ok, message = CityRules.clearDebt(profile.inv, neighborId)
+			cityAct(player, "Debt", ok, message)
+		end)
+	end
+
+	for neighborId, hirePrompt in city.hires do
+		hirePrompt.Triggered:Connect(function(player)
+			local profile = cityPlayer(player)
+			if not profile then
+				return
+			end
+			local ok, message = CityRules.hireNeighbor(profile.inv, neighborId)
+			cityAct(player, "Hire", ok, message)
+		end)
+	end
+
+	if city.repair then
+		city.repair.Triggered:Connect(function(player)
+			local profile = cityPlayer(player)
+			if not profile then
+				return
+			end
+			local ok, message = CityRules.repairRogue(profile.inv)
+			if ok then
+				SkyCity.setRogue(false)
+			end
+			cityAct(player, "Repair", ok, message)
+		end)
+	end
+
 	city.home.Triggered:Connect(function(player)
 		local profile = cityPlayer(player)
 		if not profile then
@@ -829,6 +1005,10 @@ function Tutorial.start()
 			return
 		end
 		local _, message = Economy.sellAll(profile.inv)
+		local soldInvent, inventMsg = CityRules.sellInventions(profile.inv)
+		if soldInvent then
+			message = if message == "Nothing to sell." then inventMsg else `{message} {inventMsg}`
+		end
 		tell(player, "Broker", message)
 		sync(player)
 		save(player)
@@ -884,6 +1064,8 @@ function Tutorial.start()
 			CityRules.ensure(profile.inv)
 			CityRules.ensureElias(profile.inv, story.companionName)
 			city.refreshHome(profile.inv.home)
+			city.refreshPlot(profile.inv.plot)
+			SkyCity.setRogue(type(profile.inv.rogueId) == "string")
 			tell(player, "Sky City", CityRules.objective(profile.inv))
 		elseif profile.phase == "market" then
 			if companion:GetAttribute("Awake") ~= true then
@@ -948,11 +1130,45 @@ function Tutorial.start()
 					if message ~= "" then
 						tell(player, if ok then "Upkeep" else "Upkeep missed", message)
 					end
+					local sold, note = CityRules.tickCustomers(profile.inv)
+					if sold then
+						tell(player, "Customers", note)
+					end
 					sync(player)
 					save(player)
 				end
 			end
 		end
+		local rogueLive = false
+		for _, player in Players:GetPlayers() do
+			local profile = profileOf(player)
+			if profile and profile.phase == "city" then
+				local sparked, message = CityRules.considerRogue(profile.inv, dt, math.random())
+				if sparked then
+					tell(player, "Rogue", message)
+					save(player)
+				end
+				if type(profile.inv.rogueId) == "string" then
+					rogueLive = true
+					local character = player.Character
+					local root = character and character:FindFirstChild("HumanoidRootPart")
+					local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+					if root and root:IsA("BasePart") then
+						SkyCity.setRogueTarget(root.Position)
+						local roguePos = SkyCity.roguePosition()
+						if roguePos and humanoid and (roguePos - root.Position).Magnitude < Combat.meleeRange() + 1 then
+							local ready = (player:GetAttribute("RogueHit") or 0) <= os.clock()
+							if ready then
+								player:SetAttribute("RogueHit", os.clock() + RobotConfig.meleeCd)
+								humanoid.Health = math.max(0, humanoid.Health - RobotConfig.meleeDamage)
+								player:SetAttribute("Health", math.floor(humanoid.Health))
+							end
+						end
+					end
+				end
+			end
+		end
+		SkyCity.setRogue(rogueLive)
 		if world.phase == "siege" then
 			world.bangTimer -= dt
 			if world.bangTimer <= 0 then
