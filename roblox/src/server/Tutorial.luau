@@ -8,10 +8,12 @@ local StarterPlayer = game:GetService("StarterPlayer")
 local Combat = require(script.Parent.Combat)
 local Elias = require(script.Parent.Elias)
 local Market = require(script.Parent.Market)
+local SkyCity = require(script.Parent.SkyCity)
 local Workshop = require(script.Parent.Workshop)
 
 local Shared = ReplicatedStorage:WaitForChild("ForgeHeart")
 local Backstory = require(Shared:WaitForChild("Backstory"))
+local CityRules = require(Shared:WaitForChild("CityRules"))
 local Economy = require(Shared:WaitForChild("Economy"))
 local RobotConfig = require(Shared:WaitForChild("RobotConfig"))
 local Scale = require(Shared:WaitForChild("Scale"))
@@ -95,7 +97,7 @@ local function save(player: Player)
 		return
 	end
 	local payload = {
-		version = 2,
+		version = 3,
 		backstorySeed = story.seed,
 		phase = profile.phase,
 		eliasAwake = profile.eliasAwake,
@@ -103,6 +105,18 @@ local function save(player: Player)
 		items = profile.inv.items,
 		apartment = profile.inv.apartment,
 		harvestRuns = profile.inv.harvestRuns,
+		cityWorkshopLeased = profile.inv.cityWorkshopLeased,
+		parcelLeased = profile.inv.parcelLeased,
+		bayLevel = profile.inv.bayLevel,
+		empireStanding = profile.inv.empireStanding,
+		districtStanding = profile.inv.districtStanding,
+		metNeighbor = profile.inv.metNeighbor,
+		workers = profile.inv.workers,
+		home = profile.inv.home,
+		stalls = profile.inv.stalls,
+		knownNeighbors = profile.inv.knownNeighbors,
+		deedStandingGranted = profile.inv.deedStandingGranted,
+		upkeepIn = profile.inv.upkeepIn,
 	}
 	pcall(function()
 		store:SetAsync("u_" .. player.UserId, payload)
@@ -117,6 +131,7 @@ local function load(player: Player)
 	local phase = "explore"
 	local awake = false
 	local inv = Economy.empty(Economy.STARTER_BRASS)
+	CityRules.ensure(inv)
 	if ok and type(data) == "table" then
 		if type(data.backstorySeed) == "number" then
 			seed = data.backstorySeed
@@ -135,6 +150,38 @@ local function load(player: Player)
 		end
 		inv.apartment = data.apartment == true
 		inv.harvestRuns = data.harvestRuns or 0
+		if data.cityWorkshopLeased ~= nil then
+			inv.cityWorkshopLeased = data.cityWorkshopLeased == true
+		end
+		if data.parcelLeased ~= nil then
+			inv.parcelLeased = data.parcelLeased == true
+		end
+		if type(data.bayLevel) == "number" then
+			inv.bayLevel = data.bayLevel
+		end
+		if type(data.empireStanding) == "number" then
+			inv.empireStanding = data.empireStanding
+		end
+		if type(data.districtStanding) == "table" then
+			inv.districtStanding = data.districtStanding
+		end
+		inv.metNeighbor = data.metNeighbor == true
+		if type(data.workers) == "table" then
+			inv.workers = data.workers
+		end
+		if type(data.home) == "table" then
+			inv.home = data.home
+		end
+		if type(data.stalls) == "table" then
+			inv.stalls = data.stalls
+		end
+		if type(data.knownNeighbors) == "table" then
+			inv.knownNeighbors = data.knownNeighbors
+		end
+		inv.deedStandingGranted = data.deedStandingGranted == true
+		if type(data.upkeepIn) == "number" then
+			inv.upkeepIn = data.upkeepIn
+		end
 	end
 	return seed, {
 		phase = phase,
@@ -181,10 +228,12 @@ local function sync(player: Player)
 		text = `Cast off with {story.companionName}.`
 	elseif profile.phase == "market" then
 		if profile.inv.apartment then
-			text = `Sky apartment deed held. {story.companionName} stays with you.`
+			text = CityRules.objective(profile.inv)
 		else
 			text = `Harvest the reef, sell at the broker, earn {Economy.APARTMENT_COST} brass.`
 		end
+	elseif profile.phase == "city" or profile.inv.apartment then
+		text = CityRules.objective(profile.inv)
 	end
 	player:SetAttribute("Objective", forRoblox(text))
 end
@@ -415,6 +464,28 @@ local function goMarket(player: Player)
 	end
 end
 
+local function goCity(player: Player)
+	local profile = profileOf(player)
+	local story = storyOf(player)
+	if not profile or not story then
+		return
+	end
+	profile.phase = "city"
+	profile.eliasAwake = true
+	CityRules.ensure(profile.inv)
+	CityRules.ensureElias(profile.inv, story.companionName)
+	sync(player)
+	save(player)
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		root.CFrame = SkyCity.spawnCFrame()
+	end
+	if elias and elias:GetAttribute("Awake") == true then
+		elias:PivotTo(CFrame.new(SkyCity.spawnCFrame().Position + Vector3.new(4, -3, 2)))
+	end
+end
+
 local function placeCharacter(player: Player, character: Model)
 	local root = character:WaitForChild("HumanoidRootPart", 8)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -427,7 +498,9 @@ local function placeCharacter(player: Player, character: Model)
 	end
 	local profile = profileOf(player)
 	if root and root:IsA("BasePart") then
-		if profile and profile.phase == "market" then
+		if profile and profile.phase == "city" then
+			root.CFrame = SkyCity.spawnCFrame()
+		elseif profile and profile.phase == "market" then
 			root.CFrame = Market.spawnCFrame()
 		else
 			root.CFrame = Workshop.spawnCFrame()
@@ -446,6 +519,7 @@ function Tutorial.start()
 
 	built = Workshop.build(workspace)
 	market = Market.build(workspace)
+	local city = SkyCity.build(workspace)
 	elias = Elias.create(built.folder, Workshop.brotherFeet())
 	local companion = elias :: Model
 
@@ -638,16 +712,157 @@ function Tutorial.start()
 	market.apartment.Triggered:Connect(function(player)
 		local profile = profileOf(player)
 		local story = storyOf(player)
-		if not profile or not story or profile.phase ~= "market" then
+		if not profile or not story or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		if profile.inv.apartment then
+			tell(player, "Real estate", "The cottage is yours. Traveling home.")
+			goCity(player)
 			return
 		end
 		local ok, message = Economy.buyApartment(profile.inv)
 		tell(player, "Real estate", message)
 		if ok then
+			CityRules.onDeed(profile.inv, story.companionName)
 			tell(player, story.companionName, story.summary)
+			city.refreshHome(profile.inv.home)
+			goCity(player)
+		else
+			sync(player)
+			save(player)
 		end
+	end)
+
+	local function cityPlayer(player: Player)
+		local profile = profileOf(player)
+		if not profile or profile.phase ~= "city" then
+			return nil
+		end
+		return profile
+	end
+
+	for _, neighbor in city.neighbors do
+		neighbor.prompt.Triggered:Connect(function(player)
+			local profile = cityPlayer(player)
+			if not profile then
+				return
+			end
+			local ok, message = CityRules.talk(profile.inv, neighbor.id)
+			tell(player, "Neighbor", message)
+			if ok then
+				sync(player)
+				save(player)
+			end
+		end)
+	end
+
+	city.workshop.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local _, message = CityRules.leaseWorkshop(profile.inv)
+		tell(player, "Industrial slips", message)
 		sync(player)
 		save(player)
+	end)
+
+	city.hire.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local _, message = CityRules.hireHuman(profile.inv)
+		tell(player, "Hire board", message)
+		sync(player)
+		save(player)
+	end)
+
+	city.expand.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local _, message = CityRules.expandBay(profile.inv)
+		tell(player, "Workshop slip", message)
+		sync(player)
+		save(player)
+	end)
+
+	city.stall.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local _, message = CityRules.leaseStall(profile.inv, "residential")
+		tell(player, "Plaza stall", message)
+		sync(player)
+		save(player)
+	end)
+
+	city.home.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local _, message = CityRules.improveHome(profile.inv)
+		tell(player, "Cottage", message)
+		city.home.ObjectText = CityRules.tierDef(profile.inv.home.tier).name
+		city.refreshHome(profile.inv.home)
+		sync(player)
+		save(player)
+	end)
+
+	city.reef.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local _, _, message = Economy.harvest(profile.inv, math.random)
+		tell(player, "Cloud reef", message)
+		sync(player)
+		save(player)
+	end)
+
+	city.broker.Triggered:Connect(function(player)
+		local profile = cityPlayer(player)
+		if not profile then
+			return
+		end
+		local _, message = Economy.sellAll(profile.inv)
+		tell(player, "Broker", message)
+		sync(player)
+		save(player)
+	end)
+
+	for recipeId, recipePrompt in city.recipes do
+		recipePrompt.Triggered:Connect(function(player)
+			local profile = cityPlayer(player)
+			if not profile then
+				return
+			end
+			local _, message = Economy.craft(profile.inv, recipeId)
+			tell(player, "Bench", message)
+			sync(player)
+			save(player)
+		end)
+	end
+
+	city.ferry.Triggered:Connect(function(player)
+		local profile = profileOf(player)
+		local story = storyOf(player)
+		if not profile or not story or profile.phase ~= "city" then
+			return
+		end
+		profile.phase = "market"
+		sync(player)
+		save(player)
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if root and root:IsA("BasePart") then
+			root.CFrame = Market.spawnCFrame()
+		end
+		tell(player, "Ferry", "Back at the training market. The real-estate desk still knows the way home.")
 	end)
 
 	local function onPlayer(player: Player)
@@ -663,7 +878,15 @@ function Tutorial.start()
 				notePrompt.ObjectText = note.title
 			end
 		end
-		if profile.phase == "market" then
+		if profile.phase == "city" then
+			if companion:GetAttribute("Awake") ~= true then
+				Elias.wake(companion)
+			end
+			CityRules.ensure(profile.inv)
+			CityRules.ensureElias(profile.inv, story.companionName)
+			city.refreshHome(profile.inv.home)
+			tell(player, "Sky City", CityRules.objective(profile.inv))
+		elseif profile.phase == "market" then
 			if companion:GetAttribute("Awake") ~= true then
 				Elias.wake(companion)
 			end
@@ -715,6 +938,22 @@ function Tutorial.start()
 	end
 
 	RunService.Heartbeat:Connect(function(dt)
+		SkyCity.step(dt)
+		for _, player in Players:GetPlayers() do
+			local profile = profileOf(player)
+			if profile and profile.inv.bayLevel >= 1 then
+				profile.inv.upkeepIn -= dt
+				if profile.inv.upkeepIn <= 0 then
+					profile.inv.upkeepIn = CityRules.UPKEEP_INTERVAL
+					local ok, message = CityRules.tickUpkeep(profile.inv)
+					if message ~= "" then
+						tell(player, if ok then "Upkeep" else "Upkeep missed", message)
+					end
+					sync(player)
+					save(player)
+				end
+			end
+		end
 		if world.phase == "siege" then
 			world.bangTimer -= dt
 			if world.bangTimer <= 0 then

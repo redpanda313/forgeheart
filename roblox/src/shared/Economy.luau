@@ -139,7 +139,7 @@ function Economy.buyApartment(inv): (boolean, string)
 	end
 	inv.brass -= Economy.APARTMENT_COST
 	inv.apartment = true
-	return true, `Deed signed · sky cottage yours (−{Economy.APARTMENT_COST} brass).`
+	return true, `Deed signed · sky cottage yours (−{Economy.APARTMENT_COST} brass). Improve it from the door!`
 end
 
 return Economy
