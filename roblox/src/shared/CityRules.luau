@@ -3,6 +3,7 @@
 local Districts
 local Market
 local Storage
+local Programs
 do
 	local ok, loaded = pcall(function()
 		return require(script.Parent.Districts)
@@ -28,6 +29,14 @@ do
 	else
 		Storage = require("./Storage")
 	end
+	ok, loaded = pcall(function()
+		return require(script.Parent.Programs)
+	end)
+	if ok then
+		Programs = loaded
+	else
+		Programs = require("./Programs")
+	end
 end
 
 local CityRules = {}
@@ -42,6 +51,7 @@ CityRules.SHOP_TAX = 2
 CityRules.LABOR_BASELINE_POOL = 30
 CityRules.LABOR_HOUSING_SOFT_START = 25
 CityRules.TRAINING_MAX_BAY_LEVEL = 3
+CityRules.PARCEL_LEASE_COST = 25
 CityRules.BAY_EXPAND_L2 = 50
 CityRules.BAY_EXPAND_L3 = 100
 CityRules.ABSOLUTE_MAX_WORKERS = 48
@@ -153,6 +163,9 @@ function CityRules.ensure(inv)
 	end
 	if type(inv.workers) ~= "table" then
 		inv.workers = {}
+	end
+	if type(inv.programs) ~= "table" then
+		inv.programs = {}
 	end
 	if inv.metNeighbor == nil then
 		inv.metNeighbor = false
@@ -420,6 +433,20 @@ end
 
 function CityRules.canEmpireExpand(inv): boolean
 	return inv.apartment == true or inv.cityWorkshopLeased == true
+end
+
+function CityRules.leaseParcel(inv): (boolean, string)
+	CityRules.ensure(inv)
+	if inv.parcelLeased or inv.bayLevel >= 1 then
+		return CityRules.expandBay(inv)
+	end
+	if inv.brass < CityRules.PARCEL_LEASE_COST then
+		return false, `Need {CityRules.PARCEL_LEASE_COST} brass to lease.`
+	end
+	inv.brass -= CityRules.PARCEL_LEASE_COST
+	inv.parcelLeased = true
+	inv.bayLevel = 1
+	return true, `Leased Starter Bay · −{CityRules.PARCEL_LEASE_COST} brass. Expand again here later for more pads & workers.`
 end
 
 function CityRules.expandBay(inv): (boolean, string)
@@ -1138,17 +1165,15 @@ function CityRules.giftGood(inv, neighborId: string, itemId: string): (boolean, 
 end
 
 function CityRules.setJob(inv, workerId: string, job: string): (boolean, string)
-	CityRules.ensure(inv)
-	if job ~= "harvest" and job ~= "craft" and job ~= "stock" then
-		return false, "Jobs: harvest, craft, stock."
-	end
-	for _, worker in inv.workers do
-		if worker.id == workerId then
-			worker.job = job
-			return true, `{worker.name} assigned to {job}.`
-		end
-	end
-	return false, "No such worker."
+	return Programs.setJob(inv, workerId, job)
+end
+
+function CityRules.raisePay(inv, workerId: string): (boolean, string)
+	return Programs.raisePay(inv, workerId)
+end
+
+function CityRules.fireWorker(inv, workerId: string): (boolean, string)
+	return Programs.fire(inv, workerId)
 end
 
 function CityRules.buyRobot(inv): (boolean, string)

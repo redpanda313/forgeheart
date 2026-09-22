@@ -279,7 +279,7 @@ local function refreshBay()
 		"Objective",
 		player:GetAttribute("Objective") or "",
 		"",
-		"I closes this office. M opens the empire map. P assigns harvest/craft/stock programs. E uses whatever is in front of you. Q rides the board.",
+		"I closes this office. M opens the empire map. P hires crew and assigns jobs or program graphs. E uses whatever is in front of you. Q rides the board.",
 	}
 	bayBody.Text = table.concat(lines, "\n")
 end
