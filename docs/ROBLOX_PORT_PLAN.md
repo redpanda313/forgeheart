@@ -246,6 +246,8 @@ profile = {
 
 Unknown keys are kept and ignored, so an older server does not wipe a newer profile. Autosave on a timer, on teleport, and on `PlayerRemoving`.
 
+The saved `spawn` checkpoint only moves forward: workshop until the skiff, brass market after cast-off, sky city once the apartment deed is owned. Death and rejoin use that pad. A ferry ride back to the training yard does not move it backward, and the shared workshop siege does not overwrite a player who has already left.
+
 ---
 
 ## Place map (studs)

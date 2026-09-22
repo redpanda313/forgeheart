@@ -50,6 +50,7 @@ export type Built = {
 	broker: ProximityPrompt,
 	apartment: ProximityPrompt,
 	recipes: { [string]: ProximityPrompt },
+	spawn: SpawnLocation,
 }
 
 function Market.build(parent: Instance): Built
@@ -111,12 +112,28 @@ function Market.build(parent: Instance): Built
 	label.Parent = gui
 
 	floor.Name = "MarketFloor"
+
+	-- Neutral stays off so a new player is not dropped here by accident.
+	-- RespawnLocation points a market player at this pad.
+	local standing = Market.spawnCFrame()
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "MarketSpawn"
+	spawn.Anchored = true
+	spawn.Neutral = false
+	spawn.Duration = 0
+	spawn.CanCollide = false
+	spawn.Transparency = 1
+	spawn.Size = Vector3.new(6, 1, 6)
+	spawn.CFrame = CFrame.new(standing.Position.X, ORIGIN.Y + 0.1, standing.Position.Z)
+	spawn.Parent = folder
+
 	return {
 		folder = folder,
 		reef = reefPrompt,
 		broker = broker,
 		apartment = apartment,
 		recipes = recipes,
+		spawn = spawn,
 	}
 end
 

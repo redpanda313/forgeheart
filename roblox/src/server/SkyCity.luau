@@ -401,6 +401,19 @@ function SkyCity.build(parent: Instance)
 
 	refreshHome({ tier = "cottage", rooms = { "living" } })
 
+	local standing = SkyCity.spawnCFrame()
+	local floorTop = Scale.studs(0.34)
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "CitySpawn"
+	spawn.Anchored = true
+	spawn.Neutral = false
+	spawn.Duration = 0
+	spawn.CanCollide = false
+	spawn.Transparency = 1
+	spawn.Size = Vector3.new(6, 1, 6)
+	spawn.CFrame = CFrame.new(standing.Position.X, floorTop - 0.5, standing.Position.Z)
+	spawn.Parent = folder
+
 	rogueModel = person(folder, "Slip chassis", Palette.ironDark)
 	placeRig(rogueModel, feet(-62, -16), feet(-62, -22))
 	local rogueTorso = rogueModel:FindFirstChild("Torso")
@@ -457,6 +470,7 @@ function SkyCity.build(parent: Instance)
 		broker = brokerPrompt,
 		recipes = recipes,
 		ferry = ferryPrompt,
+		spawn = spawn,
 		refreshHome = refreshHome,
 		rules = CityRules,
 		economy = Economy,
