@@ -273,6 +273,15 @@ local function sync(player: Player)
 	player:SetAttribute("Brass", profile.inv.brass)
 	player:SetAttribute("Plasma", math.floor(plasma[player] or 100))
 	player:SetAttribute("Stock", stockText(profile.inv))
+	local crew = {}
+	if type(profile.inv.workers) == "table" then
+		for _, worker in profile.inv.workers do
+			if type(worker) == "table" and type(worker.name) == "string" then
+				table.insert(crew, worker.name)
+			end
+		end
+	end
+	player:SetAttribute("Crew", if #crew > 0 then table.concat(crew, ", ") else "No crew yet")
 	player:SetAttribute("EliasAwake", profile.eliasAwake)
 	local tutorial = story.tutorial
 	local text = tutorial.objectiveExplore
