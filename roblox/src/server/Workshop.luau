@@ -43,7 +43,7 @@ local function prompt(parent: BasePart, action: string, object: string, hold: nu
 	p.ActionText = action
 	p.ObjectText = object
 	p.HoldDuration = hold
-	p.MaxActivationDistance = 12
+	p.MaxActivationDistance = 8
 	p.RequiresLineOfSight = false
 	p.KeyboardKeyCode = Enum.KeyCode.E
 	p.Parent = parent
@@ -67,6 +67,10 @@ export type Built = {
 	theory: ProximityPrompt,
 	talisman: ProximityPrompt,
 	wrench: ProximityPrompt,
+	boat: ProximityPrompt,
+	trays: { ProximityPrompt },
+	doors: { BasePart },
+	sign: TextLabel,
 }
 
 function Workshop.build(parent: Instance): Built
@@ -85,9 +89,9 @@ function Workshop.build(parent: Instance): Built
 	box(folder, "WallNorthRight", 9, LAB_H, 0.45, 6.7, LAB_H / 2, 8, Palette.brass, Enum.Material.Metal)
 
 	local doorH = LAB_H + 0.05
-	box(folder, "DoorLeft", 2.45, doorH, 0.55, -1.15, doorH / 2, 8, Palette.ironDark, Enum.Material.DiamondPlate)
-	box(folder, "DoorRight", 2.45, doorH, 0.55, 1.15, doorH / 2, 8, Palette.ironDark, Enum.Material.DiamondPlate)
-	box(folder, "DoorSeam", 0.28, doorH, 0.63, 0, doorH / 2, 8, Palette.brass, Enum.Material.Metal)
+	local doorLeft = box(folder, "DoorLeft", 2.45, doorH, 0.55, -1.15, doorH / 2, 8, Palette.ironDark, Enum.Material.DiamondPlate)
+	local doorRight = box(folder, "DoorRight", 2.45, doorH, 0.55, 1.15, doorH / 2, 8, Palette.ironDark, Enum.Material.DiamondPlate)
+	local doorSeam = box(folder, "DoorSeam", 0.28, doorH, 0.63, 0, doorH / 2, 8, Palette.brass, Enum.Material.Metal)
 	local lintel = box(folder, "Lintel", 5, 0.35, 0.67, 0, doorH - 0.1, 8, Palette.brass, Enum.Material.Metal)
 	local seal = box(folder, "DoorSeal", 4.7, doorH, 0.7, 0, doorH / 2, 8, Palette.iron, Enum.Material.Metal)
 	seal.Transparency = 1
@@ -174,6 +178,49 @@ function Workshop.build(parent: Instance): Built
 	local wrenchHandle = box(folder, "WrenchHandle", 0.12, 0.7, 0.12, 4.5, 1.05, -6.5, Palette.ironDark, Enum.Material.Metal, false)
 	box(folder, "WrenchHead", 0.35, 0.15, 0.2, 4.5, 1.45, -6.5, Palette.brass, Enum.Material.Metal, false)
 	local wrenchPrompt = prompt(wrenchHandle, "Take", "Arc wrench", 0.2)
+	wrenchPrompt.Enabled = false
+
+	local trays = {}
+	local traySpots = {
+		{ -2.8, 0.95, 0.2 },
+		{ 2.8, 0.95, 0.2 },
+		{ 0, 0.95, -1.6 },
+	}
+	for index, spot in traySpots do
+		local tray = box(folder, "Tray" .. index, 0.7, 0.08, 0.5, spot[1], spot[2], spot[3], Palette.brass, Enum.Material.Metal, false)
+		tray.Transparency = 1
+		local trayPrompt = prompt(tray, "Reclaim", "Tray", 0.25)
+		trayPrompt.Enabled = false
+		table.insert(trays, trayPrompt)
+	end
+
+	-- Exterior dock: apron, deck, walkway, skiff. Same layout as level.ts.
+	local function slab(name: string, w: number, d: number, x: number, y: number, z: number, color: Color3, material: Enum.Material)
+		box(folder, name, w, 0.28, d, x, y, z, color, material)
+	end
+	slab("Apron", 8, 5.5, 0, 0.01, 9.2, Palette.brass, Enum.Material.Metal)
+	slab("Deck", 12, 7, 0, 0, 13.5, Palette.brass, Enum.Material.Metal)
+	slab("Walkway", 4.4, 11, 0, 0, 21, Palette.iron, Enum.Material.DiamondPlate)
+	slab("SkiffPad", 7.5, 6.5, 0, 0, 28.5, Palette.wood, Enum.Material.Wood)
+	box(folder, "CurbNorth", 12, 0.45, 0.18, 0, 0.28, 17, Palette.iron, Enum.Material.Metal)
+	box(folder, "CurbWest", 0.18, 0.45, 7, -6, 0.28, 13.5, Palette.iron, Enum.Material.Metal)
+	box(folder, "CurbEast", 0.18, 0.45, 7, 6, 0.28, 13.5, Palette.iron, Enum.Material.Metal)
+	box(folder, "RailWest", 0.16, 0.4, 11, -2.3, 0.28, 21, Palette.iron, Enum.Material.Metal)
+	box(folder, "RailEast", 0.16, 0.4, 11, 2.3, 0.28, 21, Palette.iron, Enum.Material.Metal)
+	box(folder, "RailEnd", 7.5, 0.4, 0.16, 0, 0.28, 31.6, Palette.iron, Enum.Material.Metal)
+	local shelf = box(folder, "RecoveryShelf", 14, 0.5, 28, 0, -0.35, 18, Palette.iron, Enum.Material.Slate)
+	shelf.Transparency = 1
+
+	box(folder, "Hull", 2.8, 0.8, 4.5, 0, 0.5, 29, Palette.woodDark, Enum.Material.Wood, false)
+	box(folder, "Cabin", 1.6, 1.0, 1.8, 0, 1.3, 28.5, Palette.brassDark, Enum.Material.Metal, false)
+	local stack = box(folder, "Stack", 0.45, 1.2, 0.45, 0, 2.2, 28.7, Palette.iron, Enum.Material.Metal, false)
+	stack.Shape = Enum.PartType.Cylinder
+	local controls = box(folder, "SkiffControls", 0.8, 0.5, 0.4, 0, 1.35, 27.6, Palette.brass, Enum.Material.Metal, false)
+	local boatPrompt = prompt(controls, "Cast off", "Skiff", 0.6)
+	boatPrompt.Enabled = false
+
+	local cloud = box(folder, "CloudSea", 180, 0.4, 120, 0, -9, 36, Color3.fromRGB(184, 196, 208), Enum.Material.SmoothPlastic, false)
+	cloud.Transparency = 0.35
 
 	local spawn = Instance.new("SpawnLocation")
 	spawn.Name = "WorkshopSpawn"
@@ -193,6 +240,10 @@ function Workshop.build(parent: Instance): Built
 		theory = theory,
 		talisman = talisman,
 		wrench = wrenchPrompt,
+		boat = boatPrompt,
+		trays = trays,
+		doors = { doorLeft, doorRight, doorSeam, seal },
+		sign = signText,
 	}
 end
 

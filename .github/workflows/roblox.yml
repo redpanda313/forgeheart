@@ -6,12 +6,14 @@ on:
       - "roblox/**"
       - "tools/roblox/**"
       - "src/forgeheart/robot.ts"
+      - "src/forgeheart/backstory.ts"
       - ".github/workflows/roblox.yml"
   pull_request:
     paths:
       - "roblox/**"
       - "tools/roblox/**"
       - "src/forgeheart/robot.ts"
+      - "src/forgeheart/backstory.ts"
       - ".github/workflows/roblox.yml"
 
 jobs:
@@ -34,8 +36,10 @@ jobs:
       - name: Golden numbers match the browser game
         run: |
           node tools/roblox/dump-golden.mjs
-          git diff --exit-code -- roblox/tests/golden/robot.json
-          cd roblox && lune run tests/robot_config
+          node tools/roblox/emit-backstory-data.mjs
+          node --experimental-strip-types tools/roblox/dump-backstory.mjs
+          git diff --exit-code -- roblox/tests/golden/robot.json roblox/tests/golden/backstories.json roblox/src/shared/BackstoryData.luau
+          cd roblox && lune run tests/robot_config && lune run tests/backstory && lune run tests/economy
       - name: Build the place
         run: |
           mkdir -p roblox/build

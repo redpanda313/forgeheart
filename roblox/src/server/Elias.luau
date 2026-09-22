@@ -73,10 +73,52 @@ function Elias.create(parent: Instance, feet: Vector3): Model
 	wake.KeyboardKeyCode = Enum.KeyCode.E
 	wake.Parent = torso
 
+	local scrap = Instance.new("ProximityPrompt")
+	scrap.Name = "ScrapPrompt"
+	scrap.ActionText = "Scrap"
+	scrap.ObjectText = "Elias"
+	scrap.HoldDuration = 0.8
+	scrap.MaxActivationDistance = 12
+	scrap.RequiresLineOfSight = false
+	scrap.KeyboardKeyCode = Enum.KeyCode.R
+	scrap.Parent = torso
+
 	model.Parent = parent
 	-- Face the spawn (toward -Z) and lean, still shut down.
 	model:PivotTo(CFrame.new(feet) * CFrame.Angles(math.rad(16), 0, 0))
 	return model
+end
+
+function Elias.setName(model: Model, name: string)
+	local plate = model:FindFirstChild("Nameplate", true)
+	if plate then
+		local label = plate:FindFirstChildWhichIsA("TextLabel")
+		if label then
+			label.Text = name
+		end
+	end
+	local prompt = model:FindFirstChild("WakePrompt", true)
+	if prompt and prompt:IsA("ProximityPrompt") then
+		prompt.ObjectText = name
+	end
+	local scrap = model:FindFirstChild("ScrapPrompt", true)
+	if scrap and scrap:IsA("ProximityPrompt") then
+		scrap.ObjectText = name
+	end
+end
+
+function Elias.setVisible(model: Model, visible: boolean)
+	for _, child in model:GetDescendants() do
+		if child:IsA("BasePart") and child.Name ~= "Pivot" then
+			child.Transparency = if visible then 0 else 1
+		elseif child:IsA("BillboardGui") then
+			child.Enabled = visible
+		elseif child:IsA("ProximityPrompt") then
+			if not visible then
+				child.Enabled = false
+			end
+		end
+	end
 end
 
 function Elias.wake(model: Model)
@@ -85,10 +127,15 @@ function Elias.wake(model: Model)
 	if prompt and prompt:IsA("ProximityPrompt") then
 		prompt.Enabled = false
 	end
+	local scrap = model:FindFirstChild("ScrapPrompt", true)
+	if scrap and scrap:IsA("ProximityPrompt") then
+		scrap.Enabled = false
+	end
 	for _, name in { "EyeLeft", "EyeRight" } do
 		local eye = model:FindFirstChild(name)
 		if eye and eye:IsA("BasePart") then
 			eye.Color = Palette.eyeAlive
+			eye.Transparency = 0
 		end
 	end
 	local feet = model:GetPivot().Position
