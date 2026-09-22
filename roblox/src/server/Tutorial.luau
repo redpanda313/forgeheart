@@ -669,9 +669,29 @@ swing = function(player: Player)
 	end
 end
 
+local function checkpointOf(profile): string
+	if not profile then
+		return SpawnProgress.WORKSHOP
+	end
+	local apartment = profile.inv and profile.inv.apartment == true
+	local spawn = SpawnProgress.resolve(profile.spawn, profile.phase, apartment)
+	profile.spawn = spawn
+	return spawn
+end
+
+local function checkpointCFrame(spawn: string): CFrame
+	if spawn == SpawnProgress.CITY then
+		return SkyCity.spawnCFrame()
+	end
+	if spawn == SpawnProgress.MARKET then
+		return Market.spawnCFrame()
+	end
+	return Workshop.spawnCFrame()
+end
+
 local function applyRespawn(player: Player)
 	local profile = profileOf(player)
-	local checkpoint = if profile then profile.spawn else SpawnProgress.WORKSHOP
+	local checkpoint = checkpointOf(profile)
 	local pad = workshopPad
 	if checkpoint == SpawnProgress.CITY then
 		pad = cityPad
@@ -679,8 +699,30 @@ local function applyRespawn(player: Player)
 		pad = marketPad
 	end
 	if pad then
+		pad.Neutral = true
+		pad.Enabled = true
 		player.RespawnLocation = pad
 	end
+end
+
+local function snapToCheckpoint(player: Player, character: Model)
+	applyRespawn(player)
+	local spawn = checkpointOf(profileOf(player))
+	local cf = checkpointCFrame(spawn)
+	local function snap()
+		if not character.Parent then
+			return
+		end
+		local root = character:FindFirstChild("HumanoidRootPart")
+		if root and root:IsA("BasePart") then
+			character:PivotTo(cf)
+		end
+	end
+	snap()
+	-- Roblox applies SpawnLocation after CharacterAdded when the pad is invalid.
+	task.defer(snap)
+	task.delay(0.08, snap)
+	task.delay(0.25, snap)
 end
 
 local function goMarket(player: Player)
@@ -728,7 +770,7 @@ local function goCity(player: Player)
 end
 
 local function placeCharacter(player: Player, character: Model)
-	local root = character:WaitForChild("HumanoidRootPart", 8)
+	character:WaitForChild("HumanoidRootPart", 8)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local profile = profileOf(player)
 	if humanoid then
@@ -742,23 +784,17 @@ local function placeCharacter(player: Player, character: Model)
 		humanoid.JumpHeight = Scale.studs(1.6)
 		humanoid.MaxHealth = 100
 		humanoid.Health = 100
+		humanoid.Died:Connect(function()
+			applyRespawn(player)
+		end)
 	end
 	-- Dying on a ferry visit, or rejoining after one, resumes at the cottage.
-	if profile and profile.spawn == SpawnProgress.CITY and profile.phase ~= "city" then
+	if profile and checkpointOf(profile) == SpawnProgress.CITY and profile.phase ~= "city" then
 		profile.phase = "city"
 		sync(player)
 		save(player)
 	end
-	if root and root:IsA("BasePart") then
-		if profile and profile.spawn == SpawnProgress.CITY then
-			root.CFrame = SkyCity.spawnCFrame()
-		elseif profile and profile.spawn == SpawnProgress.MARKET then
-			root.CFrame = Market.spawnCFrame()
-		else
-			root.CFrame = Workshop.spawnCFrame()
-		end
-	end
-	applyRespawn(player)
+	snapToCheckpoint(player, character)
 	player:SetAttribute("Health", 100)
 	if profile and (profile.phase == "siege" or profile.phase == "breach" or profile.phase == "escape") then
 		giveWrench(player)
@@ -978,6 +1014,9 @@ function Tutorial.start()
 	local function beginHarvest(player: Player)
 		local profile = profileOf(player)
 		if not profile or (profile.phase ~= "market" and profile.phase ~= "city") then
+			return
+		end
+		if harvestWait[player] == true then
 			return
 		end
 		harvestWait[player] = true
@@ -1274,7 +1313,14 @@ function Tutorial.start()
 		save(player)
 	end)
 
-	city.reef.Triggered:Connect(beginHarvest)
+	if city.reef then
+		city.reef.Triggered:Connect(beginHarvest)
+	end
+	for _, reefPrompt in city.reefs or {} do
+		if reefPrompt ~= city.reef then
+			reefPrompt.Triggered:Connect(beginHarvest)
+		end
+	end
 
 	city.broker.Triggered:Connect(function(player)
 		local profile = cityPlayer(player)

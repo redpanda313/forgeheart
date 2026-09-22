@@ -1,4 +1,4 @@
--- Cloud-reef needle minigame from game.ts: Space in the moving green.
+-- Cloud-reef needle minigame from game.ts: tap E or Space in the moving green.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -42,7 +42,7 @@ function Harvest.start(gui: ScreenGui)
 	hint.Position = UDim2.fromOffset(16, 88)
 	hint.Size = UDim2.new(1, -32, 0, 24)
 	hint.Font = Enum.Font.Gotham
-	hint.Text = "Space in the moving green"
+	hint.Text = "tap E or Space in the moving green"
 	hint.TextColor3 = Color3.fromRGB(216, 206, 186)
 	hint.TextSize = 14
 	hint.TextXAlignment = Enum.TextXAlignment.Left
@@ -97,7 +97,7 @@ function Harvest.start(gui: ScreenGui)
 		needlePos = 0
 		needleDir = 1
 		local sizeWord = if haulTier >= 3 then "heavy" elseif haulTier == 2 then "solid" else "light"
-		hint.Text = `{label} · {sizeWord} haul · Space in the moving green`
+		hint.Text = `{label} · {sizeWord} haul · tap E or Space in the moving green`
 	end
 
 	if startRemote:IsA("RemoteEvent") then
@@ -114,10 +114,10 @@ function Harvest.start(gui: ScreenGui)
 			close(false)
 			return
 		end
-		if processed then
+		if processed and input.KeyCode ~= Enum.KeyCode.E then
 			return
 		end
-		if input.KeyCode == Enum.KeyCode.Space then
+		if input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.E then
 			close(needlePos >= zoneLeft and needlePos <= zoneLeft + zoneWidth)
 		end
 	end)
