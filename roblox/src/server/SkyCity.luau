@@ -328,7 +328,11 @@ function SkyCity.build(parent: Instance)
 	local craftPrompt = prompt(layout.invent, "Craft invention", "Latest recipe", 0.35)
 	local assemblePrompt = prompt(peg("Assemble", layout.invent, 4, 0), "Assemble frame", "Five slots", 0.4)
 	local robotPrompt = prompt(layout.robot, "Buy chassis", "120 brass", 0.45)
-	local reefPrompt = prompt(layout.reefs.grand_market, "Extract", "Cloud reef", 0.3)
+	local reefPrompts = {}
+	for districtId, reefPart in layout.reefs or {} do
+		reefPrompts[districtId] = prompt(reefPart, "Extract", "Cloud reef", 0)
+	end
+	local reefPrompt = reefPrompts.grand_market
 	local brokerPrompt = prompt(layout.broker, "Sell all", "Broker", 0.3)
 	local plotPrompt = prompt(layout.plot, "Buy plot", "16,560 brass", 0.5)
 	local decorPrompt = prompt(layout.plot, "Place décor", "1,800", 0.4)
@@ -355,7 +359,8 @@ function SkyCity.build(parent: Instance)
 	local spawn = Instance.new("SpawnLocation")
 	spawn.Name = "CitySpawn"
 	spawn.Anchored = true
-	spawn.Neutral = false
+	-- Neutral so death uses this pad when it is RespawnLocation.
+	spawn.Neutral = true
 	spawn.Duration = 0
 	spawn.CanCollide = false
 	spawn.Transparency = 1
@@ -421,6 +426,7 @@ function SkyCity.build(parent: Instance)
 		hire = hirePrompt,
 		expand = expandPrompt,
 		reef = reefPrompt,
+		reefs = reefPrompts,
 		broker = brokerPrompt,
 		recipes = recipes,
 		ferry = ferryPrompt,

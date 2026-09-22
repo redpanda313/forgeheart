@@ -1,4 +1,5 @@
 -- Furthest place a player has earned. Death and rejoin use this, never an earlier pad.
+-- Market and city SpawnLocations must stay Neutral=true so Roblox honors RespawnLocation.
 local SpawnProgress = {}
 
 SpawnProgress.WORKSHOP = "workshop"

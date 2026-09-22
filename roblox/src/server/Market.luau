@@ -27,11 +27,11 @@ local function box(parent: Instance, name: string, size: Vector3, center: Vector
 	return part
 end
 
-local function prompt(parent: BasePart, action: string, object: string, reach: number?): ProximityPrompt
+local function prompt(parent: BasePart, action: string, object: string, reach: number?, hold: number?): ProximityPrompt
 	local p = Instance.new("ProximityPrompt")
 	p.ActionText = action
 	p.ObjectText = object
-	p.HoldDuration = 0.35
+	p.HoldDuration = if hold ~= nil then hold else 0.35
 	p.MaxActivationDistance = reach or 10
 	p.RequiresLineOfSight = false
 	p.KeyboardKeyCode = Enum.KeyCode.E
@@ -130,7 +130,7 @@ function Market.build(parent: Instance): Built
 	disc("Reef", 10, 0.5, -38, 0.3, 0, Color3.fromRGB(74, 90, 72), Enum.Material.Slate)
 	slab("ReefBridge", 14, 0.3, 5, -28, 0.25, 0, Palette.iron, Enum.Material.DiamondPlate)
 	local reef = slab("CloudReef", 3, 1.4, 3, -38, 1.1, 0, Color3.fromRGB(90, 110, 120), Enum.Material.Slate)
-	local reefPrompt = prompt(reef, "Extract", "Cloud reef")
+	local reefPrompt = prompt(reef, "Extract", "Cloud reef", nil, 0)
 
 	disc("Bay", 9, 0.4, 0, 0.2, -36, Palette.ironDark, Enum.Material.Metal)
 	slab("BayChest", 1.4, 0.8, 1, 0, 0.7, -36, Palette.brass, Enum.Material.Metal)
@@ -166,7 +166,9 @@ function Market.build(parent: Instance): Built
 	local spawn = Instance.new("SpawnLocation")
 	spawn.Name = "MarketSpawn"
 	spawn.Anchored = true
-	spawn.Neutral = false
+	-- Neutral so unteamed players honor RespawnLocation. Workshop used to be
+	-- the only Neutral pad, so death ignored the market checkpoint.
+	spawn.Neutral = true
 	spawn.Duration = 0
 	spawn.CanCollide = false
 	spawn.Transparency = 1
